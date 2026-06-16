@@ -62,6 +62,12 @@ type ApiProfileProviderDraft = NonNullable<ApiProfile['providerDrafts']>[ApiProv
 
 export const DEFAULT_MAX_CONCURRENT = 5
 export const DEFAULT_MAX_RETRIES = 3
+export const API_IMAGES_MODE_MAX_N = 10
+
+export function getApiMaxN(profile: ApiProfile): number {
+  if (profile.apiMode === 'images') return API_IMAGES_MODE_MAX_N
+  return 1
+}
 
 export function normalizeMaxConcurrent(value: unknown, fallback: number | undefined = DEFAULT_MAX_CONCURRENT): number {
   const fallbackValue = fallback ?? DEFAULT_MAX_CONCURRENT

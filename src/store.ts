@@ -27,7 +27,7 @@ import type {
 import type { StoredImage } from './types'
 import type { CallApiOptions, CallApiResult } from './lib/imageApiShared'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_RETRIES, DEFAULT_SETTINGS, getActiveApiProfile, getAgentApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeMaxConcurrent, normalizeMaxRetries, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_RETRIES, DEFAULT_SETTINGS, getActiveApiProfile, getAgentApiProfile, getApiMaxN, getCustomProviderDefinition, mergeImportedSettings, normalizeMaxConcurrent, normalizeMaxRetries, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -2489,13 +2489,40 @@ function failOpenAITaskIfStillRunning(taskId: string, error: string, now = Date.
   const task = useStore.getState().tasks.find((item) => item.id === taskId)
   if (!task || !isRunningOpenAITask(task)) return false
 
-  updateTaskInStore(taskId, {
-    status: 'error',
-    error,
-    falRecoverable: false,
-    finishedAt: now,
-    elapsed: Math.max(0, now - task.createdAt),
-  })
+  const existingOutputImages = task.outputImages || []
+  const hasSuccessfulImages = existingOutputImages.length > 0
+
+  if (hasSuccessfulImages) {
+    const totalRequested = task.params?.n ?? 1
+    const successCount = existingOutputImages.length
+    const failCount = Math.max(0, totalRequested - successCount)
+    const batchItemStatuses: BatchItemStatus[] = Array.from({ length: totalRequested }, (_, i) =>
+      i < successCount ? 'done' : 'error'
+    )
+    const batchItemErrors: BatchItemError[] = failCount > 0
+      ? [{ index: successCount, error }]
+      : []
+
+    updateTaskInStore(taskId, {
+      status: 'done',
+      error: undefined,
+      batchItemStatuses,
+      batchItemErrors: batchItemErrors.length > 0 ? batchItemErrors : undefined,
+      falRecoverable: false,
+      finishedAt: now,
+      elapsed: Math.max(0, now - task.createdAt),
+    })
+    const totalCount = batchItemStatuses.length
+    useStore.getState().showToast(`生成超时，${successCount}/${totalCount} 张成功`, 'info')
+  } else {
+    updateTaskInStore(taskId, {
+      status: 'error',
+      error,
+      falRecoverable: false,
+      finishedAt: now,
+      elapsed: Math.max(0, now - task.createdAt),
+    })
+  }
   return true
 }
 
@@ -4967,29 +4994,38 @@ async function executeTask(taskId: string) {
     const maxConcurrent = normalizeMaxConcurrent(activeProfile.maxConcurrent)
     const maxRetries = normalizeMaxRetries(activeProfile.maxRetries)
 
+    const apiMaxN = getApiMaxN(activeProfile)
+
     async function executeInBatches<T>(
       items: T[],
       batchHandler: (item: T, index: number) => Promise<CallApiResult>,
+      imagesPerItem: number = 1,
     ): Promise<CallApiResult & { batchItemStatuses?: BatchItemStatus[]; batchItemErrors?: BatchItemError[] }> {
       if (items.length === 0) return { images: [] }
 
-      const total = items.length
+      const totalBatches = items.length
+      const totalImages = totalBatches * imagesPerItem
       let allImages: string[] = []
       let allActualParamsList: Array<Partial<TaskParams> | undefined> = []
       let allRevisedPrompts: Array<string | undefined> = []
       let allRawImageUrls: string[] = []
       let firstActualParamsValue: Partial<TaskParams> | undefined
-      let successCount = 0
-      let failureCount = 0
-      const itemStatuses: BatchItemStatus[] = new Array(total).fill('done')
-      const itemErrors: BatchItemError[] = []
+      let successBatchCount = 0
+      let failureBatchCount = 0
+      const imageStatuses: BatchItemStatus[] = new Array(totalImages).fill('done')
+      const imageErrors: BatchItemError[] = []
 
       async function retryItem(fn: () => Promise<CallApiResult>): Promise<CallApiResult> {
         let lastError: unknown
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
           if (attempt > 0) {
             const delayMs = Math.min(30_000, 1000 * Math.pow(2, attempt - 1))
-            await new Promise((resolve) => setTimeout(resolve, delayMs))
+            release()
+            try {
+              await new Promise((resolve) => setTimeout(resolve, delayMs))
+            } finally {
+              await acquire()
+            }
           }
           try {
             return await fn()
@@ -5022,67 +5058,75 @@ async function executeTask(taskId: string) {
         }
       }
 
-      const results = await Promise.allSettled(
+      async function storeBatchResult(result: CallApiResult, index: number) {
+        const imageBaseIndex = index * imagesPerItem
+        successBatchCount++
+
+        const itemImages = result.images
+        const itemActualParamsList = result.actualParamsList?.length
+          ? result.actualParamsList
+          : result.images.map(() => result.actualParams)
+        const itemRevisedPrompts = result.revisedPrompts?.length
+          ? result.revisedPrompts
+          : result.images.map(() => undefined)
+        const itemRawImageUrls = result.rawImageUrls ?? []
+
+        allImages = allImages.concat(itemImages)
+        allActualParamsList = allActualParamsList.concat(itemActualParamsList)
+        allRevisedPrompts = allRevisedPrompts.concat(itemRevisedPrompts)
+        allRawImageUrls = allRawImageUrls.concat(itemRawImageUrls)
+        if (!firstActualParamsValue) {
+          firstActualParamsValue = result.actualParams
+        }
+
+        const newOutputIds = await Promise.all(
+          itemImages.map(async (dataUrl) => {
+            const imgId = await storeImage(dataUrl, 'generated')
+            cacheImage(imgId, dataUrl)
+            return imgId
+          }),
+        )
+        const currentTask = useStore.getState().tasks.find((t) => t.id === taskId)
+        if (currentTask && currentTask.status === 'running') {
+          const existingOutputIds = currentTask.outputImages || []
+          updateTaskInStore(taskId, {
+            outputImages: [...existingOutputIds, ...newOutputIds],
+          })
+          void saveTaskImagesToLocalFS(taskId, newOutputIds, existingOutputIds.length)
+        }
+      }
+
+      function recordBatchFailure(error: unknown, index: number) {
+        const imageBaseIndex = index * imagesPerItem
+        failureBatchCount++
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        for (let j = 0; j < imagesPerItem; j++) {
+          imageStatuses[imageBaseIndex + j] = 'error'
+          imageErrors.push({ index: imageBaseIndex + j, error: errorMsg })
+        }
+      }
+
+      await Promise.allSettled(
         items.map(async (item, index) => {
           const latestTaskCheck = useStore.getState().tasks.find((t) => t.id === taskId)
           if (!latestTaskCheck || latestTaskCheck.status !== 'running') {
-            throw new Error('任务已中止')
+            recordBatchFailure(new Error('任务已中止'), index)
+            return
           }
 
           await acquire()
           try {
-            return await retryItem(() => batchHandler(item, index))
+            const result = await retryItem(() => batchHandler(item, index))
+            await storeBatchResult(result, index)
+          } catch (err) {
+            recordBatchFailure(err, index)
           } finally {
             release()
           }
         }),
       )
 
-      for (let i = 0; i < results.length; i++) {
-        const settled = results[i]
-        if (settled.status === 'fulfilled') {
-          successCount++
-          const result = settled.value
-
-          const itemImages = result.images
-          const itemActualParamsList = result.actualParamsList?.length
-            ? result.actualParamsList
-            : result.images.map(() => result.actualParams)
-          const itemRevisedPrompts = result.revisedPrompts?.length
-            ? result.revisedPrompts
-            : result.images.map(() => undefined)
-          const itemRawImageUrls = result.rawImageUrls ?? []
-
-          allImages = allImages.concat(itemImages)
-          allActualParamsList = allActualParamsList.concat(itemActualParamsList)
-          allRevisedPrompts = allRevisedPrompts.concat(itemRevisedPrompts)
-          allRawImageUrls = allRawImageUrls.concat(itemRawImageUrls)
-          if (!firstActualParamsValue) {
-            firstActualParamsValue = result.actualParams
-          }
-
-          const latestTask = useStore.getState().tasks.find((t) => t.id === taskId)
-          if (latestTask && latestTask.status === 'running') {
-            const newOutputIds: string[] = []
-            for (const dataUrl of itemImages) {
-              const imgId = await storeImage(dataUrl, 'generated')
-              cacheImage(imgId, dataUrl)
-              newOutputIds.push(imgId)
-            }
-            const existingOutputIds = latestTask.outputImages || []
-            updateTaskInStore(taskId, {
-              outputImages: [...existingOutputIds, ...newOutputIds],
-            })
-            void saveTaskImagesToLocalFS(taskId, newOutputIds, existingOutputIds.length)
-          }
-        } else {
-          failureCount++
-          itemStatuses[i] = 'error'
-          itemErrors.push({ index: i, error: settled.reason instanceof Error ? settled.reason.message : String(settled.reason) })
-        }
-      }
-
-      if (successCount === 0) {
+      if (successBatchCount === 0) {
         throw new Error('所有请求均失败')
       }
 
@@ -5093,7 +5137,7 @@ async function executeTask(taskId: string) {
         actualParamsList: allActualParamsList,
         revisedPrompts: allRevisedPrompts,
         ...(allRawImageUrls.length ? { rawImageUrls: allRawImageUrls } : {}),
-        ...(failureCount > 0 ? { batchItemStatuses: itemStatuses, batchItemErrors: itemErrors } : {}),
+        ...(failureBatchCount > 0 ? { batchItemStatuses: imageStatuses, batchItemErrors: imageErrors } : {}),
       }
     }
 
@@ -5220,12 +5264,17 @@ async function executeTask(taskId: string) {
 
     let result: CallApiResult
     if (n > 1) {
-      const normalItems = Array.from({ length: n }, (_, i) => i)
-      result = await executeInBatches(normalItems, async (i) => {
+      const requestN = Math.min(apiMaxN, n)
+      const batchCount = Math.ceil(n / requestN)
+      const batchItems = Array.from({ length: batchCount }, (_, i) => {
+        const remaining = n - i * requestN
+        return Math.min(requestN, remaining)
+      })
+      result = await executeInBatches(batchItems, async (currentN, batchIndex) => {
         return callImageApi({
           settings: requestSettings,
           prompt: replaceImageMentionsForApi(task.prompt, inputDataUrls.length, undefined, variableResolver),
-          params: { ...task.params, n: 1 },
+          params: { ...task.params, n: currentN },
           inputImageDataUrls: inputDataUrls,
           maskDataUrl,
           onFalRequestEnqueued: (request) => {
@@ -5244,11 +5293,12 @@ async function executeTask(taskId: string) {
             })
           },
           onPartialImage: (partial) => {
-            useStore.getState().setTaskStreamPreview(taskId, partial.image, i)
+            const baseIndex = batchIndex * requestN + (partial.requestIndex ?? 0)
+            useStore.getState().setTaskStreamPreview(taskId, partial.image, baseIndex)
             void persistTaskStreamPartialImage(taskId, partial.image)
           },
         })
-      })
+      }, requestN)
     } else {
       result = await callImageApi({
         settings: requestSettings,
@@ -5419,16 +5469,43 @@ async function executeTask(taskId: string) {
       if (streamingHint && !errorMessage.includes(streamingHint)) {
         errorMessage += streamingHint
       }
-      updateTaskInStore(taskId, {
-        status: 'error',
-        error: errorMessage,
-        ...getRawErrorPayload(err),
-        falRecoverable: false,
-        customRecoverable: false,
-        finishedAt: Date.now(),
-        elapsed: Date.now() - task.createdAt,
-      })
-      useStore.getState().setDetailTaskId(taskId)
+      const existingOutputImages = latestTask.outputImages || []
+      if (existingOutputImages.length > 0) {
+        const totalRequested = latestTask.params?.n ?? 1
+        const successCount = existingOutputImages.length
+        const batchItemStatuses: BatchItemStatus[] = Array.from({ length: totalRequested }, (_, i) =>
+          i < successCount ? 'done' : 'error'
+        )
+        const batchItemErrors: BatchItemError[] = Array.from(
+          { length: Math.max(0, totalRequested - successCount) },
+          (_, i) => ({ index: successCount + i, error: errorMessage })
+        )
+        updateTaskInStore(taskId, {
+          status: 'done',
+          error: undefined,
+          batchItemStatuses,
+          batchItemErrors: batchItemErrors.length > 0 ? batchItemErrors : undefined,
+          streamPartialImageIds: undefined,
+          falRecoverable: false,
+          customRecoverable: false,
+          finishedAt: Date.now(),
+          elapsed: Date.now() - task.createdAt,
+        })
+        const totalCount = batchItemStatuses.length
+        useStore.getState().showToast(`生成异常，${successCount}/${totalCount} 张成功`, 'info')
+        useStore.getState().setDetailTaskId(taskId)
+      } else {
+        updateTaskInStore(taskId, {
+          status: 'error',
+          error: errorMessage,
+          ...getRawErrorPayload(err),
+          falRecoverable: false,
+          customRecoverable: false,
+          finishedAt: Date.now(),
+          elapsed: Date.now() - task.createdAt,
+        })
+        useStore.getState().setDetailTaskId(taskId)
+      }
     }
   } finally {
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
