@@ -1,0 +1,45 @@
+{
+  "id": "mqesncul1brt2",
+  "prompt": "参考图片风格即文案内容，衍生相关的图片，衍生不同人物和场景的图片，帮我合理调整布局，去除左上角LOGO",
+  "params": {
+    "size": "1280x720",
+    "quality": "auto",
+    "output_format": "png",
+    "output_compression": null,
+    "moderation": "auto",
+    "n": 20
+  },
+  "apiProvider": "openai",
+  "apiProfileName": "骏伯",
+  "apiMode": "images",
+  "apiModel": "gpt-image-2",
+  "inputImageIds": [
+    "8e444773fc26099c889fe70245a786c38c30970d7a808f579d4554c75cf2f6fc"
+  ],
+  "outputImages": [
+    "51f67eb0e801f3227d3a70b999a1989697d5b122ced8a0973569cbeb8b76abfd",
+    "f276173f9a1b3610861698083f48919617faeb0f878f6d59d062ef96ba09681e",
+    "c785eac0ddabcbd60bfebc17f24d3325f0219029d5443abaef798598fd982db7",
+    "3dd9a10db485e590c0dee2b677b20c66c6b1ca0bb3b2de97a27d366f5084e7e2",
+    "7c3f1ef77e6996d108a1bf6e6e148ead161bc7d33e72b503e898e282942be9ef",
+    "bcb90c2d041a389b760d719f4bac51093350202f15734bab0af443ad5d4a0a55",
+    "295d1aba45943bfb409c07a202fe42d8c1aa98f53d32ab599de3b226f2d6dc85",
+    "00f82a03c2d39151908881908bf0adc01c17be0249dc49ae7fad293802206d7d",
+    "9bb1a7a7f9b753302751a4a334f49256a184bb5a9443c5ced84171f6fc0b8514",
+    "82ef99da4224e332830f905261efe881f4103ad45962d5bb567d0af3146bffea",
+    "4f0bce02242fa8b977f876991b0c591a82eb3328b0c5b0e5a2a4004841907855",
+    "385d6dc27fc4b9155671fbf5e5e87c0e7f0cd62b7b1ada0cc050bc8f2d6bac8c",
+    "8e1387c6d71fdf8a29c60ca8e2584ecd580e1fa547c334a3f4837135b5ecbd88",
+    "d53a5576b00525e7de4dd817480ffc7e89f8d5aba88a0c64caf638ccb7ecba26",
+    "c32563d80d036736049e0dacf29c286b08c71e5520aa799b52c768ef633b26f9",
+    "9792c689163aab7c807b91fa2db2c4ee0c2b377b9c8f63718347e57f05def402",
+    "9c8873846282d2678a70d12c08d69e34608abd985892b1785652b6aa84a55de6",
+    "350a9059effb51677a48b7d1bfe72a2902cd33c9c830bab0ccf2f758a62baecc",
+    "e8b4802e812318d4733641e9d94a2d0a3335cb8deb2cb9acdab5a09f43ba8092",
+    "68801f3bcd8f05a627305b62d6ccb8f15e04a504a75011930577f5f3061caa2e"
+  ],
+  "status": "error",
+  "createdAt": 1781502596301,
+  "finishedAt": 1781502681170,
+  "elapsed": 84869
+}

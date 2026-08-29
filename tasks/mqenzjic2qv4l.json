@@ -1,0 +1,48 @@
+{
+  "id": "mqenzjic2qv4l",
+  "prompt": "参考图片风格，生成拍照问答主题的图片，生成日常生活中常见问题的场景，去除左上角LOGO",
+  "params": {
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "output_compression": null,
+    "moderation": "auto",
+    "n": 20
+  },
+  "actualParams": {
+    "n": 20
+  },
+  "apiProvider": "openai",
+  "apiProfileName": "骏伯",
+  "apiMode": "images",
+  "apiModel": "gpt-image-2",
+  "inputImageIds": [
+    "6ad9da5dd846e0452c6fd037eec3ad4406f7ae10e9072428dc401b7ae17bb071"
+  ],
+  "outputImages": [
+    "c1db7b7a96a53d387a2420674c90435d19307c2927cd471afa85a61a24f6dc6f",
+    "0074a7d5b786f8d20db4d585acc89e37e20a252e77c94f682c6ef62d86eba48d",
+    "086bb6968e07921f00c7658b08228a3e5d4a3f66f3db294b736804d0db417a1d",
+    "dec33bc38d53e7f3168b9d6bce5b76597c9503db5ccf869fda98bb7c558c6012",
+    "37f12195e7300fcea63721e900c1f2183d60a0928acd7240f229ccb546cf5656",
+    "a394b17929c92efb0f1c9c7e7b9685899acfcb17db7259900830bfdac4f0c575",
+    "75daee60da14ffcfeadf8a622ac41793495faa11e16738244f73240c02a4c78d",
+    "5235c408cc8c801a1850f000f4105a1edc8900ce1fcd60d4560364017ecad39f",
+    "049dee6161039b50341c1c59a046bde8bc85bea700981ec74737ad54468d4312",
+    "a0c467cf7554fce5a4d7ee31dbd6f2db6e50c9dab156a30d4424dcddadff473e",
+    "79297ac7cc6e5fe29e82018fc2ea58b4ab36989b35e90a2bf5fab78b663c74c6",
+    "56ba5061b14518e92f5e4e3db9f86e20a5fb0d07c1db9143e1542f3daa854bc2",
+    "3611f80bddb0a6867cc094cd8b0450ce83700c5b5e2d75ec0f7eb7569e336bb9",
+    "76b1bafbe7f3175073c0e787396856a65e4bf6d148a3c45e55e25d2ab1e47c08",
+    "072d204248194a4795216a6daeeb66cffdc5d02fdf56022dc92f74caa0cb85c9",
+    "0e96a326d862270f14de677be9e899a7782e9bb5b4acb605d5c148dff1d08837",
+    "7cbf751b08299568ba14cb9958e503fb1e3181963d43ca4b43d379f01320d286",
+    "c7c2f8dda5e90a9a373cfaf62be8f255717099f1e69f5b930c1227ff84f44d05",
+    "e4ecd4c84761ad124bd7cd05f1cd8e484bc12c63d121e3b5fa3ef5d506636607",
+    "dd77ea122f39c68a13d73f22019b664eb1dd78d7f40d74141ca2de269f0b832c"
+  ],
+  "status": "done",
+  "createdAt": 1781494766724,
+  "finishedAt": 1781494863429,
+  "elapsed": 96705
+}

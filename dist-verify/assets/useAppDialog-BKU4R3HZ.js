@@ -1,0 +1,1 @@
+import{a as r,r as a}from"./index-CNB-6p56.js";function i(){const o=r(e=>e.setConfirmDialog),n=a.useCallback(e=>{o({...e,confirmText:e.confirmText??"确认",cancelText:e.cancelText??"取消"})},[o]),c=a.useCallback(e=>{o({...e,icon:"info",showCancel:!1,confirmText:e.confirmText??"知道了"})},[o]);return{openConfirmDialog:n,openInfoDialog:c}}export{i as u};

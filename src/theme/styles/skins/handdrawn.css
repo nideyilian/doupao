@@ -1,0 +1,259 @@
+/*
+ * 手绘风格皮肤（Hand-drawn / 速写本）。
+ * 目标：不只是换配色，而是整体改变「字体 + 圆角 + 阴影 + 组件描边风格」。
+ * - 字体：优先使用系统本地楷体，离线可用且不阻塞首屏。
+ * - 配色：米黄纸张 + 钢笔墨色 + 蜡笔橙强调。
+ * - 圆角：用 8 值 border-radius 模拟手绘抖动方框；阴影改为硬边偏移（马克笔/蜡笔感）。
+ * - 组件：卡片/按钮/输入框统一加 2px 墨色描边，呈现速写本涂鸦质感。
+ *
+ * 仅覆盖颜色 / 字体 / 圆角 / 阴影 / 组件表面 Token，不触碰布局 Token。
+ */
+
+:root[data-skin='handdrawn'] {
+  /* 手写字体（同时覆盖 Tailwind font-sans 与设计系统 font token） */
+  --font-ui-sans:
+    'KaiTi', 'STKaiti', 'FangSong', 'STFangsong', 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --ds-font-sans: var(--font-ui-sans);
+  --ds-font-size-md: 0.95rem;
+  --ds-font-size-lg: 1.05rem;
+  --ds-line-height-normal: 1.7;
+  --ds-line-height-relaxed: 1.8;
+
+  /* ===== 旧变量兼容桥（shadcn 组件用） ===== */
+  --background: 42 40% 96%;
+  --foreground: 220 25% 18%;
+  --muted: 42 30% 92%;
+  --muted-foreground: 220 12% 38%;
+  --border: 40 18% 76%;
+  --input: 40 18% 80%;
+  --primary: 14 82% 42%;
+  --primary-foreground: 40 40% 98%;
+  --sidebar: 42 36% 94%;
+  --sidebar-foreground: 220 25% 18%;
+  /* 品牌色板：手绘皮肤下把 blue-* 工具类也染成蜡笔橙，保证整体协调 */
+  --skin-blue-50: 14 70% 92%;
+  --skin-blue-100: 14 72% 86%;
+  --skin-blue-200: 14 74% 78%;
+  --skin-blue-300: 14 76% 68%;
+  --skin-blue-400: 14 78% 50%;
+  --skin-blue-500: 14 82% 42%;
+  --skin-blue-600: 14 84% 35%;
+  --skin-blue-700: 14 86% 30%;
+  --skin-blue-800: 14 84% 30%;
+  --skin-blue-900: 14 86% 23%;
+  --skin-blue-950: 14 88% 15%;
+
+  /* ===== 语义颜色 Token ===== */
+  --ds-color-canvas: 42 40% 96%;
+  --ds-color-surface: 40 38% 98%;
+  --ds-color-surface-subtle: 42 30% 92%;
+  --ds-color-surface-raised: 40 40% 99%;
+  --ds-color-text: 220 25% 18%;
+  --ds-color-text-muted: 220 12% 38%;
+  --ds-color-text-subtle: 220 10% 42%;
+  --ds-color-text-inverse: 40 40% 98%;
+  --ds-color-border: 40 18% 76%;
+  --ds-color-border-strong: 40 16% 58%;
+  --ds-color-primary: 14 82% 42%;
+  --ds-color-primary-hover: 14 84% 35%;
+  --ds-color-primary-subtle: 14 70% 92%;
+  --ds-color-primary-gradient: linear-gradient(180deg, hsl(14 82% 42%) 0%, hsl(14 84% 34%) 100%);
+  --ds-color-focus: 14 82% 40%;
+  --ds-color-success: 145 45% 38%;
+  --ds-color-success-subtle: 145 40% 92%;
+  --ds-color-warning: 38 85% 48%;
+  --ds-color-warning-subtle: 38 60% 92%;
+  --ds-color-danger: 350 72% 45%;
+  --ds-color-danger-hover: 350 74% 38%;
+  --ds-color-danger-subtle: 350 60% 94%;
+  --ds-color-info: 205 65% 48%;
+  --ds-color-info-subtle: 205 50% 92%;
+  --ds-color-selection-surface: 14 70% 92%;
+  --ds-color-selection-border: 14 60% 62%;
+  --ds-color-selection-text: 220 25% 18%;
+  --ds-color-scrim: 220 20% 10%;
+
+  /* 手绘专用：墨色描边 */
+  --ds-color-ink: 220 25% 22%;
+  --ds-color-ink-soft: 220 22% 34%;
+
+  /* 圆角：手绘抖动方框 */
+  --ds-radius-sm: 10px;
+  --ds-radius-md: 14px;
+  --ds-radius-lg: 18px;
+  --ds-radius-xl: 24px;
+  --ds-radius-sketch: 255px 15px 225px 15px / 15px 225px 15px 255px;
+  --ds-radius-sketch-sm: 18px 4px 16px 4px / 4px 16px 4px 18px;
+
+  /* 阴影：硬边偏移（蜡笔 / 马克笔），去掉模糊 */
+  --ds-shadow-sm: 1px 2px 0 hsl(var(--ds-color-ink) / 0.14);
+  --ds-shadow-md: 3px 4px 0 hsl(var(--ds-color-ink) / 0.16);
+  --ds-shadow-lg: 5px 6px 0 hsl(var(--ds-color-ink) / 0.18);
+  --ds-shadow-focus: 0 0 0 3px hsl(var(--ds-color-focus) / 0.28);
+}
+
+:root[data-skin='handdrawn'].dark {
+  --background: 220 16% 12%;
+  --foreground: 42 30% 92%;
+  --muted: 220 14% 17%;
+  --muted-foreground: 40 12% 70%;
+  --border: 220 12% 30%;
+  --input: 220 12% 32%;
+  --primary: 28 90% 60%;
+  --primary-foreground: 220 20% 12%;
+  --sidebar: 220 16% 14%;
+  --sidebar-foreground: 42 30% 92%;
+  --skin-blue-50: 28 60% 22%;
+  --skin-blue-100: 28 62% 26%;
+  --skin-blue-200: 28 64% 32%;
+  --skin-blue-300: 28 70% 42%;
+  --skin-blue-400: 28 84% 56%;
+  --skin-blue-500: 28 90% 60%;
+  --skin-blue-600: 28 92% 54%;
+  --skin-blue-700: 28 94% 46%;
+  --skin-blue-800: 28 96% 38%;
+  --skin-blue-900: 28 98% 28%;
+  --skin-blue-950: 28 98% 18%;
+
+  --ds-color-canvas: 220 16% 12%;
+  --ds-color-surface: 220 15% 15%;
+  --ds-color-surface-subtle: 220 13% 19%;
+  --ds-color-surface-raised: 220 16% 17%;
+  --ds-color-text: 42 30% 92%;
+  --ds-color-text-muted: 40 12% 70%;
+  --ds-color-text-subtle: 40 10% 56%;
+  --ds-color-text-inverse: 220 20% 12%;
+  --ds-color-border: 220 12% 30%;
+  --ds-color-border-strong: 220 12% 44%;
+  --ds-color-primary: 28 90% 60%;
+  --ds-color-primary-hover: 28 92% 66%;
+  --ds-color-primary-subtle: 28 60% 22%;
+  --ds-color-primary-gradient: linear-gradient(180deg, hsl(28 92% 64%) 0%, hsl(28 92% 56%) 100%);
+  --ds-color-focus: 28 90% 60%;
+  --ds-color-success: 145 45% 55%;
+  --ds-color-success-subtle: 145 30% 22%;
+  --ds-color-warning: 42 85% 58%;
+  --ds-color-warning-subtle: 42 40% 22%;
+  --ds-color-danger: 350 75% 64%;
+  --ds-color-danger-hover: 350 78% 70%;
+  --ds-color-danger-subtle: 350 45% 24%;
+  --ds-color-info: 205 70% 62%;
+  --ds-color-info-subtle: 205 40% 22%;
+  --ds-color-selection-surface: 28 60% 22%;
+  --ds-color-selection-border: 28 60% 52%;
+  --ds-color-selection-text: 42 30% 92%;
+  --ds-color-scrim: 220 20% 4%;
+
+  --ds-color-ink: 42 28% 82%;
+  --ds-color-ink-soft: 42 22% 68%;
+
+  --ds-shadow-sm: 1px 2px 0 hsl(var(--ds-color-ink) / 0.22);
+  --ds-shadow-md: 3px 4px 0 hsl(var(--ds-color-ink) / 0.24);
+  --ds-shadow-lg: 5px 6px 0 hsl(var(--ds-color-ink) / 0.26);
+  --ds-shadow-focus: 0 0 0 3px hsl(var(--ds-color-focus) / 0.34);
+}
+
+/* ===== 纸张纹理（米黄点阵） ===== */
+:root[data-skin='handdrawn'] body {
+  background-color: hsl(var(--ds-color-canvas));
+  background-image: radial-gradient(hsl(var(--ds-color-ink) / 0.05) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* 顶栏 / 侧栏 / 画廊面板：纸张底 + 墨色描边（全局覆盖要求 §6.10） */
+:root[data-skin='handdrawn'] .app-header,
+:root[data-skin='handdrawn'] header,
+:root[data-skin='handdrawn'] .ds-sidebar,
+:root[data-skin='handdrawn'] aside,
+:root[data-skin='handdrawn'] .doupao-side-panel {
+  background-color: hsl(var(--ds-color-surface-subtle));
+  background-image: radial-gradient(hsl(var(--ds-color-ink) / 0.05) 1px, transparent 1px);
+  background-size: 22px 22px;
+  border-color: hsl(var(--ds-color-ink) / 0.3);
+}
+
+/* ===== 组件手绘描边 ===== */
+:root[data-skin='handdrawn'] .ds-card,
+:root[data-skin='handdrawn'] .ds-surface,
+:root[data-skin='handdrawn'] .ds-panel,
+:root[data-skin='handdrawn'] .ds-dialog,
+:root[data-skin='handdrawn'] .ds-popover,
+:root[data-skin='handdrawn'] .ds-menu,
+:root[data-skin='handdrawn'] .ds-toast,
+:root[data-skin='handdrawn'] .ds-tooltip__content,
+:root[data-skin='handdrawn'] .ds-table-container,
+:root[data-skin='handdrawn'] .ds-code-block,
+:root[data-skin='handdrawn'] .ds-fieldset {
+  border-radius: var(--ds-radius-sketch);
+  border: 2px solid hsl(var(--ds-color-ink));
+  box-shadow: 3px 4px 0 hsl(var(--ds-color-ink) / 0.16);
+}
+
+:root[data-skin='handdrawn'] .ds-surface--raised {
+  box-shadow: 4px 5px 0 hsl(var(--ds-color-ink) / 0.18);
+}
+
+:root[data-skin='handdrawn'] .ds-button,
+:root[data-skin='handdrawn'] .ds-icon-button,
+:root[data-skin='handdrawn'] .ds-input,
+:root[data-skin='handdrawn'] .ds-textarea,
+:root[data-skin='handdrawn'] .ds-select__control,
+:root[data-skin='handdrawn'] .ds-search,
+:root[data-skin='handdrawn'] .ds-segmented,
+:root[data-skin='handdrawn'] .ds-chip,
+:root[data-skin='handdrawn'] .ds-badge,
+:root[data-skin='handdrawn'] .ds-stepper,
+:root[data-skin='handdrawn'] .ds-fieldset__content .ds-input {
+  border-radius: var(--ds-radius-sketch-sm);
+  border: 2px solid hsl(var(--ds-color-ink) / 0.85);
+}
+
+/* 主按钮填充蜡笔色，配墨色描边 */
+:root[data-skin='handdrawn'] .ds-button--primary {
+  background: hsl(var(--ds-color-primary));
+  color: hsl(var(--ds-color-text-inverse));
+  border-color: hsl(var(--ds-color-ink));
+  box-shadow: 2px 3px 0 hsl(var(--ds-color-ink) / 0.22);
+}
+
+:root[data-skin='handdrawn'] .ds-button--primary:hover {
+  background: hsl(var(--ds-color-primary-hover));
+}
+
+:root[data-skin='handdrawn'] .ds-button--danger {
+  border-color: hsl(var(--ds-color-ink));
+  box-shadow: 2px 3px 0 hsl(var(--ds-color-ink) / 0.22);
+}
+
+/* 输入框聚焦：墨色描边 + 蜡笔阴影 */
+:root[data-skin='handdrawn'] .ds-input:focus-visible,
+:root[data-skin='handdrawn'] .ds-textarea:focus-visible,
+:root[data-skin='handdrawn'] .ds-select__control:focus-visible,
+:root[data-skin='handdrawn'] .ds-search:focus-within {
+  border-color: hsl(var(--ds-color-ink));
+  outline: 2px solid hsl(var(--ds-color-focus));
+  outline-offset: 2px;
+}
+
+/* 标签页 / 导航：手绘下划线用墨色 */
+:root[data-skin='handdrawn'] .ds-tabs__item::after {
+  background: hsl(var(--ds-color-ink));
+}
+
+:root[data-skin='handdrawn'] .ds-divider--horizontal {
+  border-top-style: dashed;
+  border-top-color: hsl(var(--ds-color-ink) / 0.45);
+}
+
+/* 头像 / 缩略图选中圈也换成手绘描边 */
+:root[data-skin='handdrawn'] .ds-thumbnail--selected {
+  box-shadow:
+    0 0 0 2px hsl(var(--ds-color-surface)),
+    0 0 0 4px hsl(var(--ds-color-ink));
+}
+
+/* Markdown 引用块：手绘左侧墨线 */
+:root[data-skin='handdrawn'] .markdown-renderer :where(blockquote) {
+  border-left: 3px solid hsl(var(--ds-color-ink));
+  color: hsl(var(--ds-color-text-muted));
+}

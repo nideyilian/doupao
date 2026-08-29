@@ -1,0 +1,307 @@
+/*
+ * 玻璃拟态皮肤（Glassmorphism / 毛玻璃）。
+ * 风格：半透明磨砂面板 + 背景彩色光晕 + 柔和模糊投影 + 大圆角。
+ * - 配色：紫罗兰主色 + 多色光晕背景，让磨砂透明感可见。
+ * - 组件：常规表面使用半透明材质，模糊只用于关键浮层与固定导航。
+ * - 通过有限的模糊预算保留玻璃质感，避免列表卡片形成大量合成层。
+ *
+ * 仅覆盖颜色 / 字体 / 圆角 / 阴影 / 组件表面 Token，不触碰布局 Token。
+ */
+
+:root[data-skin='glass'] {
+  /* 旧变量兼容桥（shadcn 组件用） */
+  --background: 250 40% 96%;
+  --foreground: 250 30% 18%;
+  --muted: 250 30% 90%;
+  --muted-foreground: 250 18% 42%;
+  --border: 250 30% 82%;
+  --input: 250 30% 84%;
+  --primary: 262 62% 52%;
+  --primary-foreground: 0 0% 100%;
+  --sidebar: 250 40% 94%;
+  --sidebar-foreground: 250 30% 18%;
+  /* 品牌色板：映射到紫罗兰主色 */
+  --skin-blue-50: 262 60% 94%;
+  --skin-blue-100: 262 60% 90%;
+  --skin-blue-200: 262 62% 84%;
+  --skin-blue-300: 262 64% 74%;
+  --skin-blue-400: 262 64% 60%;
+  --skin-blue-500: 262 62% 52%;
+  --skin-blue-600: 262 64% 46%;
+  --skin-blue-700: 262 66% 40%;
+  --skin-blue-800: 262 68% 34%;
+  --skin-blue-900: 262 70% 28%;
+  --skin-blue-950: 262 72% 18%;
+
+  /* 语义颜色 Token */
+  --ds-color-canvas: 250 40% 96%;
+  --ds-color-surface: 0 0% 100%;
+  --ds-color-surface-subtle: 250 30% 92%;
+  --ds-color-surface-raised: 0 0% 100%;
+  --ds-color-text: 250 30% 18%;
+  --ds-color-text-muted: 250 18% 42%;
+  --ds-color-text-subtle: 250 16% 45%;
+  --ds-color-text-inverse: 0 0% 100%;
+  --ds-color-border: 250 30% 82%;
+  --ds-color-border-strong: 250 30% 68%;
+  --ds-color-primary: 265 85% 56%;
+  --ds-color-primary-hover: 265 86% 50%;
+  --ds-color-primary-subtle: 265 80% 94%;
+  --ds-color-primary-gradient: linear-gradient(135deg, hsl(265 85% 56%) 0%, hsl(295 85% 46%) 100%);
+  --ds-color-focus: 265 85% 56%;
+  --ds-color-success: 152 60% 45%;
+  --ds-color-success-subtle: 152 50% 92%;
+  --ds-color-warning: 38 95% 52%;
+  --ds-color-warning-subtle: 38 60% 92%;
+  --ds-color-danger: 350 80% 46%;
+  --ds-color-danger-hover: 350 82% 40%;
+  --ds-color-danger-subtle: 350 60% 94%;
+  --ds-color-info: 200 90% 55%;
+  --ds-color-info-subtle: 200 60% 92%;
+  --ds-color-selection-surface: 265 80% 94%;
+  --ds-color-selection-border: 265 60% 70%;
+  --ds-color-selection-text: 250 30% 18%;
+  --ds-color-scrim: 250 40% 10%;
+
+  /* 圆角：大圆角更显柔和 */
+  --ds-radius-sm: 12px;
+  --ds-radius-md: 16px;
+  --ds-radius-lg: 22px;
+  --ds-radius-xl: 28px;
+  /* 阴影：柔和模糊投影 */
+  --ds-shadow-sm: 0 4px 16px hsl(250 40% 30% / 0.12);
+  --ds-shadow-md: 0 8px 30px hsl(250 40% 30% / 0.16);
+  --ds-shadow-lg: 0 18px 50px hsl(250 40% 30% / 0.22);
+  --ds-shadow-focus: 0 0 0 3px hsl(var(--ds-color-focus) / 0.3);
+
+  /* 磨砂颗粒纹理（SVG 分形噪声），叠加在玻璃面板上增加质感 */
+  --glass-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.07'/%3E%3C/svg%3E");
+
+  /* 主按钮：紫罗兰渐变 */
+  --ds-button-primary-background: var(--ds-color-primary-gradient);
+  --ds-button-primary-background-hover: var(--ds-color-primary-gradient);
+}
+
+:root[data-skin='glass'].dark {
+  --background: 250 40% 8%;
+  --foreground: 250 30% 92%;
+  --muted: 250 30% 16%;
+  --muted-foreground: 250 18% 70%;
+  --border: 250 30% 24%;
+  --input: 250 30% 26%;
+  --primary: 262 66% 58%;
+  --primary-foreground: 0 0% 100%;
+  --sidebar: 250 40% 10%;
+  --sidebar-foreground: 250 30% 92%;
+  --skin-blue-400: 262 66% 62%;
+  --skin-blue-500: 262 66% 58%;
+  --skin-blue-600: 262 68% 52%;
+  --ds-color-canvas: 250 40% 8%;
+  --ds-color-surface: 250 40% 12%;
+  --ds-color-surface-subtle: 250 30% 16%;
+  --ds-color-surface-raised: 250 40% 14%;
+  --ds-color-text: 250 30% 92%;
+  --ds-color-text-muted: 250 18% 70%;
+  --ds-color-text-subtle: 250 16% 58%;
+  /* text-inverse 保持白色：玻璃暗模式遮罩关闭按钮等反向文字依赖白色。
+     改白字不达标的是主色/危险色本身过浅（L≈64~68%，白字仅 3.3~3.7:1），
+     故改为压暗主色/危险色与渐变端点，使白色文字达到 AA（≥4.5:1）。 */
+  --ds-color-text-inverse: 0 0% 100%;
+  --ds-color-border: 250 30% 24%;
+  --ds-color-border-strong: 250 30% 38%;
+  --ds-color-primary: 265 90% 56%;
+  --ds-color-primary-hover: 265 92% 62%;
+  --ds-color-primary-subtle: 265 50% 22%;
+  --ds-color-primary-gradient: linear-gradient(135deg, hsl(265 90% 58%) 0%, hsl(295 90% 45%) 100%);
+  --ds-color-focus: 262 66% 58%;
+  --ds-color-success: 152 60% 50%;
+  --ds-color-success-subtle: 152 40% 22%;
+  --ds-color-warning: 44 95% 56%;
+  --ds-color-warning-subtle: 44 50% 22%;
+  --ds-color-danger: 350 82% 46%;
+  --ds-color-danger-hover: 350 84% 40%;
+  --ds-color-danger-subtle: 350 50% 24%;
+  --ds-color-info: 200 92% 62%;
+  --ds-color-info-subtle: 200 55% 22%;
+  --ds-color-selection-surface: 265 50% 22%;
+  --ds-color-selection-border: 265 60% 52%;
+  --ds-color-selection-text: 250 30% 92%;
+  --ds-shadow-sm: 0 4px 16px hsl(250 60% 4% / 0.4);
+  --ds-shadow-md: 0 8px 30px hsl(250 60% 4% / 0.5);
+  --ds-shadow-lg: 0 18px 50px hsl(250 60% 4% / 0.6);
+}
+
+/* 背景彩色光晕（浅色），让磨砂透明感可见 */
+:root[data-skin='glass'] body {
+  background:
+    radial-gradient(at 18% 18%, hsl(262 48% 72% / 0.7) 0, transparent 46%),
+    radial-gradient(at 82% 16%, hsl(195 42% 68% / 0.66) 0, transparent 46%),
+    radial-gradient(at 84% 82%, hsl(325 48% 72% / 0.66) 0, transparent 46%),
+    radial-gradient(at 16% 84%, hsl(45 52% 70% / 0.6) 0, transparent 46%), hsl(250 28% 96%);
+}
+
+:root[data-skin='glass'].dark body {
+  background:
+    radial-gradient(at 18% 18%, hsl(262 40% 30% / 0.8) 0, transparent 46%),
+    radial-gradient(at 82% 16%, hsl(195 38% 28% / 0.8) 0, transparent 46%),
+    radial-gradient(at 84% 82%, hsl(325 42% 32% / 0.8) 0, transparent 46%),
+    radial-gradient(at 16% 84%, hsl(45 45% 26% / 0.75) 0, transparent 46%), hsl(250 30% 8%);
+}
+
+/* 常规表面只使用半透明材质；模糊仅保留给下方少量关键浮层。 */
+:root[data-skin='glass'] .ds-card,
+:root[data-skin='glass'] .ds-surface,
+:root[data-skin='glass'] .ds-panel,
+:root[data-skin='glass'] .ds-dialog,
+:root[data-skin='glass'] .ds-popover,
+:root[data-skin='glass'] .ds-menu,
+:root[data-skin='glass'] .ds-toast,
+:root[data-skin='glass'] .ds-tooltip__content,
+:root[data-skin='glass'] .ds-table-container,
+:root[data-skin='glass'] .ds-code-block,
+:root[data-skin='glass'] .ds-fieldset {
+  background-color: rgba(255, 255, 255, 0.5);
+  background-image: linear-gradient(140deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0) 45%), var(--glass-grain);
+  background-blend-mode: normal, soft-light;
+  background-size:
+    100% 100%,
+    220px 220px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 8px 32px hsl(250 40% 30% / 0.18);
+}
+
+:root[data-skin='glass'].dark .ds-card,
+:root[data-skin='glass'].dark .ds-surface,
+:root[data-skin='glass'].dark .ds-panel,
+:root[data-skin='glass'].dark .ds-dialog,
+:root[data-skin='glass'].dark .ds-popover,
+:root[data-skin='glass'].dark .ds-menu,
+:root[data-skin='glass'].dark .ds-toast,
+:root[data-skin='glass'].dark .ds-tooltip__content,
+:root[data-skin='glass'].dark .ds-table-container,
+:root[data-skin='glass'].dark .ds-code-block,
+:root[data-skin='glass'].dark .ds-fieldset {
+  background-color: rgba(30, 26, 56, 0.5);
+  background-image: linear-gradient(140deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 45%), var(--glass-grain);
+  background-blend-mode: normal, soft-light;
+  background-size:
+    100% 100%,
+    220px 220px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 32px hsl(250 60% 4% / 0.4);
+}
+
+/* 模糊预算：只给结构性浮层与固定导航。 */
+:root[data-skin='glass'] .ds-dialog,
+:root[data-skin='glass'] .ds-popover,
+:root[data-skin='glass'] .ds-menu,
+:root[data-skin='glass'] .app-header,
+:root[data-skin='glass'] .ds-sidebar,
+:root[data-skin='glass'] .doupao-side-panel {
+  background-color: rgba(255, 255, 255, 0.5);
+  background-image: var(--glass-grain);
+  background-blend-mode: soft-light;
+  background-size: 220px 220px;
+  backdrop-filter: blur(12px) saturate(135%);
+  -webkit-backdrop-filter: blur(12px) saturate(135%);
+}
+
+:root[data-skin='glass'].dark .ds-dialog,
+:root[data-skin='glass'].dark .ds-popover,
+:root[data-skin='glass'].dark .ds-menu,
+:root[data-skin='glass'].dark .app-header,
+:root[data-skin='glass'].dark .ds-sidebar,
+:root[data-skin='glass'].dark .doupao-side-panel {
+  background-color: rgba(30, 26, 56, 0.45);
+  background-image: var(--glass-grain);
+  background-blend-mode: soft-light;
+  background-size: 220px 220px;
+}
+
+/* 输入控件维持半透明，不单独创建模糊合成层。 */
+:root[data-skin='glass'] .ds-input,
+:root[data-skin='glass'] .ds-textarea,
+:root[data-skin='glass'] .ds-select__control,
+:root[data-skin='glass'] .ds-search {
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+:root[data-skin='glass'].dark .ds-input,
+:root[data-skin='glass'].dark .ds-textarea,
+:root[data-skin='glass'].dark .ds-select__control,
+:root[data-skin='glass'].dark .ds-search {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+/* 卡片悬浮微浮 + 投影加深（质感交互） */
+:root[data-skin='glass'] .ds-card {
+  transition:
+    transform 0.3s ease,
+    box-shadow 0.3s ease,
+    border-color 0.3s ease;
+}
+:root[data-skin='glass'] .ds-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 16px 48px hsl(265 60% 45% / 0.3);
+  border-color: rgba(255, 255, 255, 0.92);
+}
+
+/* 对话框 / 气泡：内高光 + 主色辉光描边 */
+:root[data-skin='glass'] .ds-dialog,
+:root[data-skin='glass'] .ds-popover {
+  box-shadow:
+    0 8px 32px hsl(250 40% 30% / 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.35) inset,
+    0 0 44px hsl(var(--ds-color-primary) / 0.18);
+}
+
+/* 主按钮：发光 + 悬浮微动（特效） */
+:root[data-skin='glass'] .ds-button--primary {
+  box-shadow: 0 6px 22px hsl(var(--ds-color-primary) / 0.45);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
+}
+:root[data-skin='glass'] .ds-button--primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 34px hsl(var(--ds-color-primary) / 0.6);
+  filter: brightness(1.07);
+}
+:root[data-skin='glass'] .ds-button--primary:active {
+  transform: translateY(0);
+  box-shadow: 0 4px 16px hsl(var(--ds-color-primary) / 0.5);
+}
+
+/* 尊重「减少动态效果」偏好 */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-skin='glass'] .ds-card,
+  :root[data-skin='glass'] .ds-button--primary {
+    transition: none;
+  }
+  :root[data-skin='glass'] .ds-card:hover,
+  :root[data-skin='glass'] .ds-button--primary:hover,
+  :root[data-skin='glass'] .ds-button--primary:active {
+    transform: none;
+  }
+}
+
+/* 导出期间仅关闭玻璃皮肤自身的有限模糊层，不使用影响全站的通配规则。 */
+:root[data-skin='glass'][data-exporting] .ds-dialog,
+:root[data-skin='glass'][data-exporting] .ds-popover,
+:root[data-skin='glass'][data-exporting] .ds-menu,
+:root[data-skin='glass'][data-exporting] .app-header,
+:root[data-skin='glass'][data-exporting] .ds-sidebar,
+:root[data-skin='glass'][data-exporting] .doupao-side-panel {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 选中缩略图：玻璃描边 */
+:root[data-skin='glass'] .ds-thumbnail--selected {
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.7),
+    0 0 0 4px hsl(var(--ds-color-primary));
+}

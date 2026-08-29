@@ -1,0 +1,43 @@
+{
+  "id": "mqeoc88o5vxqk",
+  "prompt": "参考图片风格，衍生生成高考志愿相关主题的图片，转为竖版，帮我合理调整布局，去除左上角LOGO",
+  "params": {
+    "size": "720x1280",
+    "quality": "auto",
+    "output_format": "png",
+    "output_compression": null,
+    "moderation": "auto",
+    "n": 20
+  },
+  "actualParams": {
+    "n": 15
+  },
+  "apiProvider": "openai",
+  "apiProfileName": "骏伯",
+  "apiMode": "images",
+  "apiModel": "gpt-image-2",
+  "inputImageIds": [
+    "f7c68020fc128c1b0709e1dfec46db416d979ec7dd637e73f7f9e48a3957d116"
+  ],
+  "outputImages": [
+    "698d708297cb38d80ea8c031f66797b03f8a02f8d6198b094487d47c96fecd40",
+    "fecf0f6dcc99a1707d0a525e3fcab9f62510d34b1c211ab7671894e2c0d4bcbc",
+    "6b0f7b40bb63fddde456791e1647db828cdc148a41207f94cf27c036c33bd2d6",
+    "e636c2d528f135300c4151e297e4bbf29eeecd3f4160f2fe05f8058662c586dd",
+    "294f291ba9bfc269bf7fc03ba1cd0ed5e62e8ca63fc1031a35beb21ded928114",
+    "08c4f887bff1ad1b3574435a58ecac7c1d9763315ad2625f77a7067b2617303f",
+    "14ed98f8564036a7b4e38a3872f0ef4a0a6b09c449c05ecd319c55004ceb2c10",
+    "0f5a2a619de42deda0ab59df4acc5bf9a65724572096d9064e13f3da1036ecf1",
+    "c5ba2bf7fc1edb6e560f0b5fd1ace326eee6aaa1a87efc0bc6fe5a7703af1be3",
+    "bfa56383c13f47ff5f458539325fd3ee93dc4bbb808382f4269969d023481642",
+    "8ec7b9ba7a0db8da0210d1d7450da51c2f10316939797027bcb7999ee5b33c2a",
+    "c6ac538b4070482ec0621450ab56ba0c8e8855f96730e0149a3c7a5590b4382a",
+    "27b50281b2383e36cc51d49d80318be0249b9a3c1de2e79859e1ad406abf3e77",
+    "c00e45d1f6f63862d15505b75f1f959ea5dc4c8d5c8b49bf3417400f680a0cdb",
+    "746658a5fb545300370bc272624cc9f2cf628b92de1a89dc35a647923e2f2bc4"
+  ],
+  "status": "done",
+  "createdAt": 1781495358648,
+  "finishedAt": 1781495477767,
+  "elapsed": 119119
+}

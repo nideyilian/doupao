@@ -1,0 +1,7 @@
+dist/
+dist-verify/
+dist-electron/
+release/
+node_modules/
+*.log
+package-lock.json

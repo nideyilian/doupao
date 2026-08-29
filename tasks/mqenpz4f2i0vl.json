@@ -1,0 +1,32 @@
+{
+  "id": "mqenpz4f2i0vl",
+  "prompt": "参考图片风格，生成日常小妙招主题的图片，合理的安排画面布局，去除左上角LOGO",
+  "params": {
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "output_compression": null,
+    "moderation": "auto",
+    "n": 4
+  },
+  "actualParams": {
+    "n": 4
+  },
+  "apiProvider": "openai",
+  "apiProfileName": "骏伯",
+  "apiMode": "images",
+  "apiModel": "gpt-image-2",
+  "inputImageIds": [
+    "0c7a726e8fb73efdbf081520d73217c83e22d027d3d130c24dfd2c579653fa26"
+  ],
+  "outputImages": [
+    "05ae0bbef225ef41d251ecd0fdf8b6d5070c269868ec3852e0ea113f482bf294",
+    "bda98c233a19a8931a80839633c4490e69af9301c0ecee869dd45e3983e69d08",
+    "39861595df0ffef8577d88c8915a5930b0fa0b68c633613e6512741f881ffb63",
+    "950d4139e791b0c054d6b6de12b6b404820ea8a7ee221f6132815c514c726fab"
+  ],
+  "status": "done",
+  "createdAt": 1781494320399,
+  "finishedAt": 1781494388308,
+  "elapsed": 67909
+}

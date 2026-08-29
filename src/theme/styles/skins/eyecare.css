@@ -1,0 +1,265 @@
+/*
+ * 柔和纸感皮肤（Kraft / 牛皮纸）。
+ * 风格：低饱和暖棕牛皮纸配色 + 牛皮纸纤维纹理，整体温暖、克制。
+ * - 配色：以「暖棕牛皮纸色」为主——燕麦棕纸底 + 深棕灰文字（非纯黑）+ 雾松绿主色，
+ *   点缀用莫兰迪灰粉 / 灰蓝 / 芥末灰黄，整体像一卷温柔的牛皮纸包装。
+ * - 材质：body 与组件叠加「牛皮纸纹理」——细颗粒糙点（牛皮纸特有粗糙感）+ 纵向长纤维
+ *   （kraft 纸竖向纤维）+ 低频斑驳（牛皮纸不均色斑），三层叠加即为真实牛皮纸肌理；
+ *   组件再辅以顶部暖棕受光高光与底部微阴影，呈现微微浮起的「纸卡」质感。
+ * - 明暗适配：亮模式为浅棕牛皮纸（暖黄棕）；暗模式转为深咖啡牛皮纸，
+ *   纹理与斑驳光晕同步压暗，保证两种模式下均可读。
+ * - 组件：中偏大圆角 + 低对比暖棕柔光阴影（无硬边）+ 半透明暖棕描边，安静不抢眼。
+ * - 阅读优化：正文行高略放大，降低视觉压迫。
+ *
+ * 仅覆盖颜色 / 字体 / 圆角 / 阴影 / 组件表面 Token，不触碰布局 Token。
+ */
+
+:root[data-skin='eyecare'] {
+  /* 牛皮纸纹理：细糙点（牛皮纸粗糙感）+ 纵向长纤维（kraft 竖向纤维）+ 低频斑驳（不均色块）。
+   * 三层 feTurbulence 经 feColorMatrix 去饱和，避免纸质纹理引入杂色。 */
+  --eyecare-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Cfilter id='f'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.018 0.5' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Cfilter id='m'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.006' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.07'/%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='0.05'/%3E%3Crect width='100%25' height='100%25' filter='url(%23m)' opacity='0.035'/%3E%3C/svg%3E");
+
+  /* 旧变量兼容桥（shadcn 组件用）→ 牛皮纸暖棕 */
+  --background: 34 44% 80%;
+  --foreground: 28 22% 26%;
+  --muted: 34 38% 78%;
+  --muted-foreground: 30 18% 38%;
+  --border: 33 30% 66%;
+  --input: 38 46% 90%;
+  --primary: 158 25% 32%;
+  --primary-foreground: 40 26% 95%;
+  --sidebar: 38 24% 87%;
+  --sidebar-foreground: 32 14% 32%;
+  /* 品牌色板：映射到莫兰迪雾松绿主色（蓝色强调统一转灰绿调） */
+  --skin-blue-50: 158 16% 90%;
+  --skin-blue-100: 158 16% 84%;
+  --skin-blue-200: 158 15% 75%;
+  --skin-blue-300: 158 14% 66%;
+  --skin-blue-400: 158 18% 42%;
+  --skin-blue-500: 158 25% 32%;
+  --skin-blue-600: 158 27% 27%;
+  --skin-blue-700: 158 28% 23%;
+  --skin-blue-800: 158 18% 31%;
+  --skin-blue-900: 158 20% 24%;
+  --skin-blue-950: 158 22% 17%;
+
+  /* 语义颜色 Token（莫兰迪：低饱和、带灰调） */
+  --ds-color-canvas: 34 44% 80%;
+  --ds-color-surface: 36 44% 86%;
+  --ds-color-surface-subtle: 34 38% 78%;
+  --ds-color-surface-raised: 38 46% 90%;
+  --ds-color-text: 28 22% 26%;
+  --ds-color-text-muted: 30 18% 35%;
+  --ds-color-text-subtle: 30 14% 36%;
+  --ds-color-text-inverse: 36 44% 93%;
+  --ds-color-border: 33 30% 66%;
+  --ds-color-border-strong: 33 28% 52%;
+  /* 莫兰迪主色：雾松绿（灰调绿） */
+  --ds-color-primary: 158 25% 32%;
+  --ds-color-primary-hover: 158 27% 27%;
+  --ds-color-primary-subtle: 158 18% 88%;
+  --ds-color-primary-gradient: linear-gradient(135deg, hsl(158 25% 32%) 0%, hsl(168 24% 27%) 100%);
+  --ds-color-focus: 158 22% 38%;
+  --ds-color-success: 150 16% 48%; /* 灰绿 */
+  --ds-color-success-subtle: 150 16% 88%;
+  --ds-color-warning: 40 36% 56%; /* 芥末灰黄 */
+  --ds-color-warning-subtle: 40 30% 88%;
+  --ds-color-danger: 350 30% 38%;
+  --ds-color-danger-hover: 350 34% 32%;
+  --ds-color-danger-subtle: 350 20% 90%;
+  --ds-color-info: 210 18% 56%; /* 莫兰迪灰蓝 */
+  --ds-color-info-subtle: 210 18% 90%;
+  --ds-color-selection-surface: 42 26% 84%;
+  --ds-color-selection-border: 38 22% 58%;
+  --ds-color-selection-text: 28 22% 26%;
+  --ds-color-scrim: 34 16% 14%;
+
+  /* 阅读优化：行高略放大 */
+  --ds-line-height-normal: 1.65;
+  --ds-line-height-relaxed: 1.8;
+
+  /* 圆角：中偏大圆角，柔和 */
+  --ds-radius-sm: 10px;
+  --ds-radius-md: 14px;
+  --ds-radius-lg: 18px;
+  --ds-radius-xl: 24px;
+  /* 阴影：低对比暖灰柔光（无硬边） */
+  --ds-shadow-sm: 0 2px 10px hsl(32 30% 26% / 0.1);
+  --ds-shadow-md: 0 6px 22px hsl(32 30% 26% / 0.12);
+  --ds-shadow-lg: 0 16px 44px hsl(32 30% 26% / 0.16);
+  --ds-shadow-focus: 0 0 0 3px hsl(var(--ds-color-focus) / 0.28);
+
+  /* 主按钮：雾松绿渐变 */
+  --ds-button-primary-background: var(--ds-color-primary-gradient);
+  --ds-button-primary-background-hover: var(--ds-color-primary-gradient);
+}
+
+:root[data-skin='eyecare'].dark {
+  --eyecare-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Cfilter id='f'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.018 0.5' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Cfilter id='m'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.006' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.08'/%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='0.06'/%3E%3Crect width='100%25' height='100%25' filter='url(%23m)' opacity='0.045'/%3E%3C/svg%3E");
+
+  --background: 28 26% 15%;
+  --foreground: 38 26% 82%;
+  --muted: 28 22% 18%;
+  --muted-foreground: 36 18% 66%;
+  --border: 30 20% 30%;
+  --input: 30 22% 33%;
+  --primary: 158 16% 58%;
+  --primary-foreground: 30 14% 14%;
+  --sidebar: 28 24% 16%;
+  --sidebar-foreground: 38 26% 82%;
+  --skin-blue-400: 158 18% 64%;
+  --skin-blue-500: 158 18% 58%;
+  --skin-blue-600: 158 20% 50%;
+  --ds-color-canvas: 28 26% 15%;
+  --ds-color-surface: 30 24% 19%;
+  --ds-color-surface-subtle: 28 22% 18%;
+  --ds-color-surface-raised: 30 26% 22%;
+  --ds-color-text: 38 26% 82%;
+  --ds-color-text-muted: 36 18% 66%;
+  --ds-color-text-subtle: 34 14% 60%;
+  --ds-color-text-inverse: 28 26% 14%;
+  --ds-color-border: 30 20% 30%;
+  --ds-color-border-strong: 30 18% 40%;
+  --ds-color-primary: 158 16% 58%;
+  --ds-color-primary-hover: 158 18% 64%;
+  --ds-color-primary-subtle: 158 20% 26%;
+  --ds-color-primary-gradient: linear-gradient(135deg, hsl(158 18% 62%) 0%, hsl(168 16% 58%) 100%);
+  --ds-color-focus: 158 18% 58%;
+  --ds-color-success: 150 18% 54%;
+  --ds-color-success-subtle: 150 16% 26%;
+  --ds-color-warning: 42 34% 62%;
+  --ds-color-warning-subtle: 42 24% 26%;
+  --ds-color-danger: 350 24% 64%;
+  --ds-color-danger-hover: 350 26% 70%;
+  --ds-color-danger-subtle: 350 20% 28%;
+  --ds-color-info: 210 20% 62%;
+  --ds-color-info-subtle: 210 16% 26%;
+  --ds-color-selection-surface: 36 20% 26%;
+  --ds-color-selection-border: 38 18% 52%;
+  --ds-color-selection-text: 38 26% 82%;
+  --ds-color-scrim: 30 14% 8%;
+  --ds-shadow-sm: 0 2px 10px hsl(26 30% 4% / 0.32);
+  --ds-shadow-md: 0 6px 22px hsl(26 30% 4% / 0.4);
+  --ds-shadow-lg: 0 16px 44px hsl(26 30% 4% / 0.48);
+}
+
+/* 背景：浅牛皮纸底 + 牛皮纸纹理 + 暖棕不均斑驳光晕（模拟牛皮纸色块） */
+:root[data-skin='eyecare'] body {
+  background-color: hsl(var(--ds-color-canvas));
+  background-image:
+    var(--eyecare-paper), radial-gradient(at 18% 12%, hsla(36 52% 70% / 0.45) 0, transparent 48%),
+    radial-gradient(at 82% 88%, hsla(30 48% 62% / 0.42) 0, transparent 52%),
+    radial-gradient(at 50% 55%, hsla(40 46% 78% / 0.3) 0, transparent 60%);
+}
+
+:root[data-skin='eyecare'].dark body {
+  background-color: hsl(var(--ds-color-canvas));
+  background-image:
+    var(--eyecare-paper), radial-gradient(at 18% 12%, hsla(34 32% 24% / 0.5) 0, transparent 48%),
+    radial-gradient(at 82% 88%, hsla(28 30% 19% / 0.46) 0, transparent 52%),
+    radial-gradient(at 50% 55%, hsla(38 28% 28% / 0.36) 0, transparent 60%);
+}
+
+/* 组件：纸卡质感——真实纸张纹理 + 顶部受光高光 + 底部微阴影 + 半透明暖灰描边 */
+:root[data-skin='eyecare'] .ds-card,
+:root[data-skin='eyecare'] .ds-surface,
+:root[data-skin='eyecare'] .ds-panel,
+:root[data-skin='eyecare'] .ds-dialog,
+:root[data-skin='eyecare'] .ds-popover,
+:root[data-skin='eyecare'] .ds-menu,
+:root[data-skin='eyecare'] .ds-toast,
+:root[data-skin='eyecare'] .ds-tooltip__content,
+:root[data-skin='eyecare'] .ds-table-container,
+:root[data-skin='eyecare'] .ds-code-block,
+:root[data-skin='eyecare'] .ds-fieldset {
+  border: 1px solid hsl(var(--ds-color-border));
+  background-color: hsl(var(--ds-color-surface));
+  background-image: var(--eyecare-paper);
+  box-shadow:
+    0 6px 22px hsl(32 30% 26% / 0.12),
+    inset 0 1px 0 hsl(44 50% 96% / 0.55),
+    inset 0 0 0 1px hsl(44 46% 96% / 0.16);
+}
+
+:root[data-skin='eyecare'].dark .ds-card,
+:root[data-skin='eyecare'].dark .ds-surface,
+:root[data-skin='eyecare'].dark .ds-panel,
+:root[data-skin='eyecare'].dark .ds-dialog,
+:root[data-skin='eyecare'].dark .ds-popover,
+:root[data-skin='eyecare'].dark .ds-menu,
+:root[data-skin='eyecare'].dark .ds-toast,
+:root[data-skin='eyecare'].dark .ds-tooltip__content,
+:root[data-skin='eyecare'].dark .ds-table-container,
+:root[data-skin='eyecare'].dark .ds-code-block,
+:root[data-skin='eyecare'].dark .ds-fieldset {
+  border: 1px solid hsl(var(--ds-color-border));
+  background-color: hsl(var(--ds-color-surface));
+  background-image: var(--eyecare-paper);
+  box-shadow:
+    0 6px 22px hsl(26 30% 4% / 0.42),
+    inset 0 1px 0 hsl(38 24% 52% / 0.07),
+    inset 0 0 0 1px hsl(38 24% 62% / 0.05);
+}
+
+/* 顶栏 / 侧栏 / 画廊面板：跟随皮肤表面色 + 纸质纹理 */
+:root[data-skin='eyecare'] .app-header,
+:root[data-skin='eyecare'] header,
+:root[data-skin='eyecare'] .ds-sidebar,
+:root[data-skin='eyecare'] aside,
+:root[data-skin='eyecare'] .doupao-side-panel {
+  background-color: hsl(var(--ds-color-surface-subtle));
+  background-image: var(--eyecare-paper);
+  border-color: hsl(var(--ds-color-border));
+}
+
+/* 输入框 / 选择 / 搜索：实色表面 + 半透明暖灰描边 + 极淡纸纹 */
+:root[data-skin='eyecare'] .ds-input,
+:root[data-skin='eyecare'] .ds-textarea,
+:root[data-skin='eyecare'] .ds-select__control,
+:root[data-skin='eyecare'] .ds-search {
+  background-color: hsl(var(--ds-color-surface-raised));
+  background-image: var(--eyecare-paper);
+  border: 1px solid hsl(var(--ds-color-border));
+}
+
+:root[data-skin='eyecare'] .ds-input:focus-visible,
+:root[data-skin='eyecare'] .ds-textarea:focus-visible,
+:root[data-skin='eyecare'] .ds-select__control:focus-visible,
+:root[data-skin='eyecare'] .ds-search:focus-within {
+  border-color: hsl(var(--ds-color-focus));
+  outline: 2px solid hsl(var(--ds-color-focus) / 0.28);
+  outline-offset: 1px;
+}
+
+/* 主按钮：雾松绿渐变 + 纸感受光高光 */
+:root[data-skin='eyecare'] .ds-button--primary {
+  background: var(--ds-color-primary-gradient);
+  color: hsl(var(--ds-color-text-inverse));
+  border-color: hsl(var(--ds-color-primary-hover));
+  box-shadow: inset 0 1px 0 hsl(44 46% 96% / 0.16);
+}
+
+:root[data-skin='eyecare'] .ds-button--primary:hover {
+  background: var(--ds-button-primary-background-hover, hsl(var(--ds-color-primary-hover)));
+}
+
+/* 选中缩略图：雾松绿描边 */
+:root[data-skin='eyecare'] .ds-thumbnail--selected {
+  box-shadow:
+    0 0 0 2px hsl(var(--ds-color-surface)),
+    0 0 0 4px hsl(var(--ds-color-primary));
+}
+
+/* 分割线 / 标签页下划线：柔和暖灰 */
+:root[data-skin='eyecare'] .ds-divider--horizontal {
+  border-top-color: hsl(var(--ds-color-border));
+}
+
+:root[data-skin='eyecare'] .ds-tabs__item::after {
+  background: hsl(var(--ds-color-primary));
+}
+
+:root[data-skin='eyecare'] .markdown-renderer :where(blockquote) {
+  border-left: 3px solid hsl(var(--ds-color-primary-subtle));
+  color: hsl(var(--ds-color-text-muted));
+}

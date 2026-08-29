@@ -1,0 +1,109 @@
+/* 皮肤模板：复制本文件为 skins/<id>.css 后填写 Token。
+ * 规则：仅覆盖颜色 / 字体 / 圆角 / 阴影 / 组件表面 Token，禁止覆盖布局 Token
+ * （--ds-space-*、--ds-control-*、--ds-content-*、--ds-z-*、--safe-area-*、--app-header-offset）。
+ *
+ * 同时在 src/theme/registry.ts 的 SKIN_REGISTRY 增加一项（label / description /
+ * swatch / preview / order），并在 src/theme/styles/skins.css 追加 @import。
+ */
+:root[data-skin='<id>'] {
+  /* 旧变量兼容桥 */
+  --background: 0 0% 100%;
+  --foreground: 0 0% 0%;
+  --muted: 0 0% 95%;
+  --muted-foreground: 0 0% 40%;
+  --border: 0 0% 88%;
+  --input: 0 0% 88%;
+  --primary: 220 80% 50%;
+  --primary-foreground: 0 0% 100%;
+  --sidebar: 0 0% 97%;
+  --sidebar-foreground: 0 0% 10%;
+  /* 品牌色板：--skin-blue-50 … -950（按主色 H / S 推导明度阶梯） */
+  --skin-blue-50: 220 80% 85%;
+  --skin-blue-100: 220 80% 83%;
+  --skin-blue-200: 220 80% 77%;
+  --skin-blue-300: 220 80% 68%;
+  --skin-blue-400: 220 80% 58%;
+  --skin-blue-500: 220 80% 50%;
+  --skin-blue-600: 220 80% 43%;
+  --skin-blue-700: 220 80% 38%;
+  --skin-blue-800: 220 80% 30%;
+  --skin-blue-900: 220 80% 23%;
+  --skin-blue-950: 220 80% 14%;
+  /* 中性色 / 背景 / 卡片 */
+  --ds-color-canvas: 0 0% 100%;
+  --ds-color-surface: 0 0% 99%;
+  --ds-color-surface-subtle: 0 0% 95%;
+  --ds-color-surface-raised: 0 0% 100%;
+  --ds-color-text: 0 0% 10%;
+  --ds-color-text-muted: 0 0% 40%;
+  --ds-color-text-subtle: 0 0% 52%;
+  --ds-color-text-inverse: 0 0% 100%;
+  --ds-color-border: 0 0% 88%;
+  --ds-color-border-strong: 0 0% 74%;
+  /* 品牌主色 + 强调渐变 */
+  --ds-color-primary: 220 80% 50%;
+  --ds-color-primary-hover: 220 80% 42%;
+  --ds-color-primary-subtle: 220 80% 95%;
+  --ds-color-primary-gradient: linear-gradient(180deg, hsl(220 80% 56%) 0%, hsl(220 80% 46%) 100%);
+  --ds-color-focus: 220 80% 50%;
+  /* 语义状态色 */
+  --ds-color-success: 142 71% 45%;
+  --ds-color-success-subtle: 142 45% 95%;
+  --ds-color-warning: 36 100% 50%;
+  --ds-color-warning-subtle: 38 60% 95%;
+  --ds-color-danger: 1 100% 59%;
+  --ds-color-danger-hover: 1 100% 64%;
+  --ds-color-danger-subtle: 1 60% 96%;
+  --ds-color-info: 199 95% 62%;
+  --ds-color-info-subtle: 199 60% 95%;
+  --ds-color-selection-surface: 220 80% 95%;
+  --ds-color-selection-border: 220 55% 80%;
+  --ds-color-selection-text: 0 0% 10%;
+  /* 组件表面：主按钮使用强调渐变（如需纯色背景可改为 var(--ds-color-primary)） */
+  --ds-button-primary-background: var(--ds-color-primary-gradient);
+  --ds-button-primary-background-hover: var(--ds-color-primary-gradient);
+  --ds-button-primary-hover-filter: brightness(1.05);
+}
+
+:root[data-skin='<id>'].dark {
+  --background: 0 0% 8%;
+  --foreground: 0 0% 95%;
+  --muted: 0 0% 15%;
+  --muted-foreground: 0 0% 68%;
+  --border: 0 0% 21%;
+  --input: 0 0% 21%;
+  --primary: 220 80% 60%;
+  --primary-foreground: 0 0% 12%;
+  --sidebar: 0 0% 12%;
+  --sidebar-foreground: 0 0% 95%;
+  --skin-blue-400: 220 80% 66%;
+  --skin-blue-500: 220 80% 60%;
+  --skin-blue-600: 220 80% 52%;
+  --ds-color-canvas: 0 0% 8%;
+  --ds-color-surface: 0 0% 12%;
+  --ds-color-surface-subtle: 0 0% 15%;
+  --ds-color-surface-raised: 0 0% 14%;
+  --ds-color-text: 0 0% 95%;
+  --ds-color-text-muted: 0 0% 68%;
+  --ds-color-text-subtle: 0 0% 56%;
+  --ds-color-text-inverse: 0 0% 12%;
+  --ds-color-border: 0 0% 21%;
+  --ds-color-border-strong: 0 0% 34%;
+  --ds-color-primary: 220 80% 60%;
+  --ds-color-primary-hover: 220 80% 66%;
+  --ds-color-primary-subtle: 220 80% 20%;
+  --ds-color-primary-gradient: linear-gradient(180deg, hsl(220 80% 64%) 0%, hsl(220 80% 54%) 100%);
+  --ds-color-focus: 220 80% 60%;
+  --ds-color-success: 142 73% 47%;
+  --ds-color-success-subtle: 142 40% 22%;
+  --ds-color-warning: 54 100% 52%;
+  --ds-color-warning-subtle: 54 50% 22%;
+  --ds-color-danger: 1 100% 60%;
+  --ds-color-danger-hover: 1 100% 66%;
+  --ds-color-danger-subtle: 1 50% 24%;
+  --ds-color-info: 199 100% 68%;
+  --ds-color-info-subtle: 199 55% 22%;
+  --ds-color-selection-surface: 220 80% 20%;
+  --ds-color-selection-border: 220 60% 42%;
+  --ds-color-selection-text: 0 0% 93%;
+}

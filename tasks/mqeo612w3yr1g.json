@@ -1,0 +1,48 @@
+{
+  "id": "mqeo612w3yr1g",
+  "prompt": "参考图片风格，生成cos变装主题的图片，生成随机cos形象的图片，将“最强”改为“超强”，去除左上角LOGO",
+  "params": {
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "output_compression": null,
+    "moderation": "auto",
+    "n": 20
+  },
+  "actualParams": {
+    "n": 20
+  },
+  "apiProvider": "openai",
+  "apiProfileName": "骏伯",
+  "apiMode": "images",
+  "apiModel": "gpt-image-2",
+  "inputImageIds": [
+    "49b4f4b902bafeac161e8557e9da11009a3dba8d860e68b1976dc513e1608ef8"
+  ],
+  "outputImages": [
+    "2d1333a79c7be9100a7a4a272ec02272fa111b12436a6dcfafc152c774e7855f",
+    "519af36538b06d507edca5a5490405545a0a2e5d4d2653e85fd5558375f2125d",
+    "01f13c65f6f53a8975a7c369c8b3fd8af4db5354135d643f6f3d34310242fed7",
+    "acf7731c616d1a72851d11db5d16af18cadf8aca3bb9118e6e9735e40f1e0a81",
+    "29837267679d4507f76b6a7701fc7887bb57bae7f6241366c72f10cdbccca076",
+    "8945e485eddf48fee835e35f32f0cbc8aa156180708ad8999f4fe3753c8a5cd0",
+    "e11e7f3418134ed66af2217c4e3c05ecf9a03c85c97e2911166e452f9177af89",
+    "01f01aeeab6e58ac54765af0e201f3e6b85b90bf34916038442965ce60b61b76",
+    "8376706fbc9c99c9add69a7d83cc4e268bd6415f034589a4a2938ccf84d6e6a3",
+    "d980392ff98557f3e60ca7503be899e23a2b666b2ecf5a53ae776e482f264236",
+    "b02a9233124ff459cc472dc26668a7949560c11cf4893670169244b10d7fe6f8",
+    "4ec39a1f4c96b40b6fca758ec73cabdf561e70453bd84824e3604746d5395725",
+    "307a8f1b03f5220f461b03d89f1e133e866fc223c34d47f3c62a3e6f69d2cda7",
+    "078b293c8c73431bcf67025f32f8813b6d473a4fa118151cb33b3c348aa14c41",
+    "4740a16669e9936719d1c7b8f93742e3b6390a7667ce57f143f1750d3edbb48e",
+    "dc462fcfd161ab5a48a20a13039c96d3db8628f72eb289b25a725eb108f54354",
+    "85c1d6a66a170fd8342c11559be7d8e56174f5ffc6e6a8438258ff6709dfa1d5",
+    "9d1e45c455531027926e03c881ff04d8a6057890de6b0a4a86ef860fb754b4f4",
+    "a3966bf728e2630df3570b0b126253f3bf4f955f8ddfb1eb1779cf80b12cbf31",
+    "d01bfa9132889269e76ca4bc2bf1789e7f46b4c1f5c6c6ae47e8d0bb20543d25"
+  ],
+  "status": "done",
+  "createdAt": 1781495069432,
+  "finishedAt": 1781495136213,
+  "elapsed": 66781
+}

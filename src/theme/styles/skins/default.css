@@ -1,0 +1,9 @@
+/*
+ * 默认皮肤（原始蓝灰主题）。
+ * 默认皮肤的全部 Token 即基础语义 Token：
+ * - 旧变量兼容桥（--background 等）定义于 src/index.css 的 :root / .dark。
+ * - 语义 Token（--ds-color-* 等）定义于 src/design-system/styles.css 的 :root / .dark。
+ * 本文件仅作为注册表与皮肤文件一一对应的占位，不需要覆盖任何 Token。
+ */
+:root[data-skin='default'] {
+}

@@ -1,0 +1,31 @@
+node_modules/
+dist/
+dist-electron/
+local-saves/
+dev-proxy.config.json
+.wrangler/
+release/
+release_new/
+release-v2/
+*.exe
+*.blockmap
+*.nupkg
+latest.yml
+*.asar
+.superpowers/
+.worktrees/
+
+# build / runtime logs
+*.log
+.impeccable/
+
+# tool / ide dirs
+.dsh-vision-router/
+.trae/
+.impeccable/
+
+# app runtime backups / temp dirs
+tmp-*.json
+tmp-edge-profile2/
+tmp-extract-*/
+tmp-app-run.log

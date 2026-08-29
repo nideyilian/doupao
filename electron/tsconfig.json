@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "noEmit": true
+  },
+  "include": [
+    "main.ts",
+    "preload.ts",
+    "ipc-handlers.ts",
+    "asset-kernel.ts",
+    "asset-catalog.ts",
+    "asset-indexer.ts",
+    "asset-mcp.ts",
+    "asset-api-server.ts",
+    "api-transport.ts",
+    "streaming-zip.ts",
+    "renderer-crash-recovery.ts",
+    "library-paths.ts",
+    "catalog-migration.ts",
+    "library-integrity.ts",
+    "project-tree-export.ts",
+    "image-folder-export.ts",
+    "node-sqlite.d.ts"
+  ]
+}

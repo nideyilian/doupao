@@ -1,0 +1,226 @@
+/*
+ * 复古风格皮肤（Retro / 怀旧）。
+ * 风格：暖米色纸张 + 衬线字体 + 厚棕色描边 + 硬边偏移投影 + 小圆角。
+ * - 字体：优先使用系统本地宋体，离线可用且不阻塞首屏。
+ * - 配色：奶油纸底 + 墨棕文字 + 燃橙主色 + 釉青点缀。
+ * - 组件：厚描边 + 硬阴影（无模糊），呈现 70~90 年代印刷 / 广告感。
+ *
+ * 仅覆盖颜色 / 字体 / 圆角 / 阴影 / 组件表面 Token，不触碰布局 Token。
+ */
+
+:root[data-skin='retro'] {
+  /* 衬线主体字体（同时覆盖 Tailwind font-sans 与设计系统 font token） */
+  --font-ui-sans: 'Noto Serif SC', 'Songti SC', 'SimSun', 'STSong', serif;
+  --ds-font-sans: var(--font-ui-sans);
+  --ds-line-height-normal: 1.75;
+  --ds-line-height-relaxed: 1.85;
+
+  /* 旧变量兼容桥 */
+  --background: 38 45% 92%;
+  --foreground: 28 32% 18%;
+  --muted: 36 36% 86%;
+  --muted-foreground: 30 24% 38%;
+  --border: 30 32% 56%;
+  --input: 32 32% 60%;
+  --primary: 18 76% 40%;
+  --primary-foreground: 40 45% 96%;
+  --sidebar: 38 42% 90%;
+  --sidebar-foreground: 28 32% 18%;
+  /* 品牌色板：燃橙主色 */
+  --skin-blue-50: 18 64% 90%;
+  --skin-blue-100: 18 66% 84%;
+  --skin-blue-200: 18 68% 76%;
+  --skin-blue-300: 18 70% 66%;
+  --skin-blue-400: 18 72% 50%;
+  --skin-blue-500: 18 76% 40%;
+  --skin-blue-600: 18 78% 34%;
+  --skin-blue-700: 18 80% 29%;
+  --skin-blue-800: 18 80% 29%;
+  --skin-blue-900: 18 82% 22%;
+  --skin-blue-950: 18 84% 14%;
+
+  /* 语义颜色 Token */
+  --ds-color-canvas: 38 45% 92%;
+  --ds-color-surface: 36 42% 94%;
+  --ds-color-surface-subtle: 36 36% 88%;
+  --ds-color-surface-raised: 38 44% 96%;
+  --ds-color-text: 28 32% 18%;
+  --ds-color-text-muted: 30 24% 38%;
+  --ds-color-text-subtle: 30 20% 40%;
+  --ds-color-text-inverse: 40 45% 96%;
+  --ds-color-border: 30 32% 56%;
+  --ds-color-border-strong: 30 30% 42%;
+  /* 复古专用墨棕描边 */
+  --ds-color-ink: 28 34% 22%;
+  --ds-color-ink-soft: 28 30% 34%;
+  --ds-color-primary: 18 76% 40%;
+  --ds-color-primary-hover: 18 78% 34%;
+  --ds-color-primary-subtle: 18 64% 90%;
+  --ds-color-primary-gradient: linear-gradient(180deg, hsl(18 76% 40%) 0%, hsl(18 78% 34%) 100%);
+  --ds-color-focus: 175 55% 32%;
+  --ds-color-success: 140 40% 40%;
+  --ds-color-success-subtle: 140 34% 90%;
+  --ds-color-warning: 40 90% 50%;
+  --ds-color-warning-subtle: 40 60% 90%;
+  --ds-color-danger: 350 64% 44%;
+  --ds-color-danger-hover: 350 66% 38%;
+  --ds-color-danger-subtle: 350 50% 92%;
+  --ds-color-info: 200 60% 46%;
+  --ds-color-info-subtle: 200 44% 90%;
+  --ds-color-selection-surface: 175 44% 88%;
+  --ds-color-selection-border: 175 40% 52%;
+  --ds-color-selection-text: 28 32% 18%;
+  --ds-color-scrim: 30 30% 10%;
+
+  /* 圆角：小圆角（复古感） */
+  --ds-radius-sm: 6px;
+  --ds-radius-md: 8px;
+  --ds-radius-lg: 10px;
+  --ds-radius-xl: 14px;
+  /* 阴影：硬边偏移（无模糊），印刷感 */
+  --ds-shadow-sm: 2px 2px 0 hsl(var(--ds-color-ink) / 0.3);
+  --ds-shadow-md: 3px 3px 0 hsl(var(--ds-color-ink) / 0.32);
+  --ds-shadow-lg: 5px 5px 0 hsl(var(--ds-color-ink) / 0.34);
+  --ds-shadow-focus: 0 0 0 3px hsl(var(--ds-color-focus) / 0.4);
+}
+
+:root[data-skin='retro'].dark {
+  --font-ui-sans: 'Noto Serif SC', 'Songti SC', 'SimSun', 'STSong', serif;
+  --ds-font-sans: var(--font-ui-sans);
+  --background: 28 24% 12%;
+  --foreground: 38 32% 88%;
+  --muted: 28 20% 18%;
+  --muted-foreground: 36 18% 66%;
+  --border: 30 22% 36%;
+  --input: 30 22% 40%;
+  --primary: 22 78% 56%;
+  --primary-foreground: 28 24% 12%;
+  --sidebar: 28 24% 14%;
+  --sidebar-foreground: 38 32% 88%;
+  --skin-blue-400: 22 80% 62%;
+  --skin-blue-500: 22 78% 56%;
+  --skin-blue-600: 22 80% 48%;
+  --ds-color-canvas: 28 24% 12%;
+  --ds-color-surface: 28 22% 16%;
+  --ds-color-surface-subtle: 28 20% 20%;
+  --ds-color-surface-raised: 28 24% 18%;
+  --ds-color-text: 38 32% 88%;
+  --ds-color-text-muted: 36 18% 66%;
+  --ds-color-text-subtle: 36 16% 56%;
+  --ds-color-text-inverse: 28 24% 12%;
+  --ds-color-border: 30 22% 36%;
+  --ds-color-border-strong: 30 20% 48%;
+  --ds-color-ink: 40 30% 82%;
+  --ds-color-ink-soft: 40 24% 68%;
+  --ds-color-primary: 22 78% 56%;
+  --ds-color-primary-hover: 22 80% 62%;
+  --ds-color-primary-subtle: 22 50% 22%;
+  --ds-color-primary-gradient: linear-gradient(180deg, hsl(22 80% 60%) 0%, hsl(22 80% 52%) 100%);
+  --ds-color-focus: 175 50% 52%;
+  --ds-color-success: 140 44% 52%;
+  --ds-color-success-subtle: 140 30% 22%;
+  --ds-color-warning: 44 90% 58%;
+  --ds-color-warning-subtle: 44 40% 22%;
+  --ds-color-danger: 350 68% 62%;
+  --ds-color-danger-hover: 350 70% 66%;
+  --ds-color-danger-subtle: 350 45% 24%;
+  --ds-color-info: 200 64% 60%;
+  --ds-color-info-subtle: 200 40% 22%;
+  --ds-color-selection-surface: 175 44% 22%;
+  --ds-color-selection-border: 175 44% 56%;
+  --ds-color-selection-text: 38 32% 88%;
+  --ds-shadow-sm: 2px 2px 0 hsl(var(--ds-color-ink) / 0.5);
+  --ds-shadow-md: 3px 3px 0 hsl(var(--ds-color-ink) / 0.52);
+  --ds-shadow-lg: 5px 5px 0 hsl(var(--ds-color-ink) / 0.54);
+}
+
+/* 纸张纹理：淡褐细条纹（复古印刷感） */
+:root[data-skin='retro'] body {
+  background-color: hsl(var(--ds-color-canvas));
+  background-image: repeating-linear-gradient(
+    0deg,
+    hsl(var(--ds-color-ink) / 0.025) 0px,
+    hsl(var(--ds-color-ink) / 0.025) 1px,
+    transparent 1px,
+    transparent 26px
+  );
+}
+
+/* 组件厚描边 + 硬阴影 */
+:root[data-skin='retro'] .ds-card,
+:root[data-skin='retro'] .ds-surface,
+:root[data-skin='retro'] .ds-panel,
+:root[data-skin='retro'] .ds-dialog,
+:root[data-skin='retro'] .ds-popover,
+:root[data-skin='retro'] .ds-menu,
+:root[data-skin='retro'] .ds-toast,
+:root[data-skin='retro'] .ds-tooltip__content,
+:root[data-skin='retro'] .ds-table-container,
+:root[data-skin='retro'] .ds-code-block,
+:root[data-skin='retro'] .ds-fieldset {
+  border: 2px solid hsl(var(--ds-color-ink));
+  box-shadow: 4px 4px 0 hsl(var(--ds-color-ink) / 0.32);
+}
+
+:root[data-skin='retro'] .ds-surface--raised {
+  box-shadow: 5px 5px 0 hsl(var(--ds-color-ink) / 0.34);
+}
+
+:root[data-skin='retro'] .ds-button,
+:root[data-skin='retro'] .ds-icon-button,
+:root[data-skin='retro'] .ds-input,
+:root[data-skin='retro'] .ds-textarea,
+:root[data-skin='retro'] .ds-select__control,
+:root[data-skin='retro'] .ds-search,
+:root[data-skin='retro'] .ds-segmented,
+:root[data-skin='retro'] .ds-chip,
+:root[data-skin='retro'] .ds-badge,
+:root[data-skin='retro'] .ds-stepper {
+  border: 2px solid hsl(var(--ds-color-ink) / 0.85);
+}
+
+:root[data-skin='retro'] .ds-button--primary {
+  background: hsl(var(--ds-color-primary));
+  color: hsl(var(--ds-color-text-inverse));
+  border-color: hsl(var(--ds-color-ink));
+  box-shadow: 3px 3px 0 hsl(var(--ds-color-ink) / 0.34);
+}
+
+:root[data-skin='retro'] .ds-button--primary:hover {
+  background: hsl(var(--ds-color-primary-hover));
+}
+
+:root[data-skin='retro'] .ds-button--danger {
+  border-color: hsl(var(--ds-color-ink));
+  box-shadow: 3px 3px 0 hsl(var(--ds-color-ink) / 0.34);
+}
+
+:root[data-skin='retro'] .ds-input:focus-visible,
+:root[data-skin='retro'] .ds-textarea:focus-visible,
+:root[data-skin='retro'] .ds-select__control:focus-visible,
+:root[data-skin='retro'] .ds-search:focus-within {
+  border-color: hsl(var(--ds-color-ink));
+  outline: 3px solid hsl(var(--ds-color-focus) / 0.4);
+  outline-offset: 2px;
+}
+
+:root[data-skin='retro'] .ds-divider--horizontal {
+  border-top-style: double;
+  border-top-width: 3px;
+  border-top-color: hsl(var(--ds-color-ink) / 0.5);
+}
+
+:root[data-skin='retro'] .ds-tabs__item::after {
+  background: hsl(var(--ds-color-ink));
+}
+
+:root[data-skin='retro'] .ds-thumbnail--selected {
+  box-shadow:
+    0 0 0 2px hsl(var(--ds-color-surface)),
+    0 0 0 4px hsl(var(--ds-color-ink));
+}
+
+:root[data-skin='retro'] .markdown-renderer :where(blockquote) {
+  border-left: 4px double hsl(var(--ds-color-ink));
+  color: hsl(var(--ds-color-text-muted));
+}

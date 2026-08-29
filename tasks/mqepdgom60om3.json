@@ -1,0 +1,45 @@
+{
+  "id": "mqepdgom60om3",
+  "prompt": "参考图片风格即文案内容，衍生相关的图片，衍生不同人物和场景的图片，帮我合理调整布局，去除左上角LOGO",
+  "params": {
+    "size": "720x1280",
+    "quality": "auto",
+    "output_format": "png",
+    "output_compression": null,
+    "moderation": "auto",
+    "n": 20
+  },
+  "actualParams": {
+    "n": 17
+  },
+  "apiProvider": "openai",
+  "apiProfileName": "骏伯",
+  "apiMode": "images",
+  "apiModel": "gpt-image-2",
+  "inputImageIds": [
+    "663c3675ca7be8e3340f5171a1385e08127b1a0659fdad2e961bf689b1e181ac"
+  ],
+  "outputImages": [
+    "ee12f74318f30053a70885bf1846c048cb94d455017cdabdf25694de06faa42b",
+    "0940f9a7cf8897ce2efef8dcab300a0232cf5e707fc6ae709e0ea86de39373b3",
+    "637bee3f8b0411b3e451370da54cb50c75be07487cac894439a52243415d8d2d",
+    "2ed2ee2253def4e36a145dcb0b41dabd00ce5dc8815829090f63011cc4d59953",
+    "ef01fc7e002c308dc183b540340a2c1bf3836333b37c6058ec8584fa0085d385",
+    "d9e17c11987623274a4d433dcd57801b852410b937cdacf8a423ec3de62b2190",
+    "7e2ad0e8659abb75cb4bcf932338a5222905bbb33701f941c5592c24d0530f32",
+    "f9557a9a09bd11b6ae9fe9560da1332625ec2f8860b88ad9c14702d5c444057d",
+    "02128965da0fabaa2031ee575fae7794dcb2ebd8e0912f694240ad3801ee7d8d",
+    "aa3952f4e064e4ba6986d41fd31cd36ae952a5c55f040bc4e5a4c03db0e75408",
+    "5408c344d01d99ebf35b86a7f9d4e46754e81e9c8750c1dc28c1842db15466ea",
+    "eec6f8c0a328da9fa154211898e60f6d0db2da4792fba56c22658a5182c872e5",
+    "d4e45443d9355d2a56ab64589908393bddd42559188e18938203aaae0d16401d",
+    "25f37f69d684141ca0917b86c1f5c381a5813074a2bd55d3b23a22af0c1d9bcb",
+    "f0d86203de0b0e11ccc0a3a6c05378ead0cf0170956e5b15c1b75a3831792e82",
+    "a7772b361fc77abb8cb7cf293be85d8ad0c18de31c7b853438d9b121dd07b8ff",
+    "59323afcb1c7920ade6374ec3d105a1e29cbc8293b86a8287461ed0be77477f9"
+  ],
+  "status": "done",
+  "createdAt": 1781497095862,
+  "finishedAt": 1781497290981,
+  "elapsed": 195119
+}

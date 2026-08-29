@@ -1,0 +1,48 @@
+{
+  "id": "mqet3hqw2d0jv",
+  "prompt": "参考图片生成类似但有不同的图片，确保文案内容不变",
+  "params": {
+    "size": "1280x720",
+    "quality": "auto",
+    "output_format": "jpeg",
+    "output_compression": null,
+    "moderation": "auto",
+    "n": 4
+  },
+  "actualParams": {
+    "n": 4
+  },
+  "apiProvider": "openai",
+  "apiProfileName": "骏伯",
+  "apiMode": "images",
+  "apiModel": "gpt-image-2",
+  "inputImageIds": [
+    "1d8923dfc7f1e592f8bdf7b91f7a683d6d236d09e833b4502e9d9223e2d7e352",
+    "653fd5d03c2a503ab7e105feeea0a8b4a7a12e61684ec6f2c047d76d3daf767c",
+    "d0f1e2e62369cecc8db83489aeff6ad35a135d10b7d64da737036fce57fbb492",
+    "58da37aa1471977d95c61f617601bb62a467f7002676d3ad896becddfb913c67",
+    "b167886baf957a2f8adc3a903e2030c4b03a4dfe302706609d692e003b6409b7",
+    "e067b3b36765e49d39ddfd1c7e6d3ce14ebb6c6a4f37f3e3520c3a16195b4b4e",
+    "3eccab6d9615d566566e27fb4234546507b3bbc86dbe30150e7bd126bc5c3a9c",
+    "739913aab57b44f984f3f94776ff43daa380a41695447ea115349b431370393d",
+    "f7db6338374bcf3946388d2780a0ec1e25fbea4adadcd27cc05dbf91face98e1",
+    "9a58710e02b323497220de62a98af5afa5c068eabe2f6b841f4d4554337f9e2d",
+    "d446e0409945f63394a8f11083b9e0ee87ef499fd4d0c0007257e1c7615eae82",
+    "271e5df7a133b8d50adbf97fd5c951a5d9aed7d5ca3bd7a08b64a7837e7fe592",
+    "e7f3aa5c81546e66f28a67398592d067797cc22a5be850938d9728021c4a90b5",
+    "58f2ad35b5623d495a6a85449ee7d876d2d740f9724b9d7166a691e7fb2384ea",
+    "2502e11dbe3ba239a82ab7460396f30c1850e666a83ccb1ca5d2752b12957eb2",
+    "fbca5caa9894d4c85da4f53f875306740c84a8781b1641b23b2a3d6df9e75dee"
+  ],
+  "inputImageFolderPath": "H:\\工作\\保险\\20260611\\代运营跑量\\大图",
+  "outputImages": [
+    "5ec5312c09134906f33c12bf4889a85d383242b371b724f3a925c29bf31d9158",
+    "3fa5b7c7168b7f3d8b8474f62d872061f7302a8bf705e79718c774dbad84adc3",
+    "83f3b8a3c7ff8e4ac1197bbe5ce680fb53689a0a23cb94029f88d72ff40b4c7a",
+    "fd451a6f352d05b2b6e7eac83e9d5095376037e10714556699c86602157b697d"
+  ],
+  "status": "done",
+  "createdAt": 1781503349144,
+  "finishedAt": 1781503409967,
+  "elapsed": 60823
+}
