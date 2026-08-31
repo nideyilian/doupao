@@ -17,8 +17,13 @@ import {
   TrashIcon as Trash2,
 } from '../../../design-system/icons'
 import { naturalSortBackgrounds } from '../lib/compositeBackgrounds'
-import { createCompositeExportSnapshot, expandCompositeExportItems } from '../lib/compositeExportPlan'
-import { runCompositeV2Export, retryCompositeExportTask } from '../lib/compositeExportRuntime'
+import {
+  createCompositeExportSnapshot,
+  expandCompositeExportItems,
+  type CompositeV2ExportQueueItem,
+} from '../lib/compositeExportPlan'
+import { retryCompositeExportTask } from '../lib/compositeExportRuntime'
+import { pumpExportQueue } from '../lib/compositeExportQueue'
 import { stripTemplateIndex } from '../lib/compositePathTemplates'
 import { renderCompositeV2ToCanvas } from '../lib/compositeRendererV2'
 import { useCompositeV2Store } from '../storeV2'
@@ -26,7 +31,6 @@ import { useStore } from '../../../store'
 import { ExportResultsPanel } from './ExportResultsPanel'
 import { DistributionSettingsPanel } from './DistributionSettingsPanel'
 import { GlobalOutputRulesPanel } from './GlobalOutputRulesPanel'
-import { runDistribution } from '../lib/compositeDistribution'
 import { useAppDialog } from '../../../hooks/useAppDialog'
 import AssetPickerModal from '../../assetLibrary/AssetPickerModal'
 import { assetCommands } from '../../../lib/assetCommands'
@@ -72,11 +76,13 @@ export function BatchExportTab() {
   const archiveExportsToLibrary = useCompositeV2Store((state) => state.archiveExportsToLibrary)
   const setArchiveExportsToLibrary = useCompositeV2Store((state) => state.setArchiveExportsToLibrary)
   const exportStatus = useCompositeV2Store((state) => state.exportStatus)
+  const exportStatusText = useCompositeV2Store((state) => state.exportStatusText)
   const exportCompleted = useCompositeV2Store((state) => state.exportCompleted)
   const exportTotal = useCompositeV2Store((state) => state.exportTotal)
   const history = useCompositeV2Store((state) => state.history)
   const exportSuccesses = useCompositeV2Store((state) => state.exportSuccesses)
   const exportFailures = useCompositeV2Store((state) => state.exportFailures)
+  const exportQueue = useCompositeV2Store((state) => state.exportQueue)
   const setBackgroundFolders = useCompositeV2Store((state) => state.setBackgroundFolders)
   const setRecursiveBackgrounds = useCompositeV2Store((state) => state.setRecursiveBackgrounds)
   const setBackgrounds = useCompositeV2Store((state) => state.setBackgrounds)
@@ -86,25 +92,18 @@ export function BatchExportTab() {
   const setSmartMatchOrientation = useCompositeV2Store((state) => state.setSmartMatchOrientation)
   const setCustomValue = useCompositeV2Store((state) => state.setCustomValue)
   const setPreserveSourceDir = useCompositeV2Store((state) => state.setPreserveSourceDir)
-  const setExportProgress = useCompositeV2Store((state) => state.setExportProgress)
   const setExportStatus = useCompositeV2Store((state) => state.setExportStatus)
+  const setExportStatusText = useCompositeV2Store((state) => state.setExportStatusText)
   const setExportCancelRequested = useCompositeV2Store((state) => state.setExportCancelRequested)
   const setDistributionCancelRequested = useCompositeV2Store((state) => state.setDistributionCancelRequested)
   const pushPreviewBackground = useCompositeV2Store((state) => state.pushPreviewBackground)
   const previousPreviewBackground = useCompositeV2Store((state) => state.previousPreviewBackground)
   const nextPreviewBackground = useCompositeV2Store((state) => state.nextPreviewBackground)
-  const resetExportResults = useCompositeV2Store((state) => state.resetExportResults)
   const addExportSuccess = useCompositeV2Store((state) => state.addExportSuccess)
   const addExportFailure = useCompositeV2Store((state) => state.addExportFailure)
-  const setDistributionProgress = useCompositeV2Store((state) => state.setDistributionProgress)
-  const setDistributionStatus = useCompositeV2Store((state) => state.setDistributionStatus)
-  const resetDistributionResults = useCompositeV2Store((state) => state.resetDistributionResults)
-  const addDistributionSuccess = useCompositeV2Store((state) => state.addDistributionSuccess)
-  const addDistributionFailure = useCompositeV2Store((state) => state.addDistributionFailure)
-  const addHistoryRecord = useCompositeV2Store((state) => state.addHistoryRecord)
-  const setExportTasks = useCompositeV2Store((state) => state.setExportTasks)
+  const enqueueExport = useCompositeV2Store((state) => state.enqueueExport)
+  const clearExportQueue = useCompositeV2Store((state) => state.clearExportQueue)
   const updateExportTask = useCompositeV2Store((state) => state.updateExportTask)
-  const distributionConfig = useCompositeV2Store((state) => state.distributionConfig)
   const distributionStatus = useCompositeV2Store((state) => state.distributionStatus)
   const distributionCompleted = useCompositeV2Store((state) => state.distributionCompleted)
   const distributionTotal = useCompositeV2Store((state) => state.distributionTotal)
@@ -113,7 +112,6 @@ export function BatchExportTab() {
 
   const [backgroundStatus, setBackgroundStatus] = useState('选择文件夹后加载背景图片。')
   const [previewStatus, setPreviewStatus] = useState('加载背景后将随机显示一张预览。')
-  const [runStatusText, setRunStatusText] = useState('请完成背景、预设和尺寸规则配置。')
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null)
   // 预览画布尺寸：跟随当前背景图的真实比例（等比缩放，最大边 960px）。
   // 之前固定用预设 baseCanvas（默认 16:9），导致任何比例的图都被裁切/拉伸成 16:9。
@@ -543,14 +541,19 @@ export function BatchExportTab() {
     setEnabledPresetIdsForRun(nextSelectedIds)
   }
 
-  async function handleStartExport() {
+  /**
+   * 点击「开始导出」：任务即刻「已发送」——把发送时刻的完整配置（深拷贝快照 + 任务流 + 分配规则）
+   * 送入后台队列后立即返回，UI 恢复可继续配置并发送下一个任务；队列泵按顺序在后台逐个执行。
+   */
+  function handleSendExport() {
     if (!selectedGroup || !canStartExport) return
     const startedAt = Date.now()
     const now = new Date()
     const date = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    const id = `export-${startedAt}-${Math.random().toString(36).slice(2, 7)}`
     const snapshot = createCompositeExportSnapshot(
       {
-        id: `export-${startedAt}`,
+        id,
         date,
         backgroundFolders,
         recursive: recursiveBackgrounds,
@@ -568,12 +571,10 @@ export function BatchExportTab() {
       },
       startedAt,
     )
-    resetExportResults()
-    // 每次导出重新显示成功提示条（若上次被关闭）
-    setDismissSuccessNotice(false)
-    // 初始化任务流（每个输出一个任务卡片，含 pending/done/failed 状态）
-    setExportTasks(
-      expandCompositeExportItems(snapshot).map((item) => ({
+    const queueItem: CompositeV2ExportQueueItem = {
+      id,
+      snapshot,
+      tasks: expandCompositeExportItems(snapshot).map((item) => ({
         key: `${item.preset.id}|${item.outputRule.channelName}|${item.outputRule.name}|${item.index}`,
         backgroundPath: item.background.path,
         presetId: item.preset.id,
@@ -585,125 +586,30 @@ export function BatchExportTab() {
         custom: snapshot.custom,
         status: 'pending' as const,
       })),
-    )
-    // 暂停/取消状态存放在 store 中：弹窗关闭重开后，后台任务依旧能被新的 UI 控制
-    setExportCancelRequested(false)
-    setDistributionCancelRequested(false)
-    setExportStatus('running')
-    setExportProgress(0, plannedExportCount)
-    setRunStatusText('正在导出...')
-    const successes: typeof exportSuccesses = []
-    const failures: typeof exportFailures = []
-    try {
-      await runCompositeV2Export(snapshot, {
-        onProgress: setExportProgress,
-        onSuccess: (item) => {
-          successes.push(item)
-          addExportSuccess(item)
-          updateExportTask(`${item.presetId}|${item.channel}|${item.size}|${item.index}`, {
-            status: 'done',
-            outputPath: item.path,
-          })
-        },
-        onFailure: (item) => {
-          failures.push(item)
-          addExportFailure(item)
-          updateExportTask(`${item.presetId}|${item.channel}|${item.size}|${item.index ?? ''}`, {
-            status: 'failed',
-            reason: item.reason,
-          })
-        },
-        shouldPause: () => useCompositeV2Store.getState().exportStatus === 'paused',
-        shouldCancel: () => useCompositeV2Store.getState().exportCancelRequested,
-      })
-      const canceled = useCompositeV2Store.getState().exportCancelRequested
-      setExportStatus(canceled ? 'canceled' : 'completed')
-
-      let finalStatusText = canceled ? '导出已取消。' : `导出完成：${successes.length} 成功，${failures.length} 失败。`
-
-      // Auto distribution
-      let distributionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'canceled' | undefined
-      let distributionSuccessCount = 0
-      let distributionFailureCount = 0
-      let distributionErrors: string[] = []
-      const distributionSuccesses: import('../lib/compositeV2Types').CompositeV2DistributionSuccessItem[] = []
-      const distributionFailures: import('../lib/compositeV2Types').CompositeV2DistributionFailureItem[] = []
-
-      if (!canceled && distributionConfig.enabled && successes.length > 0 && electronApi) {
-        if (!distributionConfig.startDate || !/^(\d{4})(\d{2})(\d{2})$/.test(distributionConfig.startDate)) {
-          finalStatusText += `\n分配跳过：起始日期格式错误（期望 YYYYMMDD）。`
-          distributionStatus = 'failed'
-          distributionErrors.push('起始日期格式错误，期望 YYYYMMDD')
-        } else {
-          setRunStatusText('正在执行分配...')
-          distributionStatus = 'running'
-          setDistributionStatus('running')
-          resetDistributionResults()
-          const distResult = await runDistribution(successes, distributionConfig, electronApi, presets, {
-            onProgress: setDistributionProgress,
-            onSuccess: (item) => {
-              distributionSuccesses.push(item)
-              addDistributionSuccess(item)
-            },
-            onFailure: (item) => {
-              distributionFailures.push(item)
-              addDistributionFailure(item)
-            },
-            shouldCancel: () => useCompositeV2Store.getState().distributionCancelRequested,
-          })
-          distributionSuccessCount = distResult.success
-          distributionFailureCount = distResult.failed
-          distributionErrors = distResult.errors
-          if (distResult.canceled) {
-            distributionStatus = 'canceled'
-            setDistributionStatus('canceled')
-            finalStatusText += `\n分配已取消：已完成 ${distributionSuccessCount} 个。`
-          } else {
-            distributionStatus = distResult.errors.length > 0 && distResult.success === 0 ? 'failed' : 'completed'
-            setDistributionStatus(distributionStatus)
-            finalStatusText += `\n分配完成：${distributionSuccessCount} 成功，${distributionFailureCount} 失败。`
-          }
-          if (distResult.errors.length > 0) {
-            console.error('分发错误：', distResult.errors)
-          }
-        }
-      }
-
-      setRunStatusText(finalStatusText)
-
-      addHistoryRecord({
-        id: snapshot.id,
-        status: canceled ? 'canceled' : failures.length ? 'completed-with-failures' : 'completed',
-        startedAt,
-        endedAt: Date.now(),
+      status: 'queued',
+      startedAt,
+      distributionConfig: useCompositeV2Store.getState().distributionConfig,
+      meta: {
         backgroundFolders,
         recursive: recursiveBackgrounds,
         backgroundCount: backgrounds.length,
         presetGroupName: selectedGroup.name,
         enabledPresetCount: enabledPresets.length,
         plannedCount: plannedExportCount,
-        successCount: successes.length,
-        failureCount: failures.length,
-        successes,
-        failures,
-        distributionStatus,
-        distributionSuccessCount,
-        distributionFailureCount,
-        distributionErrors,
-        distributionSuccesses,
-        distributionFailures,
-      })
-    } catch (error) {
-      setExportStatus('failed')
-      setRunStatusText(error instanceof Error ? error.message : '导出运行失败。')
+      },
     }
+    enqueueExport(queueItem)
+    pumpExportQueue()
+    // 每次发送后重新显示成功提示条（若上次被关闭）
+    setDismissSuccessNotice(false)
+    useStore.getState().showToast('导出任务已发送，将按顺序在后台执行', 'success')
   }
 
   function handlePauseResume() {
     const isPaused = useCompositeV2Store.getState().exportStatus === 'paused'
     const nextPaused = !isPaused
     setExportStatus(nextPaused ? 'paused' : 'running')
-    setRunStatusText(nextPaused ? '导出已暂停。' : '正在继续导出...')
+    setExportStatusText(nextPaused ? '导出已暂停。' : '正在继续导出...')
   }
 
   async function cancelExport(deleteExportedFiles: boolean) {
@@ -711,7 +617,7 @@ export function BatchExportTab() {
     setExportStatus('canceling')
     if (deleteExportedFiles && exportSuccesses.length) {
       const cleanup = await window.electronAPI?.deleteCompositeFiles?.(exportSuccesses.map((item) => item.path))
-      setRunStatusText(
+      setExportStatusText(
         cleanup?.failed.length ? `已取消，${cleanup.failed.length} 个文件删除失败。` : '已取消并删除已导出文件。',
       )
     }
@@ -719,7 +625,7 @@ export function BatchExportTab() {
 
   function handleCancelDistribution() {
     setDistributionCancelRequested(true)
-    setRunStatusText('正在取消分配...')
+    setExportStatusText('正在取消分配...')
   }
 
   /** 打开第一个成功输出的所在目录（资源管理器），失败时给出提示 */
@@ -741,7 +647,7 @@ export function BatchExportTab() {
   /** 单张失败任务重试：走与主导出相同的渲染管线，成功后更新任务与结果列表 */
   async function handleRetryTask(task: import('../lib/compositeV2Types').CompositeV2ExportTask) {
     updateExportTask(task.key, { status: 'running', reason: undefined })
-    setRunStatusText(`正在重试 ${task.presetName} / ${task.size}...`)
+    setExportStatusText(`正在重试 ${task.presetName} / ${task.size}...`)
     try {
       await retryCompositeExportTask(task, {
         onSuccess: (item) => {
@@ -784,6 +690,22 @@ export function BatchExportTab() {
           action: () => void cancelExport(true),
           cancelAction: () => void cancelExport(false),
         })
+      },
+    })
+  }
+
+  /** 取消排队中的导出任务（不影响正在执行的任务） */
+  function handleClearQueue() {
+    const queuedCount = exportQueue.filter((entry) => entry.status === 'queued').length
+    if (queuedCount === 0) return
+    openConfirmDialog({
+      title: '取消排队的导出任务？',
+      message: `将移除 ${queuedCount} 个尚未开始的任务，正在执行的导出不受影响。`,
+      confirmText: '取消排队',
+      tone: 'warning',
+      action: () => {
+        clearExportQueue()
+        useStore.getState().showToast(`已移除 ${queuedCount} 个排队任务`, 'info')
       },
     })
   }
@@ -1225,23 +1147,38 @@ export function BatchExportTab() {
                     <div className="mt-1">{canStartExport ? `预计输出 ${plannedExportCount} 张` : ''}</div>
                   </>
                 ) : (
-                  <div className="mt-1">{runStatusText}</div>
+                  <div className="mt-1">{exportStatusText}</div>
                 )}
               </div>
 
+              {/* 后台导出队列：任务已发送后立即可继续配置并发送下一个，这里展示排队中的任务 */}
+              {exportQueue.filter((entry) => entry.status === 'queued').length > 0 && (
+                <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-ds-primary/30 bg-ds-primary-subtle/50 px-3 py-2 text-xs text-ds-primary dark:border-ds-primary/25 dark:bg-ds-primary/10 dark:text-ds-primary">
+                  <span className="min-w-0 truncate">
+                    后台队列：{exportQueue.filter((entry) => entry.status === 'queued').length} 个任务待导出
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleClearQueue()}
+                    className="shrink-0 rounded border border-ds-primary/35 px-2 py-0.5 font-medium text-ds-primary transition hover:bg-ds-primary-subtle dark:border-ds-primary/30 dark:hover:bg-ds-primary/20"
+                  >
+                    取消排队
+                  </button>
+                </div>
+              )}
+
               <button
                 type="button"
-                onClick={() => void handleStartExport()}
-                disabled={
-                  !canStartExport ||
-                  exportStatus === 'running' ||
-                  exportStatus === 'paused' ||
-                  exportStatus === 'canceling'
-                }
+                onClick={handleSendExport}
+                disabled={!canStartExport}
                 className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-ds-primary px-3 py-2 text-sm font-semibold text-ds-text-inverse transition hover:bg-ds-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
-                <span>开始导出</span>
+                <span>
+                  {exportStatus === 'running' || exportStatus === 'paused' || exportStatus === 'canceling'
+                    ? '加入导出队列'
+                    : '开始导出'}
+                </span>
               </button>
               {(exportStatus === 'running' || exportStatus === 'paused') && (
                 <div className="mt-2 grid grid-cols-2 gap-2">

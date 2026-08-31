@@ -555,6 +555,8 @@ describe('BatchExportTab', () => {
 
     await act(async () => {
       await findButtonByText(renderer!.root, '开始导出')?.props.onClick()
+      // 点击后任务入队，由后台队列泵执行：在同一 act 内冲刷宏任务，等导出落定
+      await new Promise((resolve) => setTimeout(resolve, 0))
     })
 
     expect(useCompositeV2Store.getState().exportStatus).toBe('completed')

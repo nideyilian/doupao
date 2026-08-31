@@ -6,6 +6,7 @@ import { addCompositeHistoryRecord } from './lib/compositeExportHistoryV2'
 import { createDefaultCompositeV2State } from './lib/compositeV2Defaults'
 import { fitCompositeTextLayer } from './lib/compositeTextLayout'
 import { hasLegacyCompositeAssets, migrateLegacyCompositeAssets } from './lib/compositeAssetMigration'
+import type { CompositeV2ExportQueueItem } from './lib/compositeExportPlan'
 import type {
   CompositeV2BackgroundImage,
   CompositeV2ExportStatus,
@@ -41,6 +42,13 @@ type CompositeV2BatchState = {
   exportFailures: CompositeV2FailureItem[]
   /** 导出任务流（每张输出一个任务，含 pending/running/done/failed 状态；不参与持久化） */
   exportTasks: CompositeV2ExportTask[]
+  /**
+   * 后台导出队列（不参与持久化）：点击「开始导出」即入队（任务已发送，UI 立即恢复），
+   * 队列泵按入队顺序在后台逐个执行；正在执行的任务结束后从队列移除。
+   */
+  exportQueue: CompositeV2ExportQueueItem[]
+  /** 当前导出任务的状态文案（结果面板/提示用；不参与持久化） */
+  exportStatusText: string
   distributionStatus: 'idle' | 'running' | 'completed' | 'failed' | 'canceled'
   distributionCompleted: number
   distributionTotal: number
@@ -127,6 +135,12 @@ type CompositeV2StoreActions = {
   updateExportTask: (key: string, patch: Partial<CompositeV2ExportTask>) => void
   resetExportTasks: () => void
   resetExportResults: () => void
+  enqueueExport: (item: CompositeV2ExportQueueItem) => void
+  updateExportQueueItem: (id: string, patch: Partial<CompositeV2ExportQueueItem>) => void
+  removeExportQueueItem: (id: string) => void
+  clearExportQueue: () => void
+  resetExportQueue: () => void
+  setExportStatusText: (text: string) => void
   addExportSuccess: (item: CompositeV2SuccessItem) => void
   addExportFailure: (item: CompositeV2FailureItem) => void
   setDistributionProgress: (completed: number, total: number) => void
@@ -225,6 +239,8 @@ export function createCompositeV2StoreState(): CompositeV2BatchState & Composite
     exportSuccesses: [],
     exportFailures: [],
     exportTasks: [],
+    exportQueue: [],
+    exportStatusText: '请完成背景、预设和尺寸规则配置。',
     distributionStatus: 'idle',
     distributionCompleted: 0,
     distributionTotal: 0,
@@ -638,6 +654,19 @@ function createCompositeV2StoreInitializer(options: CreateCompositeV2StoreOption
             exportTasks: state.exportTasks.map((task) => (task.key === key ? { ...task, ...patch } : task)),
           })),
         resetExportTasks: () => setWithoutHistory(() => ({ exportTasks: [] })),
+        enqueueExport: (item) => setWithoutHistory((state) => ({ exportQueue: [...state.exportQueue, item] })),
+        updateExportQueueItem: (id, patch) =>
+          setWithoutHistory((state) => ({
+            exportQueue: state.exportQueue.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)),
+          })),
+        removeExportQueueItem: (id) =>
+          setWithoutHistory((state) => ({ exportQueue: state.exportQueue.filter((entry) => entry.id !== id) })),
+        clearExportQueue: () =>
+          setWithoutHistory((state) => ({
+            exportQueue: state.exportQueue.filter((entry) => entry.status !== 'queued'),
+          })),
+        resetExportQueue: () => setWithoutHistory(() => ({ exportQueue: [] })),
+        setExportStatusText: (exportStatusText) => setWithoutHistory(() => ({ exportStatusText })),
         resetExportResults: () =>
           setWithoutHistory(() => ({ exportSuccesses: [], exportFailures: [], exportCompleted: 0, exportTotal: 0 })),
         addExportSuccess: (item) =>

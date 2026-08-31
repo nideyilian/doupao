@@ -6,6 +6,8 @@ import {
 import type {
   CompositeV2BackgroundImage,
   CompositeV2CustomVariable,
+  CompositeV2DistributionConfig,
+  CompositeV2ExportTask,
   CompositeV2FitMode,
   CompositeV2OutputRuleGroup,
   CompositeV2Preset,
@@ -43,6 +45,34 @@ export type CompositeV2ExportItem = {
   index: number
   date: string
   custom: string
+}
+
+/**
+ * 后台导出队列中的单个任务（不参与持久化）：
+ * 点击「开始导出」即入队（任务「已发送」），UI 立即恢复可继续配置并发送下一个任务；
+ * 队列泵按入队顺序在后台逐个执行。快照/任务流/分配配置均在发送时刻捕获（深拷贝），
+ * 排队期间修改预设、背景或分配规则不影响已发送的任务。
+ */
+export type CompositeV2ExportQueueItem = {
+  id: string
+  snapshot: CompositeV2ExportSnapshot
+  /** 该任务的输出任务流（发送时展开，运行时写入结果面板） */
+  tasks: CompositeV2ExportTask[]
+  /** queued=等待执行，running=正在后台执行（执行结束后从队列移除） */
+  status: 'queued' | 'running'
+  /** 点击「开始导出」的时间戳（历史记录用） */
+  startedAt: number
+  /** 发送时刻捕获的分配配置：任务按发送时的规则执行 */
+  distributionConfig: CompositeV2DistributionConfig
+  /** 发送时刻捕获的任务元信息（历史记录展示用，避免运行期间配置变化影响记录） */
+  meta: {
+    backgroundFolders: string[]
+    recursive: boolean
+    backgroundCount: number
+    presetGroupName: string
+    enabledPresetCount: number
+    plannedCount: number
+  }
 }
 
 export function createCompositeExportSnapshot(
