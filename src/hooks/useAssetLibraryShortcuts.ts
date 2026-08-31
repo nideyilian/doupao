@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { cycleColorLabel } from '../lib/assetLibraryModel'
 import { useAssetLibraryStore } from '../features/assetLibrary/store'
 import { COLOR_LABEL_NAMES } from '../features/assetLibrary/colorLabels'
+import { useStore } from '../store'
 
 /** 快捷键应忽略的交互元素（输入框 / 内容可编辑 / 树节点菜单等） */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -56,6 +57,9 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return
+      // 模态弹窗/遮罩层打开时让位（后期处理、设置、确认框、遮罩编辑器等），
+      // 避免快捷键穿透到下层素材库造成误操作（如画布 Delete 删图层时误删文件夹）
+      if (document.querySelector('[role="dialog"], .ds-modal-layer')) return
       const key = event.key
       const state = useAssetLibraryStore.getState()
 
@@ -109,7 +113,6 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
               import('../lib/localSave'),
             ])
             const image = await getImage(asset.imageId)
-            const { useStore } = await import('../store')
             const targetPath = resolveImageRevealPath(asset.imageId, useStore.getState().tasks, image)
             if (!targetPath) return
             const result = await openInExplorer(targetPath)
@@ -137,14 +140,10 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
           const count = state.selectedAssetIds.length
           if (lower === 'c') {
             state.copyAssets(state.selectedAssetIds)
-            void import('../store').then(({ useStore }) =>
-              useStore.getState().showToast(`已复制 ${count} 张素材到剪贴板`, 'success'),
-            )
+            useStore.getState().showToast(`已复制 ${count} 张素材到剪贴板`, 'success')
           } else {
             state.cutAssets(state.selectedAssetIds)
-            void import('../store').then(({ useStore }) =>
-              useStore.getState().showToast(`已剪切 ${count} 张素材，粘贴到目标位置`, 'success'),
-            )
+            useStore.getState().showToast(`已剪切 ${count} 张素材，粘贴到目标位置`, 'success')
           }
           return
         }
@@ -156,24 +155,23 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
           void state
             .pasteAssetsIntoCollection(targetId)
             .then((count) => {
-              if (count > 0) {
-                void import('../store').then(({ useStore }) =>
-                  useStore.getState().showToast(`已粘贴 ${count} 张素材`, 'success'),
-                )
-              }
+              if (count > 0) useStore.getState().showToast(`已粘贴 ${count} 张素材`, 'success')
             })
-            .catch(() => {
-              void import('../store').then(({ useStore }) => useStore.getState().showToast('粘贴失败，请重试', 'error'))
-            })
+            .catch(() => useStore.getState().showToast('粘贴失败，请重试', 'error'))
           return
         }
         return
       }
       if (event.altKey) return
 
-      // 文件夹树行焦点：Delete/Backspace/F2 由树行自己处理（删除文件夹/重命名），
-      // 否则会冒泡到这里误删选中素材或与行内 F2 双重触发
-      if (isFolderTreeFocus(event.target) && (key === 'Delete' || key === 'Backspace' || key === 'F2')) return
+      // 文件夹树行焦点：Delete/Backspace/F2/空格/Enter 由树行自己处理（删除文件夹/重命名/选中），
+      // 否则会冒泡到这里误删选中素材、误开预览/查看器，或与行内按键双重触发
+      if (
+        isFolderTreeFocus(event.target) &&
+        (key === 'Delete' || key === 'Backspace' || key === 'F2' || key === ' ' || key === 'Enter')
+      ) {
+        return
+      }
 
       // 查看器打开时：其余快捷键交给查看器（它有自己的 keydown 监听）
       if (state.viewerAssetId) return
@@ -223,16 +221,19 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
           // 有选中素材：移入回收站（Eagle 语义）
           void state
             .moveToTrash(targets)
-            .then(() => {
-              void import('../store').then(({ useStore }) =>
-                useStore.getState().showToast(`已移入回收站（${targets.length} 张）`, 'success'),
-              )
-            })
-            .catch(() => {
-              void import('../store').then(({ useStore }) => useStore.getState().showToast('移入回收站失败', 'error'))
-            })
+            .then(() => useStore.getState().showToast(`已移入回收站（${targets.length} 张）`, 'success'))
+            .catch(() => useStore.getState().showToast('移入回收站失败', 'error'))
           return
         }
+        // 无素材选中：快速预览打开时先关闭预览，不做删除（避免误删当前文件夹）
+        if (state.quickPreviewAssetId) {
+          state.setQuickPreviewAsset(null)
+          return
+        }
+        // 无素材选中：InputBar 有选中任务/收藏卡片时由它的 Delete 快捷键处理，
+        // 避免「想删任务却删了当前文件夹」
+        const mainState = useStore.getState()
+        if (mainState.selectedTaskIds.length > 0 || mainState.selectedFavoriteCollectionIds.length > 0) return
         // 无选中素材且当前在文件夹中：删除当前文件夹（deleteFolders 内含确认弹窗）
         if (typeof state.scope === 'object' && state.scope.kind === 'collection') {
           void state.deleteFolders([state.scope.id])
@@ -253,14 +254,8 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
           event.preventDefault()
           void state
             .patchAssets(targets, { rating })
-            .then(() => {
-              void import('../store').then(({ useStore }) =>
-                useStore.getState().showToast(`已评分 ${rating} 星`, 'success'),
-              )
-            })
-            .catch(() => {
-              void import('../store').then(({ useStore }) => useStore.getState().showToast('评分失败', 'error'))
-            })
+            .then(() => useStore.getState().showToast(`已评分 ${rating} 星`, 'success'))
+            .catch(() => useStore.getState().showToast('评分失败', 'error'))
         }
         return
       }
@@ -269,12 +264,8 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
           event.preventDefault()
           void state
             .patchAssets(targets, { rating: 0 })
-            .then(() => {
-              void import('../store').then(({ useStore }) => useStore.getState().showToast('已清除评分', 'success'))
-            })
-            .catch(() => {
-              void import('../store').then(({ useStore }) => useStore.getState().showToast('清除评分失败', 'error'))
-            })
+            .then(() => useStore.getState().showToast('已清除评分', 'success'))
+            .catch(() => useStore.getState().showToast('清除评分失败', 'error'))
         }
         return
       }
@@ -285,19 +276,15 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
         event.preventDefault()
         void state
           .patchAssets(targets, { favorite: nextFavorite })
-          .then(() => {
-            void import('../store').then(({ useStore }) =>
-              useStore
-                .getState()
-                .showToast(
-                  nextFavorite ? `已收藏 ${targets.length} 张素材` : `已取消收藏 ${targets.length} 张素材`,
-                  'success',
-                ),
-            )
-          })
-          .catch(() => {
-            void import('../store').then(({ useStore }) => useStore.getState().showToast('收藏操作失败', 'error'))
-          })
+          .then(() =>
+            useStore
+              .getState()
+              .showToast(
+                nextFavorite ? `已收藏 ${targets.length} 张素材` : `已取消收藏 ${targets.length} 张素材`,
+                'success',
+              ),
+          )
+          .catch(() => useStore.getState().showToast('收藏操作失败', 'error'))
         return
       }
       if (key.toLocaleLowerCase() === 'c') {
@@ -307,16 +294,10 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
         event.preventDefault()
         void state
           .patchAssets(targets, { colorLabel: next })
-          .then(() => {
-            void import('../store').then(({ useStore }) =>
-              useStore
-                .getState()
-                .showToast(next ? `颜色标签：${COLOR_LABEL_NAMES[next]}` : '已清除颜色标签', 'success'),
-            )
-          })
-          .catch(() => {
-            void import('../store').then(({ useStore }) => useStore.getState().showToast('设置颜色标签失败', 'error'))
-          })
+          .then(() =>
+            useStore.getState().showToast(next ? `颜色标签：${COLOR_LABEL_NAMES[next]}` : '已清除颜色标签', 'success'),
+          )
+          .catch(() => useStore.getState().showToast('设置颜色标签失败', 'error'))
       }
     }
     // capture 阶段监听：悬停预览时可在目标（焦点卡片）之前处理并按需阻止其自身 keydown，避免双触发

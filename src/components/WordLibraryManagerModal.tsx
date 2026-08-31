@@ -85,6 +85,19 @@ export default function WordLibraryManagerModal() {
   )
   const selectedGroup = activeGroups.find((group) => group.id === groupId) ?? null
   const activeEntry = activeEntries.find((entry) => entry.id === entryId) ?? null
+  // 词条编辑草稿：名称或候选值相对已保存内容发生变化即视为有未保存修改（候选值按保存时的归一化方式比较）
+  const entryDirty = Boolean(
+    activeEntry &&
+    (entryName.trim() !== activeEntry.key ||
+      [
+        ...new Set(
+          entryValues
+            .split('\n')
+            .map((value) => value.trim())
+            .filter(Boolean),
+        ),
+      ].join('\n') !== activeEntry.entries.join('\n')),
+  )
   const referenceCounts = useMemo(() => {
     const result = new Map<string, number>()
     for (const source of [prompt, ...workspaceTabs.map((tab) => tab.prompt)]) {
@@ -318,9 +331,39 @@ export default function WordLibraryManagerModal() {
     )
   }
 
-  useCloseOnEscape(open, () => setOpen(false))
+  // Esc 关闭带未保存保护：词条编辑有改动时先确认，避免直接丢失修改
+  const closeWithUnsavedProtection = () => {
+    if (entryDirty) {
+      confirm({
+        title: '放弃未保存的修改？',
+        message: '当前词条的修改尚未保存，关闭将丢失这些修改。',
+        confirmText: '放弃修改',
+        tone: 'warning',
+        action: () => setOpen(false),
+      })
+      return
+    }
+    setOpen(false)
+  }
+  useCloseOnEscape(open, closeWithUnsavedProtection)
   usePreventBackgroundScroll(open, modalRef)
   useDialogFocusTrap(open, modalRef)
+
+  // Delete/Backspace：删除选中的词条（与「删除」按钮同一确认流程；仅词条库视图生效）
+  useEffect(() => {
+    if (!open || view !== 'library') return
+    const handleDeleteShortcut = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey) return
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      const target = event.target as HTMLElement | null
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (selectedEntryIds.length === 0) return
+      event.preventDefault()
+      requestBatchDelete()
+    }
+    window.addEventListener('keydown', handleDeleteShortcut)
+    return () => window.removeEventListener('keydown', handleDeleteShortcut)
+  })
 
   if (!open) return null
 

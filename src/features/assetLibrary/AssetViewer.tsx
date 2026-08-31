@@ -124,6 +124,14 @@ function AssetViewerInner() {
   useEffect(() => {
     if (!viewerAssetId) return
     const onKey = (event: KeyboardEvent) => {
+      // 输入框/文本域内不拦截（如右侧「注释」编辑中按空格、退格、方向键、字母应正常打字）
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.closest('input, textarea, select, [contenteditable="true"]') || target.isContentEditable)
+      ) {
+        return
+      }
       if (event.key === 'Escape' || event.key === ' ') {
         event.preventDefault()
         event.stopImmediatePropagation()
@@ -157,6 +165,24 @@ function AssetViewerInner() {
           void patchAssets([viewerAssetId], { colorLabel: cycleColorLabel(current.colorLabel) }).catch(() =>
             useStore.getState().showToast('操作失败', 'error'),
           )
+      } else if (event.key === 'Delete' || event.key === 'Backspace') {
+        // Eagle 式：删除当前素材（移入回收站），自动切换到下一张；删完最后一张则关闭查看器
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        void (async () => {
+          const assetStore = useAssetLibraryStore.getState()
+          try {
+            await assetStore.moveToTrash([viewerAssetId])
+            useStore.getState().showToast('已移入回收站', 'success')
+            const remaining = useAssetLibraryStore
+              .getState()
+              .viewerAssetIds.filter((id) => id !== viewerAssetId && useAssetLibraryStore.getState().assetsById[id])
+            if (remaining.length > 0) setViewerAsset(remaining[0])
+            else closeViewer()
+          } catch {
+            useStore.getState().showToast('操作失败，请重试', 'error')
+          }
+        })()
       }
     }
     window.addEventListener('keydown', onKey, true)

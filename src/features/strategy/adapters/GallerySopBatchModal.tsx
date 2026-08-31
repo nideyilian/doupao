@@ -355,6 +355,7 @@ export default function GallerySopBatchModal({
   initialAutoGenerate = false,
   initialSecondReference = false,
   autoStart = false,
+  countsSync,
   workspaceTabId,
   folderKey,
   visible = true,
@@ -396,6 +397,11 @@ export default function GallerySopBatchModal({
     autoGenerate: boolean
     secondReference: boolean
   }) => void
+  /**
+   * 输入栏胶囊的批次参数外部同步信号：nonce 每次变化时把 promptCount / imagesPerPrompt /
+   * autoGenerate 合入弹窗内部状态，保证输入栏直接修改后弹窗内保持一致。
+   */
+  countsSync?: { promptCount: number; imagesPerPrompt: number; autoGenerate: boolean; nonce: number }
 }) {
   const { largeView, toggleLargeView } = useLargeModalMode(PROMPT_MANAGEMENT_MODAL_MODE_STORAGE_KEY)
   const items = useRequirementPrototype((state) => state.sopLibrary)
@@ -981,6 +987,16 @@ export default function GallerySopBatchModal({
     if (prompts.length > 0) persistPromptRun(prompts, sources, nextAutoGenerate)
     else writeRunPointer(activeRunIdRef.current, prompts, nextAutoGenerate)
   }
+
+  // 输入栏胶囊的批次参数外部同步：nonce 变化时合入弹窗状态，保持两处一致
+  useEffect(() => {
+    if (!countsSync) return
+    setPromptCount(countsSync.promptCount)
+    setImagesPerPrompt(countsSync.imagesPerPrompt)
+    autoGenerateRef.current = countsSync.autoGenerate
+    setAutoGenerate(countsSync.autoGenerate)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [countsSync?.nonce])
 
   const toggleSecondReference = (nextSecondReference: boolean) => {
     secondReferenceRef.current = nextSecondReference
@@ -2004,13 +2020,22 @@ export default function GallerySopBatchModal({
   useEffect(() => {
     if (!visible || !libraryContextMenu) return
     const closeContextMenu = () => setLibraryContextMenu(null)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // 右键菜单打开期间 Esc 优先关闭菜单；capture 阶段拦截，避免触发弹窗级 escStack 关闭整个批量弹窗
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setLibraryContextMenu(null)
+    }
     window.addEventListener('resize', closeContextMenu)
     window.addEventListener('blur', closeContextMenu)
     document.addEventListener('mousedown', closeContextMenu)
+    window.addEventListener('keydown', handleKeyDown, true)
     return () => {
       window.removeEventListener('resize', closeContextMenu)
       window.removeEventListener('blur', closeContextMenu)
       document.removeEventListener('mousedown', closeContextMenu)
+      window.removeEventListener('keydown', handleKeyDown, true)
     }
   }, [libraryContextMenu, visible])
 
@@ -2243,7 +2268,7 @@ export default function GallerySopBatchModal({
                 </div>
 
                 {selectedSop && (
-                  <details className="group relative shrink-0">
+                  <details className="group relative shrink-0" open>
                     <summary
                       aria-label="打开批次设置"
                       className="flex h-ds-control-sm cursor-pointer list-none items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2.5 text-xs text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary [&::-webkit-details-marker]:hidden"

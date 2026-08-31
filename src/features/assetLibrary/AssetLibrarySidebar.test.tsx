@@ -73,6 +73,10 @@ beforeEach(() => {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   })
+  vi.stubGlobal('window', {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })
 })
 
 describe('folder keyboard shortcuts', () => {

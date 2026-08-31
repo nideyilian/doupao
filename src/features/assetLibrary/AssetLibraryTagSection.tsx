@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { IconButton, Menu, MenuItem, MenuSeparator, Tooltip } from '../../design-system'
 import {
   CheckIcon,
@@ -345,11 +345,21 @@ function TagRow({
   const tags = useAssetLibraryStore((state) => state.tags)
   const renameTag = useAssetLibraryStore((state) => state.renameTag)
 
-  const close = () => {
+  const close = useCallback(() => {
     setMenuOpen(false)
     setView('main')
     if (menuOpen) triggerRef.current?.focus()
-  }
+  }, [menuOpen])
+
+  // 焦点在菜单外时（hover/点击按钮打开菜单），Esc 由 window 级兜底关闭
+  useEffect(() => {
+    if (!menuOpen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [menuOpen, close])
 
   const startRename = () => {
     setDraft(tag.name)
@@ -533,8 +543,15 @@ function AssetLibraryTagSectionInner({ counts, filtering, filterNeedle }: AssetL
     const onMouseDown = (event: globalThis.MouseEvent) => {
       if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) setContextMenu(null)
     }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setContextMenu(null)
+    }
     document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
   }, [contextMenu])
 
   const tree = useMemo(() => buildTagTree(tags), [tags])

@@ -81,7 +81,7 @@ import {
   SparklesIcon,
 } from '../design-system/icons'
 import { getGallerySopPromptRunStorageKey, type GallerySopRunStatus } from '../features/strategy/adapters/gallerySopRun'
-import { getSopRunCounts, getSopTotalImageCount } from '../features/strategy/sopPromptBatch'
+import { getSopRunCounts, getSopTotalImageCount, MAX_SOP_IMAGES_PER_PROMPT } from '../features/strategy/sopPromptBatch'
 import { generateVariablePromptTwoPhase } from '../features/strategy/adapters/storeSopGeneration'
 import {
   DEFAULT_DERIVE_COPY_MODE,
@@ -99,7 +99,7 @@ import { normalizePromptVariableMarkers, replaceVariableNameInPrompt } from '../
 import { buildVariableColorMap } from '../lib/promptVariableColors'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
-import { Badge, useDialogFocusTrap } from '../design-system'
+import { Badge, Switch, useDialogFocusTrap } from '../design-system'
 import { useAssetLibraryStore } from '../features/assetLibrary/store'
 import { APPLY_SOP_TO_GALLERY_EVENT } from '../lib/assetCommands'
 
@@ -766,6 +766,11 @@ export default function InputBar() {
   const [gallerySopPromptCountsByTab, setGallerySopPromptCountsByTab] = useState<Record<string, number>>({})
   const [gallerySopImagesPerPromptByTab, setGallerySopImagesPerPromptByTab] = useState<Record<string, number>>({})
   const [gallerySopAutoGenerateByTab, setGallerySopAutoGenerateByTab] = useState<Record<string, boolean>>({})
+  /** 输入栏直接修改批次参数时递增，作为 GallerySopBatchModal 的外部同步信号 */
+  const [gallerySopCountsNonce, setGallerySopCountsNonce] = useState(0)
+  /** 输入栏数量输入框的本地编辑草稿：null 表示跟随 store 值，编辑期间显示草稿，失焦回落到规范化值 */
+  const [gallerySopPromptCountDraft, setGallerySopPromptCountDraft] = useState<string | null>(null)
+  const [gallerySopImagesPerPromptDraft, setGallerySopImagesPerPromptDraft] = useState<string | null>(null)
   const [gallerySopSecondReferenceByTab, setGallerySopSecondReferenceByTab] = useState<Record<string, boolean>>({})
   const [gallerySopRunStatusByTab, setGallerySopRunStatusByTab] = useState<Record<string, GallerySopRunStatus>>({})
   const [taskMoveMenuOpen, setTaskMoveMenuOpen] = useState(false)
@@ -883,6 +888,40 @@ export default function InputBar() {
       setGallerySopSecondReferenceByTab((current) => ({ ...current, [gallerySopScopeKey]: counts.secondReference }))
     },
     [gallerySopScopeKey],
+  )
+
+  /** 输入栏胶囊「自动生图」开关：直接切换并弹窗提示，同时通过 nonce 信号同步已挂载的提示词管理弹窗。 */
+  const toggleGallerySopAutoGenerate = useCallback(() => {
+    const next = !gallerySopAutoGenerate
+    setGallerySopAutoGenerateByTab((current) => ({ ...current, [gallerySopScopeKey]: next }))
+    setGallerySopCountsNonce((current) => current + 1)
+    showToast(next ? '自动生图已开启' : '自动生图已关闭', 'success')
+  }, [gallerySopAutoGenerate, gallerySopScopeKey, showToast])
+
+  /** 输入栏胶囊「提示词数量」直接输入：规范化后写入并同步弹窗。 */
+  const handleGallerySopPromptCountInput = useCallback(
+    (raw: string) => {
+      setGallerySopPromptCountDraft(raw)
+      const value = Number(raw)
+      if (!Number.isFinite(value) || value < 1) return
+      const normalized = getSopRunCounts(value, gallerySopImagesPerPrompt).promptCount
+      setGallerySopPromptCountsByTab((current) => ({ ...current, [gallerySopScopeKey]: normalized }))
+      setGallerySopCountsNonce((current) => current + 1)
+    },
+    [gallerySopImagesPerPrompt, gallerySopScopeKey],
+  )
+
+  /** 输入栏胶囊「每条图片数」直接输入：规范化后写入并同步弹窗。 */
+  const handleGallerySopImagesPerPromptInput = useCallback(
+    (raw: string) => {
+      setGallerySopImagesPerPromptDraft(raw)
+      const value = Number(raw)
+      if (!Number.isFinite(value) || value < 1) return
+      const normalized = getSopRunCounts(gallerySopPromptCount, value).imagesPerPrompt
+      setGallerySopImagesPerPromptByTab((current) => ({ ...current, [gallerySopScopeKey]: normalized }))
+      setGallerySopCountsNonce((current) => current + 1)
+    },
+    [gallerySopPromptCount, gallerySopScopeKey],
   )
   const activeGallerySop = useMemo(
     () => sopItems.find((item) => item.id === gallerySopId) ?? null,
@@ -1227,6 +1266,36 @@ export default function InputBar() {
     setConfirmDialog,
     showToast,
     tasks,
+  ])
+
+  // Delete/Backspace：删除选中的任务或收藏卡片（Eagle 式）。
+  // 素材库选中素材 / 查看器打开时的 Delete 由素材库快捷键与查看器自身处理，这里让位。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.closest('input, textarea, select, [contenteditable="true"]') || target.isContentEditable)
+      ) {
+        return
+      }
+      if (appMode !== 'gallery') return
+      const assetState = useAssetLibraryStore.getState()
+      if (assetState.selectedAssetIds.length > 0 || assetState.viewerAssetId) return
+      if (selectedTaskIds.length === 0 && selectedFavoriteCollectionIds.length === 0) return
+      event.preventDefault()
+      if (selectedTaskIds.length > 0) handleDeleteSelected()
+      else handleDeleteSelectedFavoriteCollections()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [
+    appMode,
+    handleDeleteSelected,
+    handleDeleteSelectedFavoriteCollections,
+    selectedFavoriteCollectionIds.length,
+    selectedTaskIds.length,
   ])
 
   const maskDraft = useStore((s) => s.maskDraft)
@@ -3370,12 +3439,33 @@ export default function InputBar() {
             >
               <CloseIcon className="h-3.5 w-3.5" />
             </button>
-            <span
-              className="inline-flex h-ds-control-md shrink-0 items-center rounded-full border border-ds-border/70 bg-ds-surface/55 px-3 text-xs font-medium text-ds-muted shadow-sm dark:border-ds-border dark:bg-ds-surface"
-              title="批次设置（提示词数量 / 每条图片数 / 自动生图 / 二次参考）请在「提示词管理」中调整"
+            <label
+              className="inline-flex h-ds-control-md shrink-0 items-center gap-1 rounded-full border border-ds-border/70 bg-ds-surface/55 pl-2.5 pr-2 text-xs font-medium text-ds-muted shadow-sm dark:border-ds-border dark:bg-ds-surface dark:text-ds-muted"
+              title="提示词数量 × 每条图片数（直接修改，实时生效）"
             >
-              {gallerySopPromptCount} 条 × {gallerySopImagesPerPrompt} 张
-            </span>
+              <input
+                type="number"
+                min={1}
+                value={gallerySopPromptCountDraft ?? String(gallerySopPromptCount)}
+                onChange={(event) => handleGallerySopPromptCountInput(event.target.value)}
+                onBlur={() => setGallerySopPromptCountDraft(null)}
+                aria-label="提示词数量"
+                className="w-9 bg-transparent text-center font-semibold text-ds-text outline-none dark:text-ds-text-subtle"
+              />
+              <span>条</span>
+              <span className="text-ds-muted">×</span>
+              <input
+                type="number"
+                min={1}
+                max={MAX_SOP_IMAGES_PER_PROMPT}
+                value={gallerySopImagesPerPromptDraft ?? String(gallerySopImagesPerPrompt)}
+                onChange={(event) => handleGallerySopImagesPerPromptInput(event.target.value)}
+                onBlur={() => setGallerySopImagesPerPromptDraft(null)}
+                aria-label="每条提示词生成图片数"
+                className="w-9 bg-transparent text-center font-semibold text-ds-text outline-none dark:text-ds-text-subtle"
+              />
+              <span>张</span>
+            </label>
             <span
               className="inline-flex h-ds-control-md shrink-0 items-center rounded-full bg-ds-primary-subtle px-3 text-xs font-medium text-ds-primary dark:bg-ds-primary/10 dark:text-ds-primary"
               title={`${gallerySopPromptCount} 条提示词 × 每条 ${gallerySopImagesPerPrompt} 张`}
@@ -3386,12 +3476,17 @@ export default function InputBar() {
               共同参考 · {sharedReferenceCount} 张
             </span>
             <span
-              className={`inline-flex h-ds-control-md shrink-0 items-center rounded-full px-3 text-xs font-medium ${gallerySopAutoGenerate ? 'bg-ds-primary-subtle text-ds-primary dark:bg-ds-primary/15 dark:text-ds-primary' : 'bg-ds-surface text-ds-muted dark:bg-ds-surface dark:text-ds-muted'}`}
-              title={
-                gallerySopAutoGenerate ? '提示词完成后自动生图已开启' : '提示词完成后不会自动生图，可在提示词管理中开启'
-              }
+              className="inline-flex h-ds-control-md shrink-0 items-center rounded-full border border-ds-border/70 bg-ds-surface/55 pl-2.5 pr-1 shadow-sm dark:border-ds-border dark:bg-ds-surface"
+              title={gallerySopAutoGenerate ? '自动生图已开启，提示词生成后自动出图' : '自动生图已关闭'}
             >
-              自动生图{gallerySopAutoGenerate ? '开' : '关'}
+              <Switch
+                checked={gallerySopAutoGenerate}
+                onCheckedChange={toggleGallerySopAutoGenerate}
+                disabled={gallerySopIsRunning}
+                aria-label="自动生图"
+                label={<span className="text-xs">自动生图</span>}
+                className="gap-1.5"
+              />
             </span>
           </>
         )}
@@ -4564,6 +4659,12 @@ export default function InputBar() {
               syncInitialGenerationCounts
               initialBrief={prompt}
               initialAutoGenerate={gallerySopAutoGenerateByTab[scopeKey] ?? false}
+              countsSync={{
+                promptCount: gallerySopPromptCountsByTab[scopeKey] ?? 5,
+                imagesPerPrompt: gallerySopImagesPerPromptByTab[scopeKey] ?? 1,
+                autoGenerate: gallerySopAutoGenerateByTab[scopeKey] ?? false,
+                nonce: gallerySopCountsNonce,
+              }}
               initialSecondReference={gallerySopSecondReferenceByTab[scopeKey] ?? false}
               autoStart={gallerySopAutoStartTabId === scopeKey}
               onAutoStartConsumed={() => setGallerySopAutoStartTabId(null)}

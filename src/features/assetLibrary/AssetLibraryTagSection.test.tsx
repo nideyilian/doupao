@@ -56,6 +56,10 @@ beforeEach(() => {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   })
+  vi.stubGlobal('window', {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })
   useAssetLibraryStore.setState({
     tags: [makeTag('t1', '品牌'), makeTag('t2', '风格')],
     assetsById: { a: makeAsset('a', { tagIds: ['t1'] }) },

@@ -1,6 +1,7 @@
 import { CheckIcon as Check, CloseIcon as X, FileImageIcon as FileImage } from '../../design-system/icons'
 import { Button, IconButton } from '../../design-system'
 import { isModalBackdropEvent } from '../../lib/modalBackdrop'
+import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
 import { useStore } from '../../store'
 import SopCoverImage from './SopCoverImage'
 import type { SopCoverCandidate } from './sopCover'
@@ -25,6 +26,8 @@ export default function SopCoverPickerDialog({
   onClose: () => void
 }) {
   const showToast = useStore((state) => state.showToast)
+  // Esc 关闭浮层（组件仅在打开时挂载，挂载即注册）
+  useCloseOnEscape(true, onClose)
 
   return (
     <div

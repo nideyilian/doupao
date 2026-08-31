@@ -563,6 +563,22 @@ export default function SopManagementCenter({
     return () => window.removeEventListener('keydown', handleShortcut)
   }, [itemDraft, onSaveItem])
 
+  // Delete/Backspace：删除选中的 SOP（与「删除所选」按钮走同一确认流程；仅 SOP 库标签页生效）
+  useEffect(() => {
+    if (tab !== 'library') return
+    const handleDeleteShortcut = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey) return
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      if (selectedIds.size === 0) return
+      const target = event.target as HTMLElement | null
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
+      event.preventDefault()
+      batchDeleteSelected()
+    }
+    window.addEventListener('keydown', handleDeleteShortcut)
+    return () => window.removeEventListener('keydown', handleDeleteShortcut)
+  })
+
   const selectMeta = (item: SopMetaInstruction) => {
     if (item.id === selectedMetaId) return
     const select = () => {

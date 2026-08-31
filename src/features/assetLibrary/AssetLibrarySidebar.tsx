@@ -831,11 +831,21 @@ function RowActions({
     return collectionId ? computeMoveDestinations(collections, collectionId) : []
   }, [menuOpen, collectionId, collections])
 
-  const close = () => {
+  const close = useCallback(() => {
     setMenuOpen(false)
     setView('main')
     if (menuOpen) triggerRef.current?.focus()
-  }
+  }, [menuOpen])
+
+  // 焦点在菜单外时（hover/点击按钮打开菜单），Esc 由 window 级兜底关闭
+  useEffect(() => {
+    if (!menuOpen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [menuOpen, close])
 
   return (
     <span
@@ -1270,8 +1280,15 @@ function CollectionTreeItem({
     const onMouseDown = (event: MouseEvent) => {
       if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) setContextMenu(null)
     }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setContextMenu(null)
+    }
     document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
   }, [contextMenu])
 
   const finishRename = () => {
@@ -1600,10 +1617,28 @@ function AssetLibrarySidebar({
     [infoCollectionId],
   )
   const [batchMoveOpen, setBatchMoveOpen] = useState(false)
+  const batchMoveRef = useRef<HTMLSpanElement>(null)
   const batchDestinations = useMemo(
     () => (selectedFolderIds.length > 0 ? computeBatchMoveDestinations(collections, selectedFolderIds) : []),
     [collections, selectedFolderIds],
   )
+
+  // 批量移动菜单：Esc 兜底 + 点击菜单外关闭（含触发按钮所在容器，避免干扰菜单项点击）
+  useEffect(() => {
+    if (!batchMoveOpen) return
+    const onMouseDown = (event: MouseEvent) => {
+      if (batchMoveRef.current && !batchMoveRef.current.contains(event.target as Node)) setBatchMoveOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setBatchMoveOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [batchMoveOpen])
 
   // ===== 文件夹拖拽（Eagle 式同级排序/嵌套）=====
   /** 拖拽中的文件夹 id 列表（ref 读取不触发渲染；多选拖拽 = 全部选中文件夹） */
@@ -1818,8 +1853,15 @@ function AssetLibrarySidebar({
         setCollectionRootMenu(null)
       }
     }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCollectionRootMenu(null)
+    }
     document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
   }, [collectionRootMenu])
 
   // 筛选侧栏条目（本地过滤，纯 UI；命中父节点时保留整棵子树）
@@ -2236,7 +2278,7 @@ function AssetLibrarySidebar({
           >
             合并
           </button>
-          <span className="relative">
+          <span ref={batchMoveRef} className="relative">
             <button
               type="button"
               className="rounded px-1.5 py-0.5 text-ds-foreground outline-none hover:bg-ds-muted/20"

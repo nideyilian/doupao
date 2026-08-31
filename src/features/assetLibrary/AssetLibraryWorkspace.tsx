@@ -610,43 +610,9 @@ function AssetLibraryWorkspaceInner() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [selectAllVisible])
 
-  // Ctrl+Z / Cmd+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做（Eagle 式多步撤销栈；输入框内不拦截）
-  useEffect(() => {
-    const isEditable = (target: EventTarget | null) =>
-      target instanceof HTMLElement &&
-      (target.closest('input, textarea, select, [contenteditable="true"]') || target.isContentEditable)
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey)) return
-      const key = event.key.toLocaleLowerCase()
-      const store = useAssetLibraryStore.getState()
-      if (key === 'z' && !event.shiftKey) {
-        if (store.undoStack.length === 0) return
-        if (isEditable(event.target)) return
-        if (!document.querySelector('[data-testid="asset-library-workspace"]')) return
-        event.preventDefault()
-        void store.undo()
-        return
-      }
-      if (key === 'z' && event.shiftKey) {
-        if (store.redoStack.length === 0) return
-        if (isEditable(event.target)) return
-        if (!document.querySelector('[data-testid="asset-library-workspace"]')) return
-        event.preventDefault()
-        void store.redo()
-        return
-      }
-      if (key === 'y') {
-        if (store.redoStack.length === 0) return
-        if (isEditable(event.target)) return
-        if (!document.querySelector('[data-testid="asset-library-workspace"]')) return
-        event.preventDefault()
-        void store.redo()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  // Ctrl+Z / Cmd+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做（Eagle 式多步撤销栈；输入框内不拦截）。
+  // 注意：素材库全局快捷键 hook（useAssetLibraryShortcuts，capture 阶段）已实现 Ctrl+Z/Y 处理，
+  // 这里不再重复监听，避免一次按键触发两次撤销（撤销跳步、可撤销次数减半）。
 
   // 服务商筛选选项（来自已归档素材的来源快照）
   const providerOptions = useMemo(() => {

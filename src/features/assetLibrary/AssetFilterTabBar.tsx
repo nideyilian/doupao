@@ -207,6 +207,7 @@ function AssetFilterTabBar() {
     <span
       key={key}
       role="tab"
+      tabIndex={0}
       aria-selected={active}
       data-testid={`asset-filter-tab-${key}`}
       title={active ? `点击取消筛选：${label}` : `点击筛选：${label}`}

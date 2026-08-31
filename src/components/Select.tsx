@@ -180,6 +180,8 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
     if (disabled) return
     if (event.key === 'Escape' && isOpen) {
       event.preventDefault()
+      // 阻止冒泡：避免外层弹窗的全局 Esc（useCloseOnEscape）把整个弹窗一起关掉
+      event.stopPropagation()
       setIsOpen(false)
       return
     }
@@ -405,6 +407,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
                   setIsOpen(false)
                 } else if (event.key === 'Escape') {
                   event.preventDefault()
+                  event.stopPropagation()
                   setIsOpen(false)
                   triggerRef.current?.focus()
                 } else if (

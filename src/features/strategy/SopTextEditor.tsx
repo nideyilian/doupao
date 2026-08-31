@@ -399,6 +399,7 @@ export default function SopTextEditor({
     try {
       await copyTextToClipboard(value)
       setCopied(true)
+      showToast('SOP 正文已复制', 'success')
     } catch (error) {
       showToast(getClipboardFailureMessage('复制失败，请检查剪贴板权限', error), 'error')
     }

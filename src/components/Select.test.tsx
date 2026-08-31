@@ -81,7 +81,11 @@ describe('Select', () => {
     act(() => trigger.props.onKeyDown({ key: 'ArrowDown', preventDefault: vi.fn() }))
     expect(renderer!.root.findByType('button').props['aria-expanded']).toBe(true)
 
-    act(() => renderer!.root.findByType('button').props.onKeyDown({ key: 'Escape', preventDefault: vi.fn() }))
+    act(() =>
+      renderer!.root
+        .findByType('button')
+        .props.onKeyDown({ key: 'Escape', preventDefault: vi.fn(), stopPropagation: vi.fn() }),
+    )
     expect(renderer!.root.findByType('button').props['aria-expanded']).toBe(false)
   })
 })
