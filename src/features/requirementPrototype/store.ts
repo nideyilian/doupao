@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { createDesktopJsonStorage } from '../../lib/desktopJsonStorage'
 import type { TaskRecord } from '../../types'
 import { planRequirementOrder } from './planner'
 import { DEFAULT_REQUIREMENT_SETTINGS, REQUIREMENT_USERS, seedRequirementCatalog } from './seed'
@@ -868,6 +869,9 @@ export const useRequirementPrototype = create<RequirementPrototypeState>()(
     {
       name: 'doupao.requirement-prototype.v1',
       version: REQUIREMENT_PROTOTYPE_STORE_VERSION,
+      storage: createDesktopJsonStorage('requirementPrototype', {
+        read: async () => localStorage.getItem('doupao.requirement-prototype.v1'),
+      }),
       migrate: migrateRequirementPrototypeState,
       onRehydrateStorage: () => (state) => state?.setHydrated(true),
       partialize: (state) => ({

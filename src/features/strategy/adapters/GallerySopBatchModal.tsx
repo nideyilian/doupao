@@ -1,8 +1,10 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type TextareaHTMLAttributes,
@@ -68,6 +70,7 @@ import LargeModalToggle from '../../../components/LargeModalToggle'
 import { getPromptRunImageLinks, type PromptRunImageLink } from './promptRunImageLinks'
 import { sortPromptRunsNewestFirst } from './promptRunPresentation'
 import { useDragSelect, getMarqueeBoxStyle } from '../../../hooks/useDragSelect'
+import '../styles.css'
 
 type BatchStatus = 'idle' | 'generating' | 'paused' | 'ready' | 'submitting' | 'success' | 'error'
 type SourceStatus = 'pending' | 'running' | 'completed' | 'partial' | 'failed'
@@ -265,9 +268,24 @@ function fitImageSize(
 }
 
 /** 主生成图：按真实图片比例渲染（object-contain 完整显示不裁剪），点击查看大图。 */
-function PromptOutputImage({ imageId, index, onClick }: { imageId: string; index: number; onClick: () => void }) {
+function PromptOutputImage({
+  imageId,
+  index,
+  onClick,
+  maxWidth = 200,
+  maxHeight = 220,
+  fluid = false,
+}: {
+  imageId: string
+  index: number
+  onClick: () => void
+  maxWidth?: number
+  maxHeight?: number
+  fluid?: boolean
+}) {
   const [thumbnailSrc, setThumbnailSrc] = useState('')
   const [size, setSize] = useState<{ width: number; height: number } | null>(null)
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -288,7 +306,13 @@ function PromptOutputImage({ imageId, index, onClick }: { imageId: string; index
     }
   }, [imageId])
 
-  const boxStyle = size ? { width: size.width, height: size.height } : { width: 112, height: 140 }
+  const boxStyle: CSSProperties = fluid
+    ? naturalSize
+      ? { width: '100%', aspectRatio: `${naturalSize.width} / ${naturalSize.height}` }
+      : { width: '100%', height: '16rem' }
+    : size
+      ? { width: size.width, height: size.height }
+      : { width: Math.min(maxWidth, 200), height: Math.min(maxHeight, 180) }
 
   return (
     <button
@@ -305,7 +329,11 @@ function PromptOutputImage({ imageId, index, onClick }: { imageId: string; index
           onLoad={(event) => {
             const img = event.currentTarget
             if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-              setSize(fitImageSize(img.naturalWidth, img.naturalHeight))
+              if (fluid) {
+                setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight })
+              } else {
+                setSize(fitImageSize(img.naturalWidth, img.naturalHeight, maxWidth, maxHeight))
+              }
             }
           }}
           className="h-full w-full object-contain"
@@ -398,10 +426,16 @@ export default function GallerySopBatchModal({
     secondReference: boolean
   }) => void
   /**
-   * 输入栏胶囊的批次参数外部同步信号：nonce 每次变化时把 promptCount / imagesPerPrompt /
-   * autoGenerate 合入弹窗内部状态，保证输入栏直接修改后弹窗内保持一致。
+   * 输入栏胶囊的批次参数外部同步信号：nonce 每次变化时把批次设置合入弹窗内部状态，
+   * 保证输入栏直接修改后弹窗内保持一致。
    */
-  countsSync?: { promptCount: number; imagesPerPrompt: number; autoGenerate: boolean; nonce: number }
+  countsSync?: {
+    promptCount: number
+    imagesPerPrompt: number
+    autoGenerate: boolean
+    secondReference: boolean
+    nonce: number
+  }
 }) {
   const { largeView, toggleLargeView } = useLargeModalMode(PROMPT_MANAGEMENT_MODAL_MODE_STORAGE_KEY)
   const items = useRequirementPrototype((state) => state.sopLibrary)
@@ -439,6 +473,7 @@ export default function GallerySopBatchModal({
   const [favoritesOnly, setFavoritesOnly] = useState(false)
   const [restoreComplete, setRestoreComplete] = useState(false)
   const [previewSource, setPreviewSource] = useState<SopPromptSource | null>(null)
+  const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(() => new Set())
   const [libraryContextMenu, setLibraryContextMenu] = useState<{ x: number; y: number; run: SopBatchSnapshot } | null>(
     null,
@@ -477,6 +512,20 @@ export default function GallerySopBatchModal({
   const targetWorkspaceTabId = workspaceTabId ?? activeWorkspaceTabId
   const activeTab = workspaceTabs.find((tab) => tab.id === targetWorkspaceTabId)
   const promptRunStorageKey = getGallerySopPromptRunStorageKey(targetWorkspaceTabId, folderKey)
+  const previousInitialBriefRef = useRef(initialBrief)
+  const initialBriefChanged = previousInitialBriefRef.current !== initialBrief
+
+  // 输入栏与弹窗共用“本次生成要求”。弹窗可能在后台保活，不能只依赖 useState(initialBrief)；
+  // 用 layout effect 在自动启动的 passive effect 之前同步，避免同一轮更新仍读取上一轮要求。
+  useLayoutEffect(() => {
+    if (!initialBriefChanged || running) return
+    previousInitialBriefRef.current = initialBrief
+    setBrief(initialBrief)
+  }, [initialBrief, initialBriefChanged, running])
+
+  // 同一轮 prop 更新与自动启动可能同时发生；在状态更新完成前，生成动作也要读到最新输入。
+  const effectiveBrief = initialBriefChanged && !running ? initialBrief : brief
+
   const allSources = useMemo<SopPromptSource[]>(() => {
     const direct = inputImages.map((image, index) => ({
       id: sourceKey(index, image.id),
@@ -507,10 +556,11 @@ export default function GallerySopBatchModal({
       targetImagesPerPrompt !== normalizedInitialCounts.imagesPerPrompt)
   const totalImageCount = getSopTotalImageCount(targetCount, targetImagesPerPrompt)
   const selectedSources = useMemo(
-    () => selectSopPromptSources(allSources, targetCount, brief),
-    [allSources, brief, targetCount],
+    () => selectSopPromptSources(allSources, targetCount, effectiveBrief),
+    [allSources, effectiveBrief, targetCount],
   )
-  const visiblePrompts = prompts.filter((item) => !item.deleted && item.promptText.trim())
+  const editablePrompts = useMemo(() => prompts.filter((item) => !item.deleted), [prompts])
+  const visiblePrompts = useMemo(() => editablePrompts.filter((item) => item.promptText.trim()), [editablePrompts])
   const missingCount = Math.max(0, targetCount - visiblePrompts.length)
   const activeRun = recentRuns.find((run) => run.id === activeRunId)
   const activePromptImageLinks = useMemo<PromptRunImageLink[]>(
@@ -567,6 +617,20 @@ export default function GallerySopBatchModal({
     item.sourceId === source.id ||
     Boolean(source.imageId && item.referenceImageIds?.[0] === source.imageId) ||
     (source.kind === 'text' && !item.referenceImageIds?.length)
+
+  const promptGroups = useMemo(
+    () =>
+      sources.map((sourceRun) => ({
+        sourceRun,
+        prompts: editablePrompts.filter((item) => promptBelongsToSource(item, sourceRun.source)),
+      })),
+    [editablePrompts, sources],
+  )
+  const activePrompt = editablePrompts.find((item) => item.id === selectedPromptId) ?? editablePrompts[0]
+  const activePromptNumber = activePrompt ? editablePrompts.findIndex((item) => item.id === activePrompt.id) + 1 : 0
+  const activePromptReferenceSources = activePrompt ? getPromptReferenceSources(activePrompt) : []
+  const activePromptOutputLinks = activePrompt ? (activePromptImageLinksByPromptId.get(activePrompt.id) ?? []) : []
+  const activePromptSourceId = activePrompt?.sourceId ?? promptGroups[0]?.sourceRun.source.id
 
   const setCurrentRunId = (id: string, submitted = false) => {
     activeRunIdRef.current = id
@@ -625,7 +689,7 @@ export default function GallerySopBatchModal({
       nextRunId,
       [],
       autoGenerateRef.current,
-      brief,
+      effectiveBrief,
       targetCount,
       targetImagesPerPrompt,
       secondReferenceRef.current,
@@ -642,7 +706,7 @@ export default function GallerySopBatchModal({
     runId: string,
     nextPrompts: PromptDraft[],
     nextAutoGenerate = autoGenerate,
-    nextBrief = brief,
+    nextBrief = effectiveBrief,
     nextPromptCount = targetCount,
     nextImagesPerPrompt = targetImagesPerPrompt,
     nextSecondReference = secondReferenceRef.current,
@@ -702,7 +766,7 @@ export default function GallerySopBatchModal({
         description: snapshotSop.description,
         content: snapshotSop.content,
       },
-      brief: brief.trim(),
+      brief: effectiveBrief.trim(),
       referenceImageIds: patch.referenceImageIds ?? referenceImageIds,
       promptCount: nextPrompts.filter((item) => !item.deleted && item.promptText.trim()).length,
       imagesPerPrompt: targetImagesPerPrompt,
@@ -995,6 +1059,17 @@ export default function GallerySopBatchModal({
     setImagesPerPrompt(countsSync.imagesPerPrompt)
     autoGenerateRef.current = countsSync.autoGenerate
     setAutoGenerate(countsSync.autoGenerate)
+    secondReferenceRef.current = countsSync.secondReference
+    setSecondReference(countsSync.secondReference)
+    writeRunPointer(
+      activeRunIdRef.current,
+      prompts,
+      countsSync.autoGenerate,
+      effectiveBrief,
+      countsSync.promptCount,
+      countsSync.imagesPerPrompt,
+      countsSync.secondReference,
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [countsSync?.nonce])
 
@@ -1005,7 +1080,7 @@ export default function GallerySopBatchModal({
       activeRunIdRef.current,
       prompts,
       autoGenerateRef.current,
-      brief,
+      effectiveBrief,
       targetCount,
       targetImagesPerPrompt,
       nextSecondReference,
@@ -1207,7 +1282,7 @@ export default function GallerySopBatchModal({
 
   const updateActiveRunMetadata = (next: { title?: string; brief?: string }) => {
     const nextTitle = next.title ?? runTitle
-    const nextBrief = next.brief ?? brief
+    const nextBrief = next.brief ?? effectiveBrief
     setRunTitle(nextTitle)
     setBrief(nextBrief)
     if (!activeRun) return
@@ -1298,6 +1373,10 @@ export default function GallerySopBatchModal({
     } catch {
       showToast('复制失败，请检查系统剪贴板权限', 'error')
     }
+  }
+
+  const stopPromptActionPropagation = (event: ReactMouseEvent) => {
+    event.stopPropagation()
   }
 
   const updatePrompts = (updater: (current: PromptDraft[]) => PromptDraft[]) => {
@@ -1712,8 +1791,8 @@ export default function GallerySopBatchModal({
           },
         }
         const generated = isVariablePromptSop
-          ? await generateVariablePromptsFromSopStore(selectedSop, deficit, brief, generationOptions)
-          : await generatePromptsFromSopStore(selectedSop, deficit, brief, generationOptions)
+          ? await generateVariablePromptsFromSopStore(selectedSop, deficit, effectiveBrief, generationOptions)
+          : await generatePromptsFromSopStore(selectedSop, deficit, effectiveBrief, generationOptions)
         if (generationController.signal.aborted) {
           throw generationController.signal.reason instanceof Error
             ? generationController.signal.reason
@@ -1858,7 +1937,7 @@ export default function GallerySopBatchModal({
         nextRunId,
         [],
         autoGenerateRef.current,
-        brief,
+        effectiveBrief,
         targetCount,
         targetImagesPerPrompt,
         secondReferenceRef.current,
@@ -1875,10 +1954,9 @@ export default function GallerySopBatchModal({
   const addManualPrompt = (sourceId: string) => {
     const source = allSources.find((candidate) => candidate.id === sourceId)
     const referenceImageIds = source?.kind === 'image' && source.imageId ? [source.imageId] : []
-    updatePrompts((current) => [
-      ...current,
-      { id: promptItemId(sourceId), sourceId, referenceImageIds, promptText: '', origin: 'manual' },
-    ])
+    const id = promptItemId(sourceId)
+    updatePrompts((current) => [...current, { id, sourceId, referenceImageIds, promptText: '', origin: 'manual' }])
+    setSelectedPromptId(id)
     showToast('已新增提示词，可编辑内容', 'info')
   }
 
@@ -1917,7 +1995,7 @@ export default function GallerySopBatchModal({
       const existingPrompts = prompts
         .filter((entry) => entry.id !== item.id && !entry.deleted && entry.promptText.trim())
         .map((entry) => entry.promptText.trim())
-      const generated = await generatePromptsFromSopStore(selectedSop, 1, brief, {
+      const generated = await generatePromptsFromSopStore(selectedSop, 1, effectiveBrief, {
         context: {
           sourceLabel: sourceImage ? (source?.label ?? '参考图') : undefined,
           sourceIndex:
@@ -2018,6 +2096,12 @@ export default function GallerySopBatchModal({
   }, [autoStart])
 
   useEffect(() => {
+    setSelectedPromptId((current) =>
+      current && editablePrompts.some((item) => item.id === current) ? current : (editablePrompts[0]?.id ?? null),
+    )
+  }, [editablePrompts])
+
+  useEffect(() => {
     if (!visible || !libraryContextMenu) return
     const closeContextMenu = () => setLibraryContextMenu(null)
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -2068,7 +2152,7 @@ export default function GallerySopBatchModal({
     const available = run.prompts.filter((item) => !item.deleted && item.text.trim()).length
     const selected = run.id === activeRunId
     const imageCount = runImageSummaryById.get(run.id)?.count ?? 0
-    const checked = selectedRunIds.has(run.id)
+    const selectedForBatch = selectedRunIds.has(run.id)
     const modelLabel = run.promptGenerationModel?.trim() || '模型未知'
     const runDate = new Date(getRunUpdatedAt(run)).toLocaleString('zh-CN', {
       year: 'numeric',
@@ -2085,46 +2169,26 @@ export default function GallerySopBatchModal({
         key={run.id}
         data-run-id={run.id}
         onContextMenu={(event) => openLibraryContextMenu(event, run)}
-        className={`group/run relative grid min-h-ds-control-lg grid-cols-[1.25rem_minmax(0,1fr)_1.75rem] items-center gap-1.5 rounded-lg pr-1 transition-colors ${checked || selected ? 'bg-ds-selection text-ds-selection-text' : 'text-ds-text hover:bg-ds-surface'}`}
+        className={`group/run relative grid min-h-ds-control-lg grid-cols-[minmax(0,1fr)_1.75rem] items-center gap-1.5 rounded-lg pr-1 transition-colors ${selectedForBatch || selected ? 'bg-ds-selection text-ds-selection-text' : 'text-ds-text hover:bg-ds-surface'}`}
       >
-        <label
-          data-no-marquee
-          className="flex shrink-0 cursor-pointer items-center justify-center"
-          onClick={(event) => event.stopPropagation()}
-          aria-label={checked ? `取消选择 ${getPromptRunTitle(run)}` : `选择 ${getPromptRunTitle(run)}`}
-        >
-          <input
-            type="checkbox"
-            checked={checked}
-            disabled={running}
-            onClick={(event) => {
-              if (event.shiftKey && lastClickedRunIdRef.current) {
-                const ids = filteredRuns.map((item) => item.id)
-                const from = ids.indexOf(lastClickedRunIdRef.current)
-                const to = ids.indexOf(run.id)
-                if (from !== -1 && to !== -1) {
-                  const [start, end] = from < to ? [from, to] : [to, from]
-                  event.preventDefault()
-                  setSelectedRunIds((current) => {
-                    const next = new Set(current)
-                    ids.slice(start, end + 1).forEach((id) => next.add(id))
-                    return next
-                  })
-                  return
-                }
-              }
-              lastClickedRunIdRef.current = run.id
-            }}
-            onChange={(event) => {
-              event.stopPropagation()
-              toggleRunSelection(run.id)
-            }}
-            className="h-3.5 w-3.5 cursor-pointer rounded border-ds-border text-ds-primary accent-[hsl(var(--ds-color-primary))] focus-visible:ring-2 focus-visible:ring-ds-primary"
-          />
-        </label>
         <button
           type="button"
           onClick={(event) => {
+            if (event.shiftKey && lastClickedRunIdRef.current) {
+              const ids = filteredRuns.map((item) => item.id)
+              const from = ids.indexOf(lastClickedRunIdRef.current)
+              const to = ids.indexOf(run.id)
+              if (from !== -1 && to !== -1) {
+                const [start, end] = from < to ? [from, to] : [to, from]
+                setSelectedRunIds((current) => {
+                  const next = new Set(current)
+                  ids.slice(start, end + 1).forEach((id) => next.add(id))
+                  return next
+                })
+                lastClickedRunIdRef.current = run.id
+                return
+              }
+            }
             if (event.shiftKey || event.metaKey || event.ctrlKey) {
               lastClickedRunIdRef.current = run.id
               toggleRunSelection(run.id)
@@ -2132,9 +2196,9 @@ export default function GallerySopBatchModal({
             }
             void applyPromptRun(run, `已打开提示词集「${getPromptRunTitle(run)}」`)
           }}
-          disabled={running || selected}
+          disabled={running}
           aria-label={`查看提示词集 ${getPromptRunTitle(run)}`}
-          className="flex min-w-0 items-center gap-2 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-default"
+          className="flex min-w-0 items-center gap-2 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed"
         >
           <BookOpenCheck size={14} className={`shrink-0 ${selected ? 'text-ds-primary' : 'text-ds-muted'}`} />
           <span className="min-w-0 flex-1">
@@ -2169,6 +2233,615 @@ export default function GallerySopBatchModal({
   // 时间线列表：全部提示词集按生成/更新时间倒序平铺（最新在最上面），无层级结构
   const renderPromptTimeline = (runs: SopBatchSnapshot[]): ReactNode => runs.map((run) => renderPromptRunItem(run))
 
+  const renderPromptDetail = (): ReactNode => {
+    if (!activePrompt) {
+      return (
+        <aside className="sop-prompt-detail-panel" aria-label="当前提示词详情">
+          <div className="sop-prompt-detail-empty">
+            <BookOpenCheck size={24} />
+            <strong>选择一条提示词</strong>
+            <span>中间列表会显示当前提示词的完整编辑内容、参考图和生成结果。</span>
+          </div>
+        </aside>
+      )
+    }
+
+    const activePromptSource =
+      allSources.find((source) => source.id === activePrompt.sourceId) ??
+      activePromptReferenceSources[0] ??
+      ({ id: 'text-to-image', label: '未指定来源', kind: 'text' } satisfies SopPromptSource)
+    const primaryOutput = activePromptOutputLinks[0]
+    const extraOutputs = activePromptOutputLinks.slice(1)
+
+    return (
+      <aside
+        className="sop-prompt-detail-panel"
+        aria-label="当前提示词详情"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="sop-prompt-detail-header">
+          <div className="min-w-0">
+            <span className="sop-prompt-detail-kicker">当前提示词</span>
+            <h3 className="truncate">
+              #{activePromptNumber} · {activePromptSource.label}
+            </h3>
+            <p>
+              {activePrompt.origin === 'ai' ? '智能生成' : '手动添加'} · {activePrompt.edited ? '已编辑' : '原始内容'} ·{' '}
+              {activePromptOutputLinks.length} 张生成图
+            </p>
+          </div>
+          <span className="sop-prompt-detail-status">
+            <CheckCircle2 size={12} />
+            自动保存
+          </span>
+        </header>
+
+        <div className="sop-prompt-detail-body">
+          <section className="sop-prompt-detail-section">
+            <div className="sop-prompt-detail-section-head">
+              <span className="sop-prompt-detail-label">提示词正文</span>
+              <span className="sop-prompt-detail-hint">修改后自动保存</span>
+            </div>
+            <div data-slot="item-content" className="min-h-0 min-w-0">
+              <div
+                data-slot="input-group"
+                role="group"
+                aria-label={`第 ${activePromptNumber} 条提示词编辑器`}
+                className="sop-prompt-detail-editor flex h-full flex-col"
+              >
+                <div data-slot="input-group-header" className="sop-prompt-detail-editor-head">
+                  <span className="text-xs font-semibold text-ds-text">提示词内容</span>
+                  <span className={activePrompt.origin === 'ai' ? 'text-ds-primary' : 'text-ds-info'}>
+                    {activePrompt.origin === 'ai' && <Sparkles size={11} />}
+                    {activePrompt.origin === 'ai' ? '智能生成' : '手动添加'}
+                  </span>
+                </div>
+                <AutoResizeTextarea
+                  value={activePrompt.promptText}
+                  onChange={(event) =>
+                    updatePrompts((current) =>
+                      current.map((entry) =>
+                        entry.id === activePrompt.id
+                          ? { ...entry, promptText: event.target.value, edited: true }
+                          : entry,
+                      ),
+                    )
+                  }
+                  disabled={running}
+                  aria-label={`第 ${activePromptNumber} 条提示词`}
+                  className="sop-prompt-detail-editor-input"
+                />
+                <div
+                  data-slot="input-group-addon"
+                  aria-label={`第 ${activePromptNumber} 条提示词的功能与状态`}
+                  className="sop-prompt-detail-editor-foot"
+                >
+                  <span>
+                    <CheckCircle2 size={12} />
+                    {activePrompt.edited ? '已编辑' : '原始内容'}
+                  </span>
+                  <span>{activePromptReferenceSources.length} 张参考图</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="sop-prompt-detail-section">
+            <div className="sop-prompt-detail-section-head">
+              <span className="sop-prompt-detail-label">参考图</span>
+              <span className="sop-prompt-detail-hint">点击查看大图</span>
+            </div>
+            {activePromptReferenceSources.length > 0 ? (
+              <div className="sop-prompt-detail-image-strip">
+                {activePromptReferenceSources.map((referenceSource, referenceIndex) => (
+                  <button
+                    key={referenceSource.imageId ?? referenceSource.id}
+                    type="button"
+                    onClick={() => setPreviewSource(referenceSource)}
+                    aria-label={`查看第 ${activePromptNumber} 条提示词的参考图 ${referenceIndex + 1} 大图`}
+                    title={`${referenceSource.label} · 点击查看大图`}
+                    className="sop-prompt-detail-thumb"
+                  >
+                    <SourceThumb source={referenceSource} />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="sop-prompt-detail-empty-copy">这条提示词没有绑定参考图。</p>
+            )}
+          </section>
+
+          <section
+            data-slot="item-media"
+            aria-label={`第 ${activePromptNumber} 条提示词的生成结果`}
+            className="sop-prompt-detail-section flex flex-col"
+          >
+            <div className="sop-prompt-detail-section-head">
+              <span className="sop-prompt-detail-label">生成结果</span>
+              <span className="sop-prompt-detail-hint">{activePromptOutputLinks.length} 张</span>
+            </div>
+            {primaryOutput ? (
+              <div className="sop-prompt-detail-output">
+                <PromptOutputImage
+                  imageId={primaryOutput.imageId}
+                  index={activePromptNumber - 1}
+                  fluid
+                  onClick={() =>
+                    setPreviewSource({
+                      id: `output-${primaryOutput.imageId}`,
+                      label: '图片 1',
+                      kind: 'image',
+                      imageId: primaryOutput.imageId,
+                    })
+                  }
+                />
+                {extraOutputs.length > 0 && (
+                  <div className="sop-prompt-detail-image-strip">
+                    {extraOutputs.map((outputLink, extraIndex) => (
+                      <button
+                        key={outputLink.imageId}
+                        type="button"
+                        onClick={() =>
+                          setPreviewSource({
+                            id: `output-${outputLink.imageId}`,
+                            label: `图片 ${extraIndex + 2}`,
+                            kind: 'image',
+                            imageId: outputLink.imageId,
+                          })
+                        }
+                        aria-label={`查看第 ${activePromptNumber} 条提示词的生成图片 ${extraIndex + 2}`}
+                        className="sop-prompt-detail-thumb"
+                      >
+                        <OutputImageThumb
+                          imageId={outputLink.imageId}
+                          label={`提示词 ${activePromptNumber} 的生成图片 ${extraIndex + 2}`}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="sop-prompt-detail-output-empty">
+                <ImageIcon size={20} />
+                <span>这条提示词还没有生成结果</span>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <footer className="sop-prompt-detail-footer">
+          <div
+            data-slot="button-group"
+            role="group"
+            aria-label={`第 ${activePromptNumber} 条提示词操作`}
+            className="sop-prompt-detail-actions"
+          >
+            <button
+              type="button"
+              onMouseDown={stopPromptActionPropagation}
+              onClick={() => void copyPrompt(activePrompt.promptText)}
+              disabled={!activePrompt.promptText.trim()}
+              aria-label={`复制第 ${activePromptNumber} 条提示词`}
+              title="复制提示词"
+              className="sop-prompt-detail-action"
+            >
+              <Copy size={13} />
+              复制
+            </button>
+            {selectedSop && (
+              <>
+                <button
+                  type="button"
+                  onMouseDown={stopPromptActionPropagation}
+                  onClick={() => void regeneratePrompt(activePrompt)}
+                  disabled={running}
+                  aria-label={`重新生成第 ${activePromptNumber} 条提示词`}
+                  title="重新生成"
+                  className="sop-prompt-detail-action"
+                >
+                  <RefreshCw size={13} />
+                  重生成
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={stopPromptActionPropagation}
+                  onClick={() => void submitPromptList([activePrompt])}
+                  disabled={running || !activePrompt.promptText.trim()}
+                  aria-label={`生成第 ${activePromptNumber} 条提示词的图片`}
+                  title="只生成当前提示词"
+                  className="sop-prompt-detail-action sop-prompt-detail-action--primary"
+                >
+                  <Send size={13} />
+                  生成此条
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onMouseDown={stopPromptActionPropagation}
+              onClick={() => {
+                updatePrompts((current) =>
+                  current.map((entry) => (entry.id === activePrompt.id ? { ...entry, deleted: true } : entry)),
+                )
+                showToast('已删除该条提示词', 'success')
+              }}
+              disabled={running}
+              aria-label={`删除第 ${activePromptNumber} 条提示词`}
+              title="删除提示词"
+              className="sop-prompt-detail-action sop-prompt-detail-action--danger"
+            >
+              <Trash2 size={13} />
+              删除
+            </button>
+          </div>
+        </footer>
+      </aside>
+    )
+  }
+
+  const renderPromptIndexRow = (item: PromptDraft, sourceRun: SourceRun): ReactNode => {
+    const promptNumber = editablePrompts.findIndex((entry) => entry.id === item.id) + 1
+    const referenceSources = getPromptReferenceSources(item)
+    const outputLinks = activePromptImageLinksByPromptId.get(item.id) ?? []
+    const primaryOutput = outputLinks[0]
+    const selected = activePrompt?.id === item.id
+    return (
+      <article
+        id={`prompt-output-${item.id}`}
+        key={item.id}
+        data-slot="item"
+        className={`sop-prompt-index-row grid-cols-[auto_minmax(0,1fr)] items-start ${selected ? 'sop-prompt-index-row--selected' : ''}`}
+      >
+        <button
+          type="button"
+          onClick={() => setSelectedPromptId(item.id)}
+          aria-label={`选择第 ${promptNumber} 条提示词`}
+          aria-pressed={selected}
+          className="sop-prompt-index-select"
+        >
+          <span className="sop-prompt-index-number">{promptNumber}</span>
+          <span className="sop-prompt-index-copy">
+            <span className="sop-prompt-index-title">
+              <strong>提示词 {promptNumber}</strong>
+              <span>{item.origin === 'ai' ? '智能生成' : '手动添加'}</span>
+            </span>
+            <span className="sop-prompt-index-text">{item.promptText.trim() || '等待编辑提示词内容'}</span>
+            <span className="sop-prompt-index-meta">
+              {sourceRun.source.label} · {referenceSources.length} 张参考图 · {outputLinks.length} 张结果
+            </span>
+          </span>
+        </button>
+        <div className="sop-prompt-index-media flex min-w-0 flex-col">
+          {primaryOutput ? (
+            <button
+              type="button"
+              onMouseDown={stopPromptActionPropagation}
+              onClick={() =>
+                setPreviewSource({
+                  id: `output-${primaryOutput.imageId}`,
+                  label: '图片 1',
+                  kind: 'image',
+                  imageId: primaryOutput.imageId,
+                })
+              }
+              aria-label={`预览第 ${promptNumber} 条提示词的生成图片 1`}
+              className="sop-prompt-index-media-button"
+            >
+              <OutputImageThumb imageId={primaryOutput.imageId} label={`提示词 ${promptNumber} 的生成图片 1`} />
+            </button>
+          ) : (
+            <span className="sop-prompt-index-media-empty">
+              <ImageIcon size={15} />
+            </span>
+          )}
+        </div>
+        <div role="group" aria-label={`第 ${promptNumber} 条提示词快捷操作`} className="sop-prompt-index-actions">
+          <button
+            type="button"
+            onMouseDown={stopPromptActionPropagation}
+            onClick={() => void copyPrompt(item.promptText)}
+            disabled={!item.promptText.trim()}
+            aria-label={`在列表中复制第 ${promptNumber} 条提示词`}
+            title="复制提示词"
+            className="sop-prompt-index-action"
+          >
+            <Copy size={13} />
+          </button>
+          {selectedSop && (
+            <button
+              type="button"
+              onMouseDown={stopPromptActionPropagation}
+              onClick={() => void regeneratePrompt(item)}
+              disabled={running}
+              aria-label={`重新生成第 ${promptNumber} 条提示词`}
+              title="重新生成"
+              className="sop-prompt-index-action"
+            >
+              <RefreshCw size={13} />
+            </button>
+          )}
+          <button
+            type="button"
+            onMouseDown={stopPromptActionPropagation}
+            onClick={() => {
+              updatePrompts((current) =>
+                current.map((entry) => (entry.id === item.id ? { ...entry, deleted: true } : entry)),
+              )
+              showToast('已删除该条提示词', 'success')
+            }}
+            disabled={running}
+            aria-label={`删除第 ${promptNumber} 条提示词`}
+            title="删除提示词"
+            className="sop-prompt-index-action sop-prompt-index-action--danger"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </article>
+    )
+  }
+
+  const renderPromptWorkspace = (): ReactNode => (
+    <div className="sop-prompt-management-grid">
+      <aside className="sop-prompt-run-rail">
+        <div className="sop-prompt-run-rail-head">
+          <div>
+            <h3 className="text-sm font-semibold">提示词集</h3>
+            <p>按生成时间倒序排列，最新的在最上面</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void createPromptCollection()}
+            disabled={running}
+            aria-label="新建提示词集"
+            className="sop-prompt-run-create flex h-ds-control-sm items-center gap-1.5 rounded-lg bg-ds-primary px-2.5 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plus size={13} />
+            新建提示词集
+          </button>
+        </div>
+        <label className="sop-prompt-run-search">
+          <Search size={14} />
+          <input
+            value={librarySearch}
+            onChange={(event) => setLibrarySearch(event.target.value)}
+            aria-label="搜索提示词集"
+            placeholder="搜索提示词集、说明或正文"
+          />
+        </label>
+        <div className="sop-prompt-run-filter">
+          <button
+            type="button"
+            onClick={() => setFavoritesOnly((current) => !current)}
+            aria-pressed={favoritesOnly}
+            className={`sop-prompt-run-filter-button ${favoritesOnly ? 'sop-prompt-run-filter-button--active' : ''}`}
+          >
+            <Bookmark size={12} fill={favoritesOnly ? 'currentColor' : 'none'} />
+            收藏
+          </button>
+          <span>{filteredRuns.length} 项</span>
+        </div>
+        {selectedRunIds.size > 0 && (
+          <div className="sop-prompt-run-selection">
+            <span>已选 {selectedRunIds.size} 项</span>
+            <button type="button" onClick={selectAllFilteredRuns} disabled={running}>
+              全选
+            </button>
+            <button type="button" onClick={invertRunSelection} disabled={running}>
+              反选
+            </button>
+            <button type="button" onClick={batchDeleteRuns} disabled={running} className="text-ds-danger">
+              删除
+            </button>
+            <button type="button" onClick={clearRunSelection} className="ml-auto">
+              <X size={12} />
+              取消
+            </button>
+          </div>
+        )}
+        <div
+          ref={listRef}
+          role="list"
+          aria-label="提示词集时间线"
+          data-drag-select-surface
+          className="sop-prompt-run-list"
+        >
+          {renderPromptTimeline(filteredRuns)}
+          {filteredRuns.length === 0 && (
+            <div className="sop-prompt-run-empty">
+              <BookOpenCheck size={22} />
+              <p>{recentRuns.length ? '没有匹配的提示词集' : '还没有提示词集'}</p>
+              <span>
+                {recentRuns.length ? '尝试其他关键词或关闭收藏筛选。' : '新建一个，或从 SOP 生成后自动保存。'}
+              </span>
+            </div>
+          )}
+          {selectionBox && (
+            <div
+              aria-hidden
+              className="pointer-events-none absolute z-10 border border-ds-selection-border bg-ds-selection/60"
+              style={getMarqueeBoxStyle(selectionBox, listRef.current)}
+            />
+          )}
+        </div>
+      </aside>
+
+      <section className="sop-prompt-browser">
+        {activeRun || sources.length > 0 ? (
+          <>
+            <header className="sop-prompt-browser-header">
+              <div className="min-w-0">
+                <input
+                  value={runTitle}
+                  onChange={(event) => updateActiveRunMetadata({ title: event.target.value })}
+                  disabled={running}
+                  aria-label="提示词集名称"
+                  title={runTitle || '未命名提示词集'}
+                  placeholder="未命名提示词集"
+                  className="sop-prompt-browser-title"
+                />
+                <p>
+                  {activeRun?.sop.name ?? selectedSop?.name ?? '独立提示词集'} · {editablePrompts.length} 条提示词 ·{' '}
+                  {activeRun ? getRunStatusLabel(activeRun) : '编辑中'}
+                  {activeRun?.promptGenerationModel ? ` · ${activeRun.promptGenerationModel}` : ''}
+                </p>
+              </div>
+              <div className="sop-prompt-browser-actions">
+                <button
+                  type="button"
+                  onMouseDown={stopPromptActionPropagation}
+                  onClick={() => void toggleActiveRunPinned()}
+                  disabled={running || !activeRun}
+                  aria-label={activeRun?.pinned ? '取消收藏当前提示词集' : '收藏当前提示词集'}
+                  aria-pressed={Boolean(activeRun?.pinned)}
+                  title={activeRun?.pinned ? '取消收藏' : '收藏'}
+                  className="sop-prompt-browser-icon-action"
+                >
+                  <Bookmark size={15} fill={activeRun?.pinned ? 'currentColor' : 'none'} />
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={stopPromptActionPropagation}
+                  onClick={() => void copyActivePrompts()}
+                  disabled={running || visiblePrompts.length === 0}
+                  aria-label="复制全部提示词"
+                  title="复制全部"
+                  className="sop-prompt-browser-icon-action"
+                >
+                  <Copy size={15} />
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={stopPromptActionPropagation}
+                  onClick={(event) => activeRun && openLibraryContextMenu(event, activeRun)}
+                  disabled={running || !activeRun}
+                  aria-label="更多提示词集操作"
+                  title="更多操作"
+                  className="sop-prompt-browser-icon-action"
+                >
+                  <MoreHorizontal size={15} />
+                </button>
+              </div>
+            </header>
+
+            <div className="sop-prompt-browser-content">
+              <div className="sop-prompt-index">
+                <div className="sop-prompt-index-toolbar">
+                  <div>
+                    <strong>提示词列表</strong>
+                    <span>{editablePrompts.length} 条</span>
+                  </div>
+                  <div className="sop-prompt-index-toolbar-actions">
+                    <span>{activePrompt ? `当前第 ${activePromptNumber} 条` : '未选择'}</span>
+                    <button
+                      type="button"
+                      onMouseDown={stopPromptActionPropagation}
+                      onClick={() => activePromptSourceId && addManualPrompt(activePromptSourceId)}
+                      disabled={running || !activePromptSourceId}
+                      aria-label="新增提示词"
+                      className="sop-prompt-source-action"
+                    >
+                      <Plus size={13} />
+                      添加提示词
+                    </button>
+                  </div>
+                </div>
+                <div className="sop-prompt-index-scroll">
+                  {promptGroups.map(({ sourceRun, prompts: sourcePrompts }) => {
+                    const sourceAvailable = sourcePrompts.filter((item) => item.promptText.trim()).length
+                    const sourceMissing = Math.max(0, sourceRun.requestedCount - sourceAvailable)
+                    const sourceSupplementCount = Math.min(sourceMissing, missingCount)
+                    const canRetrySource = Boolean(
+                      selectedSop && sourceSupplementCount > 0 && sourceRun.status !== 'running',
+                    )
+                    return (
+                      <section key={sourceRun.source.id} className="sop-prompt-source-group">
+                        <header className="sop-prompt-source-header">
+                          <div className="sop-prompt-source-heading">
+                            <div className="sop-prompt-source-thumb">
+                              <SourceThumb source={sourceRun.source} />
+                            </div>
+                            <div className="min-w-0">
+                              <h4>{sourceRun.source.label}</h4>
+                              <p>
+                                目标 {sourceRun.requestedCount} 条 · 已有 {sourceAvailable} 条
+                                {sourceMissing > 0 ? ` · 待补 ${sourceMissing} 条` : ''}
+                              </p>
+                              {sourceRun.error && <span className="text-ds-danger">{sourceRun.error}</span>}
+                            </div>
+                          </div>
+                          <div className="sop-prompt-source-actions">
+                            {sourceRun.status === 'running' && (
+                              <span className="sop-prompt-source-running">
+                                <LoaderCircle size={13} className="animate-spin" />
+                                生成中
+                              </span>
+                            )}
+                            {canRetrySource && (
+                              <button
+                                type="button"
+                                onMouseDown={stopPromptActionPropagation}
+                                onClick={() => void generateForSources(sourceRun.source.id, false, true)}
+                                disabled={running}
+                                aria-label={`为「${sourceRun.source.label}」补充 ${sourceSupplementCount} 条提示词并生成 ${sourceSupplementCount * targetImagesPerPrompt} 张图片`}
+                                className="sop-prompt-source-action sop-prompt-source-action--primary"
+                              >
+                                <Sparkles size={13} />
+                                补齐 {sourceSupplementCount}
+                              </button>
+                            )}
+                          </div>
+                        </header>
+                        <div className="sop-prompt-index-items">
+                          {sourcePrompts.length > 0 ? (
+                            sourcePrompts.map((item) => renderPromptIndexRow(item, sourceRun))
+                          ) : (
+                            <p className="sop-prompt-source-empty">当前来源还没有提示词。</p>
+                          )}
+                        </div>
+                      </section>
+                    )
+                  })}
+                  {promptGroups.length === 0 && (
+                    <div className="sop-prompt-index-empty">
+                      <BookOpenCheck size={24} />
+                      <strong>这个提示词集还没有内容</strong>
+                      <span>可以从当前 SOP 生成，也可以新建独立提示词集后手动整理。</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {renderPromptDetail()}
+            </div>
+          </>
+        ) : (
+          <div className="sop-prompt-browser-empty">
+            <BookOpenCheck size={28} />
+            <strong>{filteredRuns.length ? '从左侧选择一个提示词集' : '还没有提示词集，建立你的第一个'}</strong>
+            <span>
+              {filteredRuns.length
+                ? '右侧会显示完整提示词、参考图、生成结果与可复用操作。'
+                : '新建提示词集会保存到列表顶部，或从 SOP 生成后自动保存。'}
+            </span>
+            {selectedSop && (
+              <button
+                type="button"
+                onClick={() => void generatePromptList()}
+                disabled={running}
+                aria-label={`生成 ${targetCount} 条 SOP 提示词`}
+                className="flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
+              >
+                <Sparkles size={14} />
+                从当前 SOP 生成
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+
   if (!visible) return null
 
   const statusMetaClass =
@@ -2183,6 +2856,7 @@ export default function GallerySopBatchModal({
             : 'text-ds-muted'
   const showRunToolbar = Boolean(selectedSop || running || error)
   const promptListReady = visiblePrompts.length > 0 && missingCount === 0
+  const showLegacyPromptWorkspace = false
 
   return (
     <div
@@ -2194,7 +2868,7 @@ export default function GallerySopBatchModal({
       <div className="ds-modal-scrim pointer-events-none absolute inset-0" />
       <div
         ref={modalRef}
-        style={largeView ? LARGE_MODAL_SIZE_STYLE : { height: 'min(86vh, 820px)', maxWidth: '1024px' }}
+        style={largeView ? LARGE_MODAL_SIZE_STYLE : { height: 'min(88vh, 900px)', maxWidth: 'min(98vw, 1560px)' }}
         className="ds-modal-surface relative z-10 flex w-full flex-col overflow-hidden rounded-ds-xl border transition-[width,height,max-width] duration-200 ease-out animate-modal-in motion-reduce:animate-none"
         role="dialog"
         aria-modal="true"
@@ -2238,11 +2912,11 @@ export default function GallerySopBatchModal({
           </div>
         </header>
 
-        <div className="flex min-h-0 flex-1 flex-col bg-ds-canvas p-4 sm:p-5">
+        <div className="sop-prompt-modal-body flex min-h-0 flex-1 flex-col p-0">
           {showRunToolbar && (
             <div
               aria-live="polite"
-              className={`mb-3 rounded-ds-lg border px-3 py-2.5 ${status === 'error' ? 'border-ds-danger/30 bg-ds-danger/10' : status === 'paused' ? 'border-ds-warning/30 bg-ds-warning/10' : running ? 'border-ds-primary/30 bg-ds-primary/10' : 'border-ds-border bg-ds-surface'}`}
+              className={`sop-prompt-modal-status mb-3 rounded-ds-lg border px-3 py-2.5 ${status === 'error' ? 'border-ds-danger/30 bg-ds-danger/10' : status === 'paused' ? 'border-ds-warning/30 bg-ds-warning/10' : running ? 'border-ds-primary/30 bg-ds-primary/10' : 'border-ds-border bg-ds-surface'}`}
             >
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex min-w-[15rem] flex-1 items-center gap-2.5">
@@ -2441,554 +3115,559 @@ export default function GallerySopBatchModal({
             </div>
           )}
 
-          <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-ds-lg border border-ds-border bg-ds-surface md:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]">
-            <aside className="flex min-h-0 flex-col border-b border-ds-border bg-ds-subtle md:border-b-0 md:border-r">
-              <div className="border-b border-ds-border p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold">提示词集</h3>
-                    <p className="mt-0.5 text-xs text-ds-muted">按生成时间倒序排列，最新的在最上面</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void createPromptCollection()}
-                    disabled={running}
-                    aria-label="新建提示词集"
-                    className="flex h-ds-control-sm items-center gap-1.5 rounded-lg bg-ds-primary px-2.5 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    <Plus size={13} />
-                    新建
-                  </button>
-                </div>
-                <label className="mt-3 flex h-ds-control-md items-center gap-2 rounded-lg border border-ds-border bg-ds-surface px-2.5 focus-within:border-ds-primary focus-within:ring-2 focus-within:ring-ds-primary/20">
-                  <Search size={14} className="shrink-0 text-ds-muted" />
-                  <input
-                    value={librarySearch}
-                    onChange={(event) => setLibrarySearch(event.target.value)}
-                    aria-label="搜索提示词集"
-                    placeholder="搜索提示词名称或内容"
-                    className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-ds-muted"
-                  />
-                </label>
-                <div className="mt-2 flex items-center gap-1.5 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setFavoritesOnly((current) => !current)}
-                    aria-pressed={favoritesOnly}
-                    className={`flex h-ds-control-sm items-center gap-1.5 rounded-lg px-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary ${favoritesOnly ? 'bg-ds-warning/10 text-ds-warning' : 'text-ds-muted hover:bg-ds-surface hover:text-ds-text'}`}
-                  >
-                    <Bookmark size={12} fill={favoritesOnly ? 'currentColor' : 'none'} />
-                    收藏
-                  </button>
-                  <span className="ml-auto shrink-0 text-ds-muted">{filteredRuns.length} 项</span>
-                </div>
-              </div>
-              {selectedRunIds.size > 0 && (
-                <div className="border-b border-ds-border bg-ds-selection px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="mr-1 shrink-0 rounded-md bg-ds-surface px-1.5 py-0.5 text-xs font-semibold text-ds-selection-text">
-                      已选 {selectedRunIds.size} 项
-                    </span>
-                    <button
-                      type="button"
-                      onClick={selectAllFilteredRuns}
-                      disabled={running}
-                      className="flex h-ds-control-sm items-center rounded-lg px-2 text-xs text-ds-muted transition-colors hover:bg-ds-surface hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
-                    >
-                      全选
-                    </button>
-                    <button
-                      type="button"
-                      onClick={invertRunSelection}
-                      disabled={running}
-                      className="flex h-ds-control-sm items-center rounded-lg px-2 text-xs text-ds-muted transition-colors hover:bg-ds-surface hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
-                    >
-                      反选
-                    </button>
-                    <span className="mx-0.5 h-4 w-px bg-ds-border" />
-                    <button
-                      type="button"
-                      onClick={batchDeleteRuns}
-                      disabled={running}
-                      className="flex h-ds-control-sm items-center gap-1 rounded-lg bg-ds-surface px-2 text-xs text-ds-danger transition-colors hover:bg-ds-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-danger disabled:opacity-40"
-                    >
-                      <Trash2 size={12} />
-                      删除
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearRunSelection}
-                      className="ml-auto flex h-ds-control-sm items-center gap-1 rounded-lg px-2 text-xs text-ds-muted transition-colors hover:bg-ds-surface hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary"
-                    >
-                      <X size={12} />
-                      取消选择
-                    </button>
-                  </div>
-                </div>
-              )}
-              <div
-                ref={listRef}
-                role="list"
-                aria-label="提示词集时间线"
-                data-drag-select-surface
-                className="relative min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2"
-              >
-                {renderPromptTimeline(filteredRuns)}
-                {filteredRuns.length === 0 && (
-                  <div className="flex min-h-40 flex-col items-center justify-center px-4 text-center text-ds-muted">
-                    <BookOpenCheck size={22} />
-                    <p className="mt-2 text-xs font-medium">
-                      {recentRuns.length ? '没有匹配的提示词集' : '还没有提示词集'}
-                    </p>
-                    <p className="mt-1 text-xs leading-5">
-                      {recentRuns.length ? '尝试其他关键词或关闭收藏筛选。' : '新建一个，或从 SOP 生成后自动保存。'}
-                    </p>
-                  </div>
-                )}
-                {selectionBox && (
-                  <div
-                    aria-hidden
-                    className="pointer-events-none absolute z-10 border border-ds-selection-border bg-ds-selection/60"
-                    style={getMarqueeBoxStyle(selectionBox, listRef.current)}
-                  />
-                )}
-              </div>
-            </aside>
-
-            <section className="flex min-h-0 min-w-0 flex-col">
-              {activeRun || sources.length > 0 ? (
-                <>
-                  <div className="border-b border-ds-border p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-[16rem] flex-1">
-                        <input
-                          value={runTitle}
-                          onChange={(event) => updateActiveRunMetadata({ title: event.target.value })}
-                          disabled={running}
-                          aria-label="提示词集名称"
-                          placeholder="未命名提示词集"
-                          className="w-full border-0 bg-transparent p-0 text-base font-semibold outline-none placeholder:text-ds-muted focus:ring-0 disabled:opacity-60"
-                        />
-                        <p className="mt-1 text-xs text-ds-muted">
-                          {activeRun?.sop.name ?? selectedSop?.name ?? '独立提示词集'} · {visiblePrompts.length}{' '}
-                          条提示词 · {activeRun ? getRunStatusLabel(activeRun) : '编辑中'}
-                          {activeRun?.promptGenerationModel ? ` · 文本模型 ${activeRun.promptGenerationModel}` : ''}
-                          {activeRun ? ` · ${new Date(getRunUpdatedAt(activeRun)).toLocaleString()}` : ''}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {status === 'paused' ? (
-                          <span className="mr-1 flex items-center gap-1.5 rounded-lg bg-ds-warning/10 px-2 py-1.5 text-xs text-ds-warning">
-                            <Pause size={13} />
-                            已暂停
-                          </span>
-                        ) : (
-                          running && (
-                            <span className="mr-1 flex items-center gap-1.5 rounded-lg bg-ds-primary/10 px-2 py-1.5 text-xs text-ds-primary">
-                              <LoaderCircle size={13} className="animate-spin" />
-                              处理中
-                            </span>
-                          )
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => void toggleActiveRunPinned()}
-                          disabled={running || !activeRun}
-                          aria-label={activeRun?.pinned ? '取消收藏当前提示词集' : '收藏当前提示词集'}
-                          aria-pressed={Boolean(activeRun?.pinned)}
-                          title={activeRun?.pinned ? '取消收藏' : '收藏'}
-                          className={`flex h-ds-control-md w-ds-control-md items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40 ${activeRun?.pinned ? 'bg-ds-warning/10 text-ds-warning' : 'text-ds-muted hover:bg-ds-subtle hover:text-ds-text'}`}
-                        >
-                          <Bookmark size={15} fill={activeRun?.pinned ? 'currentColor' : 'none'} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void copyActivePrompts()}
-                          disabled={running || visiblePrompts.length === 0}
-                          aria-label="复制全部提示词"
-                          title="复制全部"
-                          className="flex h-ds-control-md w-ds-control-md items-center justify-center rounded-lg text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-30"
-                        >
-                          <Copy size={15} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(event) => activeRun && openLibraryContextMenu(event, activeRun)}
-                          disabled={running || !activeRun}
-                          aria-label="更多提示词集操作"
-                          title="更多操作"
-                          className="flex h-ds-control-md w-ds-control-md items-center justify-center rounded-lg text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-30"
-                        >
-                          <MoreHorizontal size={15} />
-                        </button>
-                      </div>
+          {showLegacyPromptWorkspace ? (
+            <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-ds-lg border border-ds-border bg-ds-surface md:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]">
+              <aside className="flex min-h-0 flex-col border-b border-ds-border bg-ds-subtle md:border-b-0 md:border-r">
+                <div className="border-b border-ds-border p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">提示词集</h3>
+                      <p className="mt-0.5 text-xs text-ds-muted">按生成时间倒序排列，最新的在最上面</p>
                     </div>
-                    <details className="group mt-3 rounded-lg bg-ds-subtle">
-                      <summary
-                        aria-label="展开提示词集信息"
-                        className="flex h-ds-control-md cursor-pointer list-none items-center gap-2 px-3 text-xs text-ds-muted outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-primary [&::-webkit-details-marker]:hidden"
-                      >
-                        <span className="font-medium text-ds-text">提示词集信息</span>
-                        <span className="min-w-0 flex-1 truncate text-xs">
-                          {activeRun?.promptGroup?.name ?? '根目录'}
-                          {brief.trim() ? ' · 已填写说明' : ''}
-                        </span>
-                        <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
-                      </summary>
-                      <div className="grid gap-3 border-t border-ds-border p-3 sm:grid-cols-[minmax(12rem,0.45fr)_minmax(0,1fr)]">
-                        <label className="block text-xs font-medium text-ds-muted">
-                          <span className="mb-1 block">说明</span>
-                          <textarea
-                            value={brief}
-                            onChange={(event) => updateActiveRunMetadata({ brief: event.target.value })}
-                            disabled={running}
-                            rows={2}
-                            aria-label="提示词集说明"
-                            placeholder="记录用途、风格或限制"
-                            className="min-h-ds-control-md w-full resize-y rounded-lg border border-ds-border bg-ds-surface px-3 py-2 text-xs leading-5 outline-none focus:border-ds-primary focus:ring-2 focus:ring-ds-primary/20 disabled:opacity-60"
-                          />
-                        </label>
-                      </div>
-                    </details>
-                  </div>
-
-                  <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                    {sources.map((sourceRun) => {
-                      const sourcePrompts = prompts.filter(
-                        (item) => !item.deleted && promptBelongsToSource(item, sourceRun.source),
-                      )
-                      const sourceAvailable = sourcePrompts.filter((item) => item.promptText.trim()).length
-                      const sourceMissing = Math.max(0, sourceRun.requestedCount - sourceAvailable)
-                      const sourceSupplementCount = Math.min(sourceMissing, missingCount)
-                      const canRetrySource = Boolean(
-                        selectedSop && sourceSupplementCount > 0 && sourceRun.status !== 'running',
-                      )
-                      return (
-                        <article
-                          key={sourceRun.source.id}
-                          className="mb-4 overflow-hidden rounded-ds-lg border border-ds-border"
-                        >
-                          <div className="flex flex-wrap items-center gap-3 border-b border-ds-border bg-ds-subtle px-3 py-2.5">
-                            <div className="h-ds-control-lg w-ds-control-lg shrink-0 overflow-hidden rounded-lg">
-                              <SourceThumb source={sourceRun.source} />
-                            </div>
-                            <div className="min-w-[12rem] flex-1">
-                              <h4 className="truncate text-sm font-semibold">{sourceRun.source.label}</h4>
-                              <p className="mt-0.5 text-xs text-ds-muted">
-                                目标 {sourceRun.requestedCount} 条 · 已有 {sourceAvailable} 条
-                                {sourceMissing > 0 ? ` · 待补 ${sourceMissing} 条` : ''}
-                              </p>
-                              {sourceRun.error && (
-                                <p className="mt-1 text-xs leading-5 text-ds-danger">{sourceRun.error}</p>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {sourceRun.status === 'running' && (
-                                <span className="flex items-center gap-1.5 text-xs text-ds-primary">
-                                  <LoaderCircle size={13} className="animate-spin" />
-                                  生成中
-                                </span>
-                              )}
-                              {canRetrySource && (
-                                <button
-                                  type="button"
-                                  onClick={() => void generateForSources(sourceRun.source.id, false, true)}
-                                  disabled={running}
-                                  aria-label={`为「${sourceRun.source.label}」补充 ${sourceSupplementCount} 条提示词并生成 ${sourceSupplementCount * targetImagesPerPrompt} 张图片`}
-                                  className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-primary/30 bg-ds-surface px-2.5 text-xs font-medium text-ds-primary transition-colors hover:bg-ds-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
-                                >
-                                  <Sparkles size={13} />
-                                  补齐 {sourceSupplementCount} 条并生成 {sourceSupplementCount * targetImagesPerPrompt}{' '}
-                                  张
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => addManualPrompt(sourceRun.source.id)}
-                                disabled={running}
-                                className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2.5 text-xs font-medium text-ds-text transition-colors hover:bg-ds-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                <Plus size={13} />
-                                新增提示词
-                              </button>
-                            </div>
-                          </div>
-                          <div className="space-y-3 p-3">
-                            {sourcePrompts.map((item, index) => {
-                              const referenceSources = getPromptReferenceSources(item)
-                              const outputLinks = activePromptImageLinksByPromptId.get(item.id) ?? []
-                              const primaryOutput = outputLinks[0]
-                              const extraOutputs = outputLinks.slice(1)
-                              return (
-                                <div
-                                  id={`prompt-output-${item.id}`}
-                                  key={item.id}
-                                  data-slot="item"
-                                  className="group/prompt-item grid scroll-mt-4 grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-ds-lg border border-ds-border bg-ds-surface p-3 transition-colors hover:border-ds-primary/30"
-                                >
-                                  <section
-                                    data-slot="item-media"
-                                    aria-label={`第 ${index + 1} 条提示词的生成结果`}
-                                    className="flex min-w-0 flex-col"
-                                  >
-                                    <div className="relative">
-                                      {primaryOutput ? (
-                                        <PromptOutputImage
-                                          imageId={primaryOutput.imageId}
-                                          index={index}
-                                          onClick={() =>
-                                            setPreviewSource({
-                                              id: `output-${primaryOutput.imageId}`,
-                                              label: '图片 1',
-                                              kind: 'image',
-                                              imageId: primaryOutput.imageId,
-                                            })
-                                          }
-                                        />
-                                      ) : (
-                                        <div className="flex h-[140px] w-28 flex-col items-center justify-center gap-1.5 rounded-lg border border-ds-border bg-ds-subtle text-xs text-ds-muted">
-                                          <ImageIcon size={18} />
-                                          <span>等待生成</span>
-                                        </div>
-                                      )}
-                                      <span className="absolute left-1.5 top-1.5 flex h-5 min-w-5 items-center justify-center rounded-md border border-ds-border bg-ds-surface px-1 text-xs font-semibold text-ds-text">
-                                        {index + 1}
-                                      </span>
-                                      <span className="absolute bottom-1.5 right-1.5 rounded-md border border-ds-border bg-ds-surface px-1.5 py-0.5 text-xs tabular-nums text-ds-muted">
-                                        {outputLinks.length} 张
-                                      </span>
-                                    </div>
-                                    {extraOutputs.length > 0 && (
-                                      <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1">
-                                        {extraOutputs.map((outputLink, extraIndex) => (
-                                          <button
-                                            key={outputLink.imageId}
-                                            type="button"
-                                            onClick={() =>
-                                              setPreviewSource({
-                                                id: `output-${outputLink.imageId}`,
-                                                label: `图片 ${extraIndex + 2}`,
-                                                kind: 'image',
-                                                imageId: outputLink.imageId,
-                                              })
-                                            }
-                                            aria-label={`查看第 ${index + 1} 条提示词的生成图片 ${extraIndex + 2}`}
-                                            className="h-ds-control-sm w-ds-control-sm shrink-0 overflow-hidden rounded-md border border-ds-border bg-ds-subtle transition-colors hover:border-ds-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary"
-                                          >
-                                            <OutputImageThumb
-                                              imageId={outputLink.imageId}
-                                              label={`提示词 ${index + 1} 的生成图片 ${extraIndex + 2}`}
-                                            />
-                                          </button>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </section>
-                                  <div data-slot="item-content" className="min-h-0 min-w-0">
-                                    <div
-                                      data-slot="input-group"
-                                      role="group"
-                                      aria-label={`第 ${index + 1} 条提示词编辑器`}
-                                      className="flex h-full flex-col overflow-hidden rounded-lg border border-ds-border bg-ds-subtle transition-colors focus-within:border-ds-primary focus-within:bg-ds-surface focus-within:ring-2 focus-within:ring-ds-primary/20"
-                                    >
-                                      <div
-                                        data-slot="input-group-header"
-                                        className="flex min-h-ds-control-md shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-ds-border px-3 py-2"
-                                      >
-                                        <span className="text-xs font-semibold text-ds-text">提示词</span>
-                                        <span
-                                          className={`flex items-center gap-1 text-xs ${item.origin === 'ai' ? 'text-ds-primary' : 'text-ds-info'}`}
-                                        >
-                                          {item.origin === 'ai' && <Sparkles size={11} />}
-                                          {item.origin === 'ai' ? '智能生成' : '手动添加'}
-                                        </span>
-                                        <span className="ml-auto flex items-center gap-1 text-xs text-ds-muted">
-                                          <CheckCircle2 size={11} />
-                                          自动保存
-                                        </span>
-                                      </div>
-                                      <AutoResizeTextarea
-                                        value={item.promptText}
-                                        onChange={(event) =>
-                                          updatePrompts((current) =>
-                                            current.map((entry) =>
-                                              entry.id === item.id
-                                                ? { ...entry, promptText: event.target.value, edited: true }
-                                                : entry,
-                                            ),
-                                          )
-                                        }
-                                        disabled={running}
-                                        aria-label={`第 ${index + 1} 条提示词`}
-                                        className="min-h-20 w-full flex-1 resize-y border-0 bg-transparent px-3 py-2.5 text-sm leading-6 text-ds-text outline-none disabled:opacity-60"
-                                      />
-                                      <div
-                                        data-slot="input-group-addon"
-                                        aria-label={`第 ${index + 1} 条提示词的功能与状态`}
-                                        className="flex min-h-ds-control-lg shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-ds-border px-2 py-1.5"
-                                      >
-                                        <span className="flex items-center gap-1 text-xs text-ds-muted">
-                                          <CheckCircle2 size={11} />
-                                          {item.edited ? '已编辑' : '原始内容'}
-                                        </span>
-                                        {referenceSources.length > 0 && (
-                                          <>
-                                            <span aria-hidden="true" className="h-3 w-px bg-ds-border" />
-                                            <div className="flex min-w-0 items-center gap-1.5">
-                                              <span className="shrink-0 text-xs text-ds-muted">
-                                                参考 {referenceSources.length}
-                                              </span>
-                                              <div className="flex min-w-0 gap-1 overflow-x-auto">
-                                                {referenceSources.map((referenceSource, referenceIndex) => (
-                                                  <button
-                                                    key={referenceSource.imageId ?? referenceSource.id}
-                                                    type="button"
-                                                    onClick={() => setPreviewSource(referenceSource)}
-                                                    aria-label={`查看第 ${index + 1} 条提示词的参考图 ${referenceIndex + 1} 大图`}
-                                                    title={`${referenceSource.label} · 点击查看大图`}
-                                                    className="h-6 w-6 shrink-0 overflow-hidden rounded-md border border-ds-border bg-ds-surface transition-colors hover:border-ds-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary"
-                                                  >
-                                                    <SourceThumb source={referenceSource} />
-                                                  </button>
-                                                ))}
-                                              </div>
-                                            </div>
-                                          </>
-                                        )}
-                                        <div
-                                          data-slot="button-group"
-                                          role="group"
-                                          aria-label={`第 ${index + 1} 条提示词操作`}
-                                          className="ml-auto flex overflow-hidden rounded-md border border-ds-border bg-ds-surface [&>button+button]:border-l [&>button+button]:border-ds-border"
-                                        >
-                                          <button
-                                            type="button"
-                                            onClick={() => void copyPrompt(item.promptText)}
-                                            disabled={!item.promptText.trim()}
-                                            aria-label={`复制第 ${index + 1} 条提示词`}
-                                            title="复制提示词"
-                                            className="flex h-ds-control-sm items-center justify-center gap-1.5 px-2.5 text-xs font-medium text-ds-muted transition-colors hover:bg-ds-primary/10 hover:text-ds-primary focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-30"
-                                          >
-                                            <Copy size={12} />
-                                            复制
-                                          </button>
-                                          {selectedSop && (
-                                            <button
-                                              type="button"
-                                              onClick={() => void regeneratePrompt(item)}
-                                              disabled={running}
-                                              aria-label={`重新生成第 ${index + 1} 条提示词`}
-                                              title="重新生成"
-                                              className="flex h-ds-control-sm w-ds-control-sm items-center justify-center text-ds-muted transition-colors hover:bg-ds-primary/10 hover:text-ds-primary focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
-                                            >
-                                              <RefreshCw size={13} />
-                                            </button>
-                                          )}
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              updatePrompts((current) =>
-                                                current.map((entry) =>
-                                                  entry.id === item.id ? { ...entry, deleted: true } : entry,
-                                                ),
-                                              )
-                                              showToast('已删除该条提示词', 'success')
-                                            }}
-                                            disabled={running}
-                                            aria-label={`删除第 ${index + 1} 条提示词`}
-                                            title="删除提示词"
-                                            className="flex h-ds-control-sm w-ds-control-sm items-center justify-center text-ds-muted transition-colors hover:bg-ds-danger/10 hover:text-ds-danger focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-danger disabled:cursor-not-allowed disabled:opacity-40"
-                                          >
-                                            <Trash2 size={13} />
-                                          </button>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                            {!sourcePrompts.length && (
-                              <p className="rounded-lg border border-dashed border-ds-border p-4 text-center text-xs text-ds-muted">
-                                当前没有提示词，可点击“新增提示词”手动添加。
-                              </p>
-                            )}
-                          </div>
-                        </article>
-                      )
-                    })}
-                    {!sources.length && (
-                      <div className="flex min-h-64 flex-col items-center justify-center rounded-ds-lg border border-dashed border-ds-border px-6 text-center text-ds-muted">
-                        <BookOpenCheck size={26} />
-                        <p className="mt-3 text-sm font-medium">这个提示词集还没有内容</p>
-                        <p className="mt-1 max-w-md text-xs leading-5">
-                          可以从 SOP 生成，也可以新建独立提示词集后手动整理。
-                        </p>
-                        <div className="mt-4 flex items-center gap-2">
-                          {selectedSop ? (
-                            <button
-                              type="button"
-                              onClick={() => void generatePromptList()}
-                              disabled={running}
-                              aria-label={`生成 ${targetCount} 条 SOP 提示词`}
-                              className="flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-ds-subtle disabled:text-ds-muted"
-                            >
-                              <Sparkles size={14} />
-                              从当前 SOP 生成
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => void createPromptCollection()}
-                              disabled={running}
-                              className="flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
-                            >
-                              <Plus size={14} />
-                              新建提示词集
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="flex min-h-64 flex-1 flex-col items-center justify-center px-6 text-center text-ds-muted">
-                  <BookOpenCheck size={28} />
-                  <p className="mt-3 text-sm font-medium">
-                    {filteredRuns.length ? '从左侧选择一个提示词集' : '还没有提示词集，建立你的第一个'}
-                  </p>
-                  <p className="mt-1 max-w-md text-xs leading-5">
-                    {filteredRuns.length
-                      ? '右侧会显示完整提示词、说明与可复用操作。'
-                      : '新建提示词集会保存到列表顶部，或从 SOP 生成后自动保存。'}
-                  </p>
-                  {selectedSop ? (
-                    <button
-                      type="button"
-                      onClick={() => void generatePromptList()}
-                      disabled={running}
-                      aria-label={`生成 ${targetCount} 条 SOP 提示词`}
-                      className="mt-4 flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
-                    >
-                      <Sparkles size={14} />
-                      从当前 SOP 生成
-                    </button>
-                  ) : (
                     <button
                       type="button"
                       onClick={() => void createPromptCollection()}
                       disabled={running}
-                      className="mt-4 flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
+                      aria-label="新建提示词集"
+                      className="flex h-ds-control-sm items-center gap-1.5 rounded-lg bg-ds-primary px-2.5 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <Plus size={14} />
-                      新建提示词集
+                      <Plus size={13} />
+                      新建
                     </button>
+                  </div>
+                  <label className="mt-3 flex h-ds-control-md items-center gap-2 rounded-lg border border-ds-border bg-ds-surface px-2.5 focus-within:border-ds-primary focus-within:ring-2 focus-within:ring-ds-primary/20">
+                    <Search size={14} className="shrink-0 text-ds-muted" />
+                    <input
+                      value={librarySearch}
+                      onChange={(event) => setLibrarySearch(event.target.value)}
+                      aria-label="搜索提示词集"
+                      placeholder="搜索提示词名称或内容"
+                      className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-ds-muted"
+                    />
+                  </label>
+                  <div className="mt-2 flex items-center gap-1.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setFavoritesOnly((current) => !current)}
+                      aria-pressed={favoritesOnly}
+                      className={`flex h-ds-control-sm items-center gap-1.5 rounded-lg px-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary ${favoritesOnly ? 'bg-ds-warning/10 text-ds-warning' : 'text-ds-muted hover:bg-ds-surface hover:text-ds-text'}`}
+                    >
+                      <Bookmark size={12} fill={favoritesOnly ? 'currentColor' : 'none'} />
+                      收藏
+                    </button>
+                    <span className="ml-auto shrink-0 text-ds-muted">{filteredRuns.length} 项</span>
+                  </div>
+                </div>
+                {selectedRunIds.size > 0 && (
+                  <div className="border-b border-ds-border bg-ds-selection px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="mr-1 shrink-0 rounded-md bg-ds-surface px-1.5 py-0.5 text-xs font-semibold text-ds-selection-text">
+                        已选 {selectedRunIds.size} 项
+                      </span>
+                      <button
+                        type="button"
+                        onClick={selectAllFilteredRuns}
+                        disabled={running}
+                        className="flex h-ds-control-sm items-center rounded-lg px-2 text-xs text-ds-muted transition-colors hover:bg-ds-surface hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
+                      >
+                        全选
+                      </button>
+                      <button
+                        type="button"
+                        onClick={invertRunSelection}
+                        disabled={running}
+                        className="flex h-ds-control-sm items-center rounded-lg px-2 text-xs text-ds-muted transition-colors hover:bg-ds-surface hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
+                      >
+                        反选
+                      </button>
+                      <span className="mx-0.5 h-4 w-px bg-ds-border" />
+                      <button
+                        type="button"
+                        onClick={batchDeleteRuns}
+                        disabled={running}
+                        className="flex h-ds-control-sm items-center gap-1 rounded-lg bg-ds-surface px-2 text-xs text-ds-danger transition-colors hover:bg-ds-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-danger disabled:opacity-40"
+                      >
+                        <Trash2 size={12} />
+                        删除
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearRunSelection}
+                        className="ml-auto flex h-ds-control-sm items-center gap-1 rounded-lg px-2 text-xs text-ds-muted transition-colors hover:bg-ds-surface hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary"
+                      >
+                        <X size={12} />
+                        取消选择
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div
+                  ref={listRef}
+                  role="list"
+                  aria-label="提示词集时间线"
+                  data-drag-select-surface
+                  className="relative min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2"
+                >
+                  {renderPromptTimeline(filteredRuns)}
+                  {filteredRuns.length === 0 && (
+                    <div className="flex min-h-40 flex-col items-center justify-center px-4 text-center text-ds-muted">
+                      <BookOpenCheck size={22} />
+                      <p className="mt-2 text-xs font-medium">
+                        {recentRuns.length ? '没有匹配的提示词集' : '还没有提示词集'}
+                      </p>
+                      <p className="mt-1 text-xs leading-5">
+                        {recentRuns.length ? '尝试其他关键词或关闭收藏筛选。' : '新建一个，或从 SOP 生成后自动保存。'}
+                      </p>
+                    </div>
+                  )}
+                  {selectionBox && (
+                    <div
+                      aria-hidden
+                      className="pointer-events-none absolute z-10 border border-ds-selection-border bg-ds-selection/60"
+                      style={selectionBox ? getMarqueeBoxStyle(selectionBox!, listRef.current) : undefined}
+                    />
                   )}
                 </div>
-              )}
-            </section>
-          </div>
+              </aside>
+
+              <section className="flex min-h-0 min-w-0 flex-col">
+                {activeRun || sources.length > 0 ? (
+                  <>
+                    <div className="border-b border-ds-border p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-[16rem] flex-1">
+                          <input
+                            value={runTitle}
+                            onChange={(event) => updateActiveRunMetadata({ title: event.target.value })}
+                            disabled={running}
+                            aria-label="提示词集名称"
+                            placeholder="未命名提示词集"
+                            className="w-full border-0 bg-transparent p-0 text-base font-semibold outline-none placeholder:text-ds-muted focus:ring-0 disabled:opacity-60"
+                          />
+                          <p className="mt-1 text-xs text-ds-muted">
+                            {activeRun?.sop.name ?? selectedSop?.name ?? '独立提示词集'} · {visiblePrompts.length}{' '}
+                            条提示词 · {activeRun ? getRunStatusLabel(activeRun!) : '编辑中'}
+                            {activeRun?.promptGenerationModel ? ` · 文本模型 ${activeRun?.promptGenerationModel}` : ''}
+                            {activeRun ? ` · ${new Date(getRunUpdatedAt(activeRun!)).toLocaleString()}` : ''}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {status === 'paused' ? (
+                            <span className="mr-1 flex items-center gap-1.5 rounded-lg bg-ds-warning/10 px-2 py-1.5 text-xs text-ds-warning">
+                              <Pause size={13} />
+                              已暂停
+                            </span>
+                          ) : (
+                            running && (
+                              <span className="mr-1 flex items-center gap-1.5 rounded-lg bg-ds-primary/10 px-2 py-1.5 text-xs text-ds-primary">
+                                <LoaderCircle size={13} className="animate-spin" />
+                                处理中
+                              </span>
+                            )
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void toggleActiveRunPinned()}
+                            disabled={running || !activeRun}
+                            aria-label={activeRun?.pinned ? '取消收藏当前提示词集' : '收藏当前提示词集'}
+                            aria-pressed={Boolean(activeRun?.pinned)}
+                            title={activeRun?.pinned ? '取消收藏' : '收藏'}
+                            className={`flex h-ds-control-md w-ds-control-md items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40 ${activeRun?.pinned ? 'bg-ds-warning/10 text-ds-warning' : 'text-ds-muted hover:bg-ds-subtle hover:text-ds-text'}`}
+                          >
+                            <Bookmark size={15} fill={activeRun?.pinned ? 'currentColor' : 'none'} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void copyActivePrompts()}
+                            disabled={running || visiblePrompts.length === 0}
+                            aria-label="复制全部提示词"
+                            title="复制全部"
+                            className="flex h-ds-control-md w-ds-control-md items-center justify-center rounded-lg text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-30"
+                          >
+                            <Copy size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => activeRun && openLibraryContextMenu(event, activeRun)}
+                            disabled={running || !activeRun}
+                            aria-label="更多提示词集操作"
+                            title="更多操作"
+                            className="flex h-ds-control-md w-ds-control-md items-center justify-center rounded-lg text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-30"
+                          >
+                            <MoreHorizontal size={15} />
+                          </button>
+                        </div>
+                      </div>
+                      <details className="group mt-3 rounded-lg bg-ds-subtle">
+                        <summary
+                          aria-label="展开提示词集信息"
+                          className="flex h-ds-control-md cursor-pointer list-none items-center gap-2 px-3 text-xs text-ds-muted outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-primary [&::-webkit-details-marker]:hidden"
+                        >
+                          <span className="font-medium text-ds-text">提示词集信息</span>
+                          <span className="min-w-0 flex-1 truncate text-xs">
+                            {activeRun?.promptGroup?.name ?? '根目录'}
+                            {effectiveBrief.trim() ? ' · 已填写说明' : ''}
+                          </span>
+                          <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
+                        </summary>
+                        <div className="grid gap-3 border-t border-ds-border p-3 sm:grid-cols-[minmax(12rem,0.45fr)_minmax(0,1fr)]">
+                          <label className="block text-xs font-medium text-ds-muted">
+                            <span className="mb-1 block">说明</span>
+                            <textarea
+                              value={effectiveBrief}
+                              onChange={(event) => updateActiveRunMetadata({ brief: event.target.value })}
+                              disabled={running}
+                              rows={2}
+                              aria-label="提示词集说明"
+                              placeholder="记录用途、风格或限制"
+                              className="min-h-ds-control-md w-full resize-y rounded-lg border border-ds-border bg-ds-surface px-3 py-2 text-xs leading-5 outline-none focus:border-ds-primary focus:ring-2 focus:ring-ds-primary/20 disabled:opacity-60"
+                            />
+                          </label>
+                        </div>
+                      </details>
+                    </div>
+
+                    <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                      {sources.map((sourceRun) => {
+                        const sourcePrompts = prompts.filter(
+                          (item) => !item.deleted && promptBelongsToSource(item, sourceRun.source),
+                        )
+                        const sourceAvailable = sourcePrompts.filter((item) => item.promptText.trim()).length
+                        const sourceMissing = Math.max(0, sourceRun.requestedCount - sourceAvailable)
+                        const sourceSupplementCount = Math.min(sourceMissing, missingCount)
+                        const canRetrySource = Boolean(
+                          selectedSop && sourceSupplementCount > 0 && sourceRun.status !== 'running',
+                        )
+                        return (
+                          <article
+                            key={sourceRun.source.id}
+                            className="mb-4 overflow-hidden rounded-ds-lg border border-ds-border"
+                          >
+                            <div className="flex flex-wrap items-center gap-3 border-b border-ds-border bg-ds-subtle px-3 py-2.5">
+                              <div className="h-ds-control-lg w-ds-control-lg shrink-0 overflow-hidden rounded-lg">
+                                <SourceThumb source={sourceRun.source} />
+                              </div>
+                              <div className="min-w-[12rem] flex-1">
+                                <h4 className="truncate text-sm font-semibold">{sourceRun.source.label}</h4>
+                                <p className="mt-0.5 text-xs text-ds-muted">
+                                  目标 {sourceRun.requestedCount} 条 · 已有 {sourceAvailable} 条
+                                  {sourceMissing > 0 ? ` · 待补 ${sourceMissing} 条` : ''}
+                                </p>
+                                {sourceRun.error && (
+                                  <p className="mt-1 text-xs leading-5 text-ds-danger">{sourceRun.error}</p>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {sourceRun.status === 'running' && (
+                                  <span className="flex items-center gap-1.5 text-xs text-ds-primary">
+                                    <LoaderCircle size={13} className="animate-spin" />
+                                    生成中
+                                  </span>
+                                )}
+                                {canRetrySource && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void generateForSources(sourceRun.source.id, false, true)}
+                                    disabled={running}
+                                    aria-label={`为「${sourceRun.source.label}」补充 ${sourceSupplementCount} 条提示词并生成 ${sourceSupplementCount * targetImagesPerPrompt} 张图片`}
+                                    className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-primary/30 bg-ds-surface px-2.5 text-xs font-medium text-ds-primary transition-colors hover:bg-ds-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Sparkles size={13} />
+                                    补齐 {sourceSupplementCount} 条并生成{' '}
+                                    {sourceSupplementCount * targetImagesPerPrompt} 张
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => addManualPrompt(sourceRun.source.id)}
+                                  disabled={running}
+                                  className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2.5 text-xs font-medium text-ds-text transition-colors hover:bg-ds-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  <Plus size={13} />
+                                  新增提示词
+                                </button>
+                              </div>
+                            </div>
+                            <div className="space-y-3 p-3">
+                              {sourcePrompts.map((item, index) => {
+                                const referenceSources = getPromptReferenceSources(item)
+                                const outputLinks = activePromptImageLinksByPromptId.get(item.id) ?? []
+                                const primaryOutput = outputLinks[0]
+                                const extraOutputs = outputLinks.slice(1)
+                                return (
+                                  <div
+                                    id={`prompt-output-${item.id}`}
+                                    key={item.id}
+                                    data-slot="item"
+                                    className="group/prompt-item grid scroll-mt-4 grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-ds-lg border border-ds-border bg-ds-surface p-3 transition-colors hover:border-ds-primary/30"
+                                  >
+                                    <section
+                                      data-slot="item-media"
+                                      aria-label={`第 ${index + 1} 条提示词的生成结果`}
+                                      className="flex min-w-0 flex-col"
+                                    >
+                                      <div className="relative">
+                                        {primaryOutput ? (
+                                          <PromptOutputImage
+                                            imageId={primaryOutput.imageId}
+                                            index={index}
+                                            onClick={() =>
+                                              setPreviewSource({
+                                                id: `output-${primaryOutput.imageId}`,
+                                                label: '图片 1',
+                                                kind: 'image',
+                                                imageId: primaryOutput.imageId,
+                                              })
+                                            }
+                                          />
+                                        ) : (
+                                          <div className="flex h-[140px] w-28 flex-col items-center justify-center gap-1.5 rounded-lg border border-ds-border bg-ds-subtle text-xs text-ds-muted">
+                                            <ImageIcon size={18} />
+                                            <span>等待生成</span>
+                                          </div>
+                                        )}
+                                        <span className="absolute left-1.5 top-1.5 flex h-5 min-w-5 items-center justify-center rounded-md border border-ds-border bg-ds-surface px-1 text-xs font-semibold text-ds-text">
+                                          {index + 1}
+                                        </span>
+                                        <span className="absolute bottom-1.5 right-1.5 rounded-md border border-ds-border bg-ds-surface px-1.5 py-0.5 text-xs tabular-nums text-ds-muted">
+                                          {outputLinks.length} 张
+                                        </span>
+                                      </div>
+                                      {extraOutputs.length > 0 && (
+                                        <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1">
+                                          {extraOutputs.map((outputLink, extraIndex) => (
+                                            <button
+                                              key={outputLink.imageId}
+                                              type="button"
+                                              onMouseDown={stopPromptActionPropagation}
+                                              onClick={() =>
+                                                setPreviewSource({
+                                                  id: `output-${outputLink.imageId}`,
+                                                  label: `图片 ${extraIndex + 2}`,
+                                                  kind: 'image',
+                                                  imageId: outputLink.imageId,
+                                                })
+                                              }
+                                              aria-label={`查看第 ${index + 1} 条提示词的生成图片 ${extraIndex + 2}`}
+                                              className="h-ds-control-sm w-ds-control-sm shrink-0 overflow-hidden rounded-md border border-ds-border bg-ds-subtle transition-colors hover:border-ds-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary"
+                                            >
+                                              <OutputImageThumb
+                                                imageId={outputLink.imageId}
+                                                label={`提示词 ${index + 1} 的生成图片 ${extraIndex + 2}`}
+                                              />
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </section>
+                                    <div data-slot="item-content" className="min-h-0 min-w-0">
+                                      <div
+                                        data-slot="input-group"
+                                        role="group"
+                                        aria-label={`第 ${index + 1} 条提示词编辑器`}
+                                        className="flex h-full flex-col overflow-hidden rounded-lg border border-ds-border bg-ds-subtle transition-colors focus-within:border-ds-primary focus-within:bg-ds-surface focus-within:ring-2 focus-within:ring-ds-primary/20"
+                                      >
+                                        <div
+                                          data-slot="input-group-header"
+                                          className="flex min-h-ds-control-md shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-ds-border px-3 py-2"
+                                        >
+                                          <span className="text-xs font-semibold text-ds-text">提示词</span>
+                                          <span
+                                            className={`flex items-center gap-1 text-xs ${item.origin === 'ai' ? 'text-ds-primary' : 'text-ds-info'}`}
+                                          >
+                                            {item.origin === 'ai' && <Sparkles size={11} />}
+                                            {item.origin === 'ai' ? '智能生成' : '手动添加'}
+                                          </span>
+                                          <span className="ml-auto flex items-center gap-1 text-xs text-ds-muted">
+                                            <CheckCircle2 size={11} />
+                                            自动保存
+                                          </span>
+                                        </div>
+                                        <AutoResizeTextarea
+                                          value={item.promptText}
+                                          onChange={(event) =>
+                                            updatePrompts((current) =>
+                                              current.map((entry) =>
+                                                entry.id === item.id
+                                                  ? { ...entry, promptText: event.target.value, edited: true }
+                                                  : entry,
+                                              ),
+                                            )
+                                          }
+                                          disabled={running}
+                                          aria-label={`第 ${index + 1} 条提示词`}
+                                          className="min-h-20 w-full flex-1 resize-y border-0 bg-transparent px-3 py-2.5 text-sm leading-6 text-ds-text outline-none disabled:opacity-60"
+                                        />
+                                        <div
+                                          data-slot="input-group-addon"
+                                          aria-label={`第 ${index + 1} 条提示词的功能与状态`}
+                                          className="flex min-h-ds-control-lg shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-ds-border px-2 py-1.5"
+                                        >
+                                          <span className="flex items-center gap-1 text-xs text-ds-muted">
+                                            <CheckCircle2 size={11} />
+                                            {item.edited ? '已编辑' : '原始内容'}
+                                          </span>
+                                          {referenceSources.length > 0 && (
+                                            <>
+                                              <span aria-hidden="true" className="h-3 w-px bg-ds-border" />
+                                              <div className="flex min-w-0 items-center gap-1.5">
+                                                <span className="shrink-0 text-xs text-ds-muted">
+                                                  参考 {referenceSources.length}
+                                                </span>
+                                                <div className="flex min-w-0 gap-1 overflow-x-auto">
+                                                  {referenceSources.map((referenceSource, referenceIndex) => (
+                                                    <button
+                                                      key={referenceSource.imageId ?? referenceSource.id}
+                                                      type="button"
+                                                      onClick={() => setPreviewSource(referenceSource)}
+                                                      aria-label={`查看第 ${index + 1} 条提示词的参考图 ${referenceIndex + 1} 大图`}
+                                                      title={`${referenceSource.label} · 点击查看大图`}
+                                                      className="h-6 w-6 shrink-0 overflow-hidden rounded-md border border-ds-border bg-ds-surface transition-colors hover:border-ds-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary"
+                                                    >
+                                                      <SourceThumb source={referenceSource} />
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            </>
+                                          )}
+                                          <div
+                                            data-slot="button-group"
+                                            role="group"
+                                            aria-label={`第 ${index + 1} 条提示词操作`}
+                                            className="ml-auto flex overflow-hidden rounded-md border border-ds-border bg-ds-surface [&>button+button]:border-l [&>button+button]:border-ds-border"
+                                          >
+                                            <button
+                                              type="button"
+                                              onClick={() => void copyPrompt(item.promptText)}
+                                              disabled={!item.promptText.trim()}
+                                              aria-label={`复制第 ${index + 1} 条提示词`}
+                                              title="复制提示词"
+                                              className="flex h-ds-control-sm items-center justify-center gap-1.5 px-2.5 text-xs font-medium text-ds-muted transition-colors hover:bg-ds-primary/10 hover:text-ds-primary focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-30"
+                                            >
+                                              <Copy size={12} />
+                                              复制
+                                            </button>
+                                            {selectedSop && (
+                                              <button
+                                                type="button"
+                                                onClick={() => void regeneratePrompt(item)}
+                                                disabled={running}
+                                                aria-label={`重新生成第 ${index + 1} 条提示词`}
+                                                title="重新生成"
+                                                className="flex h-ds-control-sm w-ds-control-sm items-center justify-center text-ds-muted transition-colors hover:bg-ds-primary/10 hover:text-ds-primary focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-40"
+                                              >
+                                                <RefreshCw size={13} />
+                                              </button>
+                                            )}
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                updatePrompts((current) =>
+                                                  current.map((entry) =>
+                                                    entry.id === item.id ? { ...entry, deleted: true } : entry,
+                                                  ),
+                                                )
+                                                showToast('已删除该条提示词', 'success')
+                                              }}
+                                              disabled={running}
+                                              aria-label={`删除第 ${index + 1} 条提示词`}
+                                              title="删除提示词"
+                                              className="flex h-ds-control-sm w-ds-control-sm items-center justify-center text-ds-muted transition-colors hover:bg-ds-danger/10 hover:text-ds-danger focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ds-danger disabled:cursor-not-allowed disabled:opacity-40"
+                                            >
+                                              <Trash2 size={13} />
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                              {!sourcePrompts.length && (
+                                <p className="rounded-lg border border-dashed border-ds-border p-4 text-center text-xs text-ds-muted">
+                                  当前没有提示词，可点击“新增提示词”手动添加。
+                                </p>
+                              )}
+                            </div>
+                          </article>
+                        )
+                      })}
+                      {!sources.length && (
+                        <div className="flex min-h-64 flex-col items-center justify-center rounded-ds-lg border border-dashed border-ds-border px-6 text-center text-ds-muted">
+                          <BookOpenCheck size={26} />
+                          <p className="mt-3 text-sm font-medium">这个提示词集还没有内容</p>
+                          <p className="mt-1 max-w-md text-xs leading-5">
+                            可以从 SOP 生成，也可以新建独立提示词集后手动整理。
+                          </p>
+                          <div className="mt-4 flex items-center gap-2">
+                            {selectedSop ? (
+                              <button
+                                type="button"
+                                onClick={() => void generatePromptList()}
+                                disabled={running}
+                                aria-label={`生成 ${targetCount} 条 SOP 提示词`}
+                                className="flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-ds-subtle disabled:text-ds-muted"
+                              >
+                                <Sparkles size={14} />
+                                从当前 SOP 生成
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => void createPromptCollection()}
+                                disabled={running}
+                                className="flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
+                              >
+                                <Plus size={14} />
+                                新建提示词集
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex min-h-64 flex-1 flex-col items-center justify-center px-6 text-center text-ds-muted">
+                    <BookOpenCheck size={28} />
+                    <p className="mt-3 text-sm font-medium">
+                      {filteredRuns.length ? '从左侧选择一个提示词集' : '还没有提示词集，建立你的第一个'}
+                    </p>
+                    <p className="mt-1 max-w-md text-xs leading-5">
+                      {filteredRuns.length
+                        ? '右侧会显示完整提示词、说明与可复用操作。'
+                        : '新建提示词集会保存到列表顶部，或从 SOP 生成后自动保存。'}
+                    </p>
+                    {selectedSop ? (
+                      <button
+                        type="button"
+                        onClick={() => void generatePromptList()}
+                        disabled={running}
+                        aria-label={`生成 ${targetCount} 条 SOP 提示词`}
+                        className="mt-4 flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
+                      >
+                        <Sparkles size={14} />
+                        从当前 SOP 生成
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void createPromptCollection()}
+                        disabled={running}
+                        className="mt-4 flex h-ds-control-md items-center gap-2 rounded-lg bg-ds-primary px-4 text-xs font-medium text-ds-text-inverse transition-colors hover:bg-ds-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:opacity-40"
+                      >
+                        <Plus size={14} />
+                        新建提示词集
+                      </button>
+                    )}
+                  </div>
+                )}
+              </section>
+            </div>
+          ) : (
+            renderPromptWorkspace()
+          )}
           {libraryContextMenu &&
             (() => {
               const contextRun = recentRuns.find((run) => run.id === libraryContextMenu.run.id)

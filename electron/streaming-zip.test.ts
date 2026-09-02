@@ -70,6 +70,23 @@ describe('writeStreamingZip', () => {
     expect([...archive['composite-assets/asset-a.png']]).toEqual([1, 2, 3])
   })
 
+  it('writes inline thumbnail bytes', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'stream-zip-'))
+    dirs.push(dir)
+    const destinationPath = path.join(dir, 'backup.zip')
+
+    expect(
+      await writeStreamingZip({
+        destinationPath,
+        manifestJson: '{}',
+        entries: [{ archivePath: 'thumbnails/image-a.webp', data: new Uint8Array([4, 5, 6]) }],
+      }),
+    ).toEqual({ success: true })
+
+    const archive = unzipSync(readFileSync(destinationPath))
+    expect([...archive['thumbnails/image-a.webp']]).toEqual([4, 5, 6])
+  })
+
   it('rejects inline entries outside supported archive folders', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'stream-zip-'))
     dirs.push(dir)

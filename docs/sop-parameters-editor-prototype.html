@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SOP 参数与正文布局原型</title>
+    <style>
+      :root {
+        --canvas: #f7f8fa;
+        --surface: #ffffff;
+        --surface-subtle: #f0f2f5;
+        --surface-raised: #ffffff;
+        --text: #23272f;
+        --text-muted: #636874;
+        --text-subtle: #858b96;
+        --border: #dfe3e8;
+        --border-strong: #c6cbd3;
+        --primary: #4468a7;
+        --primary-hover: #36588f;
+        --primary-subtle: #e8eef8;
+        --success: #397f56;
+        --warning: #966d2c;
+        --warning-subtle: #fff5df;
+        --shadow-sm: 0 1px 3px rgb(20 28 40 / 0.08);
+        --shadow-md: 0 14px 32px rgb(20 28 40 / 0.14);
+        --radius-sm: 6px;
+        --radius-md: 8px;
+        --radius-lg: 12px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: var(--canvas);
+        color: var(--text);
+        font-family: 'HarmonyOS Sans SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+        font-size: 14px;
+      }
+
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        cursor: pointer;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible {
+        outline: 2px solid var(--primary);
+        outline-offset: 2px;
+      }
+
+      .prototype {
+        display: grid;
+        grid-template-rows: 56px 48px minmax(0, 1fr);
+        height: 100%;
+        min-width: 920px;
+      }
+
+      .topbar {
+        align-items: center;
+        background: var(--surface-raised);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        padding: 0 22px;
+      }
+
+      .brand {
+        align-items: center;
+        display: flex;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .brand-mark {
+        align-items: center;
+        background: var(--primary);
+        border-radius: var(--radius-md);
+        color: #ffffff;
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 700;
+        height: 28px;
+        justify-content: center;
+        width: 28px;
+      }
+
+      .brand-copy {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .brand-copy strong {
+        font-size: 15px;
+        line-height: 1.2;
+      }
+
+      .brand-copy span {
+        color: var(--text-subtle);
+        font-size: 12px;
+      }
+
+      .topbar-actions,
+      .editor-actions,
+      .tab-actions {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+      }
+
+      .icon-button,
+      .ghost-button,
+      .secondary-button,
+      .primary-button {
+        align-items: center;
+        border-radius: var(--radius-md);
+        display: inline-flex;
+        gap: 6px;
+        justify-content: center;
+        min-height: 32px;
+        padding: 0 11px;
+        white-space: nowrap;
+      }
+
+      .icon-button {
+        background: transparent;
+        color: var(--text-muted);
+        padding: 0;
+        width: 32px;
+      }
+
+      .icon-button:hover,
+      .ghost-button:hover,
+      .secondary-button:hover {
+        background: var(--surface-subtle);
+        color: var(--text);
+      }
+
+      .ghost-button {
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      .secondary-button {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      .primary-button {
+        background: var(--primary);
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .primary-button:hover {
+        background: var(--primary-hover);
+      }
+
+      .tabs {
+        align-items: end;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 4px;
+        padding: 0 22px;
+      }
+
+      .tab {
+        align-items: center;
+        background: transparent;
+        border-bottom: 2px solid transparent;
+        color: var(--text-muted);
+        display: inline-flex;
+        font-size: 13px;
+        gap: 7px;
+        height: 48px;
+        padding: 0 12px;
+      }
+
+      .tab:hover {
+        color: var(--text);
+      }
+
+      .tab[aria-selected='true'] {
+        border-bottom-color: var(--primary);
+        color: var(--primary);
+        font-weight: 650;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: 196px 292px minmax(0, 1fr);
+        min-height: 0;
+      }
+
+      .panel {
+        background: var(--surface);
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .groups {
+        border-right: 1px solid var(--border);
+        padding: 16px 10px;
+      }
+
+      .panel-heading {
+        align-items: center;
+        display: flex;
+        justify-content: space-between;
+        margin: 0 8px 12px;
+      }
+
+      .panel-heading strong {
+        font-size: 13px;
+      }
+
+      .panel-heading span {
+        color: var(--text-subtle);
+        font-size: 12px;
+      }
+
+      .group-list {
+        display: grid;
+        gap: 3px;
+      }
+
+      .group-item {
+        align-items: center;
+        background: transparent;
+        border-radius: var(--radius-md);
+        color: var(--text-muted);
+        display: flex;
+        font-size: 13px;
+        justify-content: space-between;
+        min-height: 36px;
+        padding: 0 10px;
+        text-align: left;
+        width: 100%;
+      }
+
+      .group-item:hover {
+        background: var(--surface-subtle);
+        color: var(--text);
+      }
+
+      .group-item[data-active='true'] {
+        background: var(--primary-subtle);
+        color: var(--primary);
+        font-weight: 650;
+      }
+
+      .group-count {
+        color: var(--text-subtle);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .sop-list {
+        border-right: 1px solid var(--border);
+        display: grid;
+        grid-template-rows: auto auto auto minmax(0, 1fr);
+        min-height: 0;
+        padding: 18px 12px 14px;
+      }
+
+      .list-toolbar {
+        align-items: center;
+        color: var(--text-subtle);
+        display: flex;
+        font-size: 11px;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      .list-toolbar button {
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 11px;
+        padding: 3px 0;
+      }
+
+      .list-toolbar button:hover {
+        color: var(--primary);
+      }
+
+      .list-search {
+        background: var(--surface-subtle);
+        border: 1px solid transparent;
+        border-radius: var(--radius-md);
+        color: var(--text);
+        height: 34px;
+        margin-bottom: 10px;
+        padding: 0 10px;
+        width: 100%;
+      }
+
+      .list-search:focus {
+        background: var(--surface);
+        border-color: var(--primary);
+      }
+
+      .sop-items {
+        display: grid;
+        align-content: start;
+        gap: 0;
+        min-height: 0;
+        overflow: auto;
+        padding-right: 2px;
+      }
+
+      .sop-item {
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        display: grid;
+        gap: 4px;
+        padding: 12px 10px;
+        text-align: left;
+        width: 100%;
+      }
+
+      .sop-item:hover {
+        background: var(--surface-subtle);
+      }
+
+      .sop-item[data-active='true'] {
+        background: var(--primary-subtle);
+        box-shadow: inset 3px 0 0 var(--primary);
+      }
+
+      .sop-item-top {
+        align-items: center;
+        color: var(--text-subtle);
+        display: flex;
+        font-size: 11px;
+        gap: 6px;
+        justify-content: space-between;
+      }
+
+      .sop-item-type {
+        color: var(--primary);
+        font-weight: 650;
+      }
+
+      .sop-item strong {
+        font-size: 13px;
+        line-height: 1.35;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .sop-item p {
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 1.4;
+        margin: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .sop-item-meta {
+        align-items: center;
+        color: var(--text-subtle);
+        display: flex;
+        font-size: 11px;
+        gap: 6px;
+        line-height: 1.2;
+      }
+
+      .status-dot {
+        background: var(--success);
+        border-radius: 50%;
+        height: 6px;
+        width: 6px;
+      }
+
+      .editor {
+        background: var(--canvas);
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        min-width: 0;
+        padding: 20px 24px 24px;
+      }
+
+      .editor-head {
+        align-items: flex-start;
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        margin-bottom: 14px;
+      }
+
+      .editor-title {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+
+      .editor-title > span:first-child {
+        color: var(--text-subtle);
+        font-size: 11px;
+        letter-spacing: 0.03em;
+      }
+
+      .editor-title h1 {
+        font-size: 18px;
+        line-height: 1.3;
+        margin: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .save-state {
+        align-items: center;
+        color: var(--success);
+        display: inline-flex;
+        font-size: 12px;
+        gap: 6px;
+      }
+
+      .save-state[data-dirty='true'] {
+        color: var(--warning);
+      }
+
+      .editor-actions {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .editor-actions .secondary-button {
+        display: none;
+      }
+
+      .metadata {
+        align-items: end;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        display: grid;
+        gap: 12px;
+        grid-template-columns: minmax(180px, 1.1fr) minmax(150px, 0.7fr) minmax(220px, 1.4fr);
+        margin-bottom: 14px;
+        padding: 12px 14px;
+      }
+
+      .field {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+
+      .field label {
+        color: var(--text-muted);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .field input,
+      .field select {
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        border-radius: 0;
+        color: var(--text);
+        height: 30px;
+        min-width: 0;
+        outline: none;
+        padding: 0;
+        width: 100%;
+      }
+
+      .field input:focus,
+      .field select:focus {
+        border-bottom-color: var(--primary);
+      }
+
+      .editor-workspace {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: minmax(0, 1fr) 310px;
+        min-height: 0;
+      }
+
+      .editor-workspace[data-ai-collapsed='true'] {
+        grid-template-columns: minmax(0, 1fr) 42px;
+      }
+
+      .body-editor,
+      .ai-panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .body-editor {
+        display: grid;
+        grid-template-rows: 42px minmax(0, 1fr) 34px;
+      }
+
+      .body-toolbar {
+        align-items: center;
+        background: var(--surface-subtle);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 4px;
+        padding: 0 10px;
+      }
+
+      .tool {
+        background: transparent;
+        border-radius: var(--radius-sm);
+        color: var(--text-muted);
+        font-size: 12px;
+        min-height: 28px;
+        padding: 0 8px;
+      }
+
+      .tool:hover {
+        background: var(--surface);
+        color: var(--text);
+      }
+
+      .tool-divider {
+        background: var(--border);
+        height: 18px;
+        margin: 0 5px;
+        width: 1px;
+      }
+
+      .body-text {
+        border: 0;
+        color: var(--text);
+        font-family: 'Maple Mono', 'Cascadia Code', 'Microsoft YaHei', monospace;
+        font-size: 13px;
+        line-height: 1.75;
+        min-height: 0;
+        outline: none;
+        padding: 20px;
+        resize: none;
+        width: 100%;
+      }
+
+      .body-footer {
+        align-items: center;
+        background: var(--surface-subtle);
+        border-top: 1px solid var(--border);
+        color: var(--text-subtle);
+        display: flex;
+        font-size: 11px;
+        justify-content: space-between;
+        padding: 0 12px;
+      }
+
+      .ai-panel {
+        display: grid;
+        grid-template-rows: 48px minmax(0, 1fr) auto 44px;
+      }
+
+      .editor-workspace[data-ai-collapsed='true'] .ai-panel {
+        display: block;
+      }
+
+      .ai-panel-header {
+        align-items: center;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+        padding: 0 12px;
+      }
+
+      .ai-panel-header strong {
+        font-size: 13px;
+      }
+
+      .ai-panel-header span {
+        color: var(--text-subtle);
+        font-size: 11px;
+      }
+
+      .ai-panel-header button {
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 11px;
+        padding: 4px;
+      }
+
+      .ai-panel-body {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+        overflow: auto;
+        padding: 14px;
+      }
+
+      .ai-thread {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .ai-message {
+        background: var(--surface-subtle);
+        border: 1px solid transparent;
+        border-radius: var(--radius-md);
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 1.55;
+        max-width: 92%;
+        padding: 9px 10px;
+      }
+
+      .ai-message strong {
+        color: var(--text);
+        display: block;
+        font-size: 11px;
+        margin-bottom: 3px;
+      }
+
+      .ai-message[data-role='user'] {
+        align-self: flex-end;
+        background: var(--primary-subtle);
+        border-color: #c8d6ef;
+        color: var(--text);
+      }
+
+      .ai-message[data-role='user'] strong {
+        color: var(--primary);
+      }
+
+      .ai-quick {
+        border-top: 1px solid var(--border);
+        display: grid;
+        gap: 7px;
+        padding: 9px 12px;
+      }
+
+      .ai-quick-label {
+        color: var(--text-subtle);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .ai-quick-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+
+      .ai-quick-list button {
+        background: var(--surface-subtle);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--text-muted);
+        font-size: 11px;
+        min-height: 26px;
+        padding: 0 8px;
+      }
+
+      .ai-quick-list button:hover {
+        background: var(--primary-subtle);
+        border-color: #c8d6ef;
+        color: var(--primary);
+      }
+
+      .ai-composer {
+        align-items: center;
+        border-top: 1px solid var(--border);
+        display: flex;
+        gap: 8px;
+        padding: 7px 10px;
+      }
+
+      .ai-composer input {
+        background: var(--surface-subtle);
+        border: 1px solid transparent;
+        border-radius: var(--radius-md);
+        color: var(--text);
+        height: 30px;
+        min-width: 0;
+        padding: 0 9px;
+        width: 100%;
+      }
+
+      .ai-composer button {
+        background: var(--primary);
+        border-radius: var(--radius-md);
+        color: #ffffff;
+        flex: none;
+        font-size: 12px;
+        height: 30px;
+        padding: 0 9px;
+      }
+
+      .editor-workspace[data-ai-collapsed='true'] .ai-panel-header {
+        border: 0;
+        height: 100%;
+        justify-content: center;
+        padding: 0;
+        writing-mode: vertical-rl;
+      }
+
+      .editor-workspace[data-ai-collapsed='true'] .ai-panel-header strong {
+        display: none;
+      }
+
+      .editor-workspace[data-ai-collapsed='true'] .ai-panel-header button {
+        color: var(--primary);
+        font-size: 12px;
+        height: 100%;
+        padding: 8px 0;
+        writing-mode: vertical-rl;
+      }
+
+      .editor-workspace[data-ai-collapsed='true'] .ai-panel-body,
+      .editor-workspace[data-ai-collapsed='true'] .ai-quick,
+      .editor-workspace[data-ai-collapsed='true'] .ai-composer {
+        display: none;
+      }
+
+      .menu {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-md);
+        display: none;
+        min-width: 160px;
+        padding: 5px;
+        position: absolute;
+        right: 22px;
+        top: 46px;
+        z-index: 2;
+      }
+
+      .menu[data-open='true'] {
+        display: grid;
+      }
+
+      .menu button {
+        background: transparent;
+        border-radius: var(--radius-sm);
+        color: var(--text-muted);
+        font-size: 12px;
+        padding: 8px 9px;
+        text-align: left;
+      }
+
+      .menu button:hover {
+        background: var(--surface-subtle);
+        color: var(--text);
+      }
+
+      .toast {
+        background: var(--text);
+        border-radius: var(--radius-md);
+        bottom: 20px;
+        color: #ffffff;
+        display: none;
+        font-size: 12px;
+        left: 50%;
+        padding: 9px 13px;
+        position: fixed;
+        transform: translateX(-50%);
+      }
+
+      .toast[data-visible='true'] {
+        display: block;
+      }
+
+      @media (max-width: 1180px) {
+        .workspace {
+          grid-template-columns: 180px 260px minmax(0, 1fr);
+        }
+
+        .editor {
+          padding-inline: 16px;
+        }
+
+        .editor-workspace {
+          grid-template-columns: minmax(0, 1fr) 270px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="prototype">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">豆</span>
+          <div class="brand-copy">
+            <strong>SOP 管理中心</strong>
+            <span>参数压缩，正文优先</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost-button" type="button" id="helpButton">交互说明</button>
+          <button class="icon-button" type="button" id="moreButton" aria-label="更多管理操作" aria-expanded="false">
+            ⋯
+          </button>
+          <div class="menu" id="moreMenu">
+            <button type="button" data-action="导出 SOP 库">导出 SOP 库</button>
+            <button type="button" data-action="导入 SOP 库">导入 SOP 库</button>
+            <button type="button" data-action="放大编辑区">放大编辑区</button>
+          </div>
+        </div>
+      </header>
+
+      <nav class="tabs" role="tablist" aria-label="SOP 管理中心功能">
+        <button class="tab" type="button" role="tab" aria-selected="true" data-tab="library">SOP 库</button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-tab="meta">生成元指令</button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-tab="generate">智能生成</button>
+        <div class="tab-actions">
+          <span class="group-count">交互原型</span>
+        </div>
+      </nav>
+
+      <main class="workspace">
+        <aside class="panel groups" aria-label="SOP 分组">
+          <div class="panel-heading">
+            <strong>分组</strong>
+            <span>4</span>
+          </div>
+          <div class="group-list">
+            <button class="group-item" type="button" data-group="all" data-active="true">
+              <span>全部 SOP</span>
+              <span class="group-count">12</span>
+            </button>
+            <button class="group-item" type="button" data-group="image">
+              <span>图片提示词</span>
+              <span class="group-count">6</span>
+            </button>
+            <button class="group-item" type="button" data-group="compliance">
+              <span>合规与审核</span>
+              <span class="group-count">3</span>
+            </button>
+            <button class="group-item" type="button" data-group="custom">
+              <span>我的模板</span>
+              <span class="group-count">3</span>
+            </button>
+          </div>
+        </aside>
+
+        <section class="panel sop-list" aria-label="SOP 列表">
+          <div class="panel-heading">
+            <div>
+              <strong>SOP 列表</strong>
+              <span> · 12 个</span>
+            </div>
+            <button class="ghost-button" type="button" id="newSopButton">新建</button>
+          </div>
+          <input class="list-search" type="search" placeholder="搜索名称、说明或正文" aria-label="搜索 SOP" />
+          <div class="list-toolbar">
+            <span id="listResultCount">显示 4 个</span>
+            <button type="button" id="sortButton">最近编辑 ▾</button>
+          </div>
+          <div class="sop-items" id="sopItems">
+            <button class="sop-item" type="button" data-index="0" data-active="true">
+              <span class="sop-item-top">
+                <span class="sop-item-type">通用 SOP</span>
+                <span>刚刚</span>
+              </span>
+              <strong>信息流合规基础 SOP</strong>
+              <p>统一约束信息层级、真实性与平台合规。</p>
+              <span class="sop-item-meta"><span class="status-dot"></span>当前使用中</span>
+            </button>
+            <button class="sop-item" type="button" data-index="1">
+              <span class="sop-item-top">
+                <span class="sop-item-type">图片提示词</span>
+                <span>2 小时前</span>
+              </span>
+              <strong>商品主图多变体 SOP</strong>
+              <p>控制主体、构图和批量变化范围。</p>
+              <span class="sop-item-meta">最近使用</span>
+            </button>
+            <button class="sop-item" type="button" data-index="2">
+              <span class="sop-item-top">
+                <span class="sop-item-type">图片提示词</span>
+                <span>昨天</span>
+              </span>
+              <strong>美食信息流视觉 SOP</strong>
+              <p>保持画面结构，同时降低批量重复度。</p>
+              <span class="sop-item-meta">8 个变体层</span>
+            </button>
+            <button class="sop-item" type="button" data-index="3">
+              <span class="sop-item-top">
+                <span class="sop-item-type">合规与审核</span>
+                <span>8 月 30 日</span>
+              </span>
+              <strong>品牌安全检查 SOP</strong>
+              <p>检查虚假承诺、系统仿冒和敏感内容。</p>
+              <span class="sop-item-meta">未应用</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="editor" aria-label="SOP 编辑区">
+          <div class="editor-head">
+            <div class="editor-title">
+              <span>正在编辑</span>
+              <h1 id="sopTitle">信息流合规基础 SOP</h1>
+              <span class="save-state" id="saveState"><span>●</span> 已保存</span>
+            </div>
+            <div class="editor-actions">
+              <button class="secondary-button" type="button" id="applyButton">应用 SOP</button>
+              <button class="secondary-button" type="button" id="historyButton">版本历史</button>
+              <button class="secondary-button" type="button" id="promptButton">提示词管理</button>
+              <button class="secondary-button" type="button" id="coverButton">选择封面</button>
+              <button class="ghost-button" type="button" id="collapseButton">收起 AI 对话</button>
+              <button class="primary-button" type="button" id="saveButton">保存修改</button>
+            </div>
+          </div>
+
+          <div class="metadata" aria-label="SOP 参数">
+            <div class="field">
+              <label for="nameInput">名称</label>
+              <input id="nameInput" value="信息流合规基础 SOP" />
+            </div>
+            <div class="field">
+              <label for="groupInput">所属分组</label>
+              <select id="groupInput">
+                <option>通用 SOP</option>
+                <option>图片提示词</option>
+                <option>合规与审核</option>
+                <option>我的模板</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="descriptionInput">说明</label>
+              <input id="descriptionInput" value="统一约束信息层级、真实性与平台合规。" />
+            </div>
+          </div>
+
+          <div class="editor-workspace" id="editorWorkspace">
+            <section class="body-editor" aria-label="SOP 正文">
+              <div class="body-toolbar" role="toolbar" aria-label="正文工具">
+                <button class="tool" type="button">撤销</button>
+                <button class="tool" type="button">重做</button>
+                <span class="tool-divider" aria-hidden="true"></span>
+                <button class="tool" type="button">标题</button>
+                <button class="tool" type="button">列表</button>
+                <button class="tool" type="button">引用</button>
+                <span class="tool-divider" aria-hidden="true"></span>
+                <button class="tool" type="button" id="findButton">查找</button>
+              </div>
+              <textarea class="body-text" id="bodyText" spellcheck="false">
+# 信息流合规基础 SOP
+
+## 目标
+在不夸大、不伪造和不诱导点击的前提下，输出清晰、可信、可复用的信息流视觉方案。
+
+## 执行步骤
+1. 先确认产品事实、投放渠道和不可生成的内容。
+2. 将画面信息控制在三层以内，保持主次层级清楚。
+3. 不伪造系统界面、通知、中奖、权威背书或虚假数据。
+4. 批量结果需要主动改变构图、场景和视觉焦点。
+
+## 验收标准
+- 主要卖点可在首屏快速识别。
+- 所有数字、价格和功能描述都有输入依据。
+- 不出现仿新闻、仿系统或诱导点击元素。</textarea>
+              <div class="body-footer">
+                <span id="bodyStats">14 行 · 286 字符</span>
+                <span>正文主区域</span>
+              </div>
+            </section>
+
+            <aside class="ai-panel" aria-label="SOP AI 对话">
+              <div class="ai-panel-header">
+                <div>
+                  <strong>AI 对话</strong>
+                  <span>当前 SOP · 未发送</span>
+                </div>
+                <button type="button" id="collapseButtonSecondary">收起</button>
+              </div>
+              <div class="ai-panel-body">
+                <div class="ai-thread" id="aiThread">
+                  <div class="ai-message" data-role="assistant">
+                    <strong>AI</strong>
+                    我会围绕当前 SOP 正文给出完整修订提案，保留数字、红线和验收标准。
+                  </div>
+                  <div class="ai-message" data-role="user">
+                    <strong>你</strong>
+                    先检查执行步骤是否足够清晰。
+                  </div>
+                  <div class="ai-message" data-role="assistant">
+                    <strong>AI</strong>
+                    可以从“目标、执行步骤、验收标准”三个层面检查，正文修改仍由你确认后应用。
+                  </div>
+                </div>
+              </div>
+              <div class="ai-quick">
+                <span class="ai-quick-label">快捷指令</span>
+                <div class="ai-quick-list">
+                  <button type="button" data-quick="将具体词泛化">具体词泛化</button>
+                  <button type="button" data-quick="结构化重排">结构化重排</button>
+                  <button type="button" data-quick="精简压缩">精简压缩</button>
+                  <button type="button" data-quick="补全缺失">补全缺失</button>
+                </div>
+              </div>
+              <div class="ai-composer">
+                <input type="text" placeholder="描述希望如何修改" aria-label="AI 修改要求" />
+                <button type="button" id="sendButton">发送</button>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script>
+      const sopData = [
+        {
+          name: '信息流合规基础 SOP',
+          group: '通用 SOP',
+          description: '统一约束信息层级、真实性与平台合规。',
+          body: document.getElementById('bodyText').value,
+        },
+        {
+          name: '商品主图多变体 SOP',
+          group: '图片提示词',
+          description: '控制主体、构图和批量变化范围。',
+          body: '# 商品主图多变体 SOP\n\n## 核心策略\n保持产品主体和品牌识别不变，通过变量池改变场景、构图和辅助元素。\n\n## 执行步骤\n1. 提取固定画风和品牌红线。\n2. 分层定义主体、背景、构图和装饰选项。\n3. 逐组合并检查重复度。\n\n## 验收标准\n- 每个结果都能直接用于生图。\n- 不改变产品核心识别。',
+        },
+        {
+          name: '美食信息流视觉 SOP',
+          group: '图片提示词',
+          description: '保持画面结构，同时降低批量重复度。',
+          body: '# 美食信息流视觉 SOP\n\n## 目标\n在保持信息层级和品牌语气的前提下，扩大主体、环境与氛围的随机空间。\n\n## 执行步骤\n1. 固定不可改变的文案与版式规则。\n2. 对元素池中的具体描述做语义泛化。\n3. 逐层抽取选项并检查近重复。\n\n## 禁止项\n不得新增可变项区块，不得改变固定文案。',
+        },
+        {
+          name: '品牌安全检查 SOP',
+          group: '合规与审核',
+          description: '检查虚假承诺、系统仿冒和敏感内容。',
+          body: '# 品牌安全检查 SOP\n\n## 检查顺序\n1. 核对事实、价格、功效和数据来源。\n2. 检查是否存在仿系统、仿新闻或诱导点击。\n3. 检查是否出现敏感、违法或未经授权内容。\n\n## 输出\n列出阻断问题、修改建议和最终通过结论。',
+        },
+      ]
+
+      const editorWorkspace = document.getElementById('editorWorkspace')
+      const collapseButton = document.getElementById('collapseButton')
+      const collapseButtonSecondary = document.getElementById('collapseButtonSecondary')
+      const bodyText = document.getElementById('bodyText')
+      const nameInput = document.getElementById('nameInput')
+      const groupInput = document.getElementById('groupInput')
+      const descriptionInput = document.getElementById('descriptionInput')
+      const saveState = document.getElementById('saveState')
+      const sopTitle = document.getElementById('sopTitle')
+      const toast = document.getElementById('toast')
+      const moreButton = document.getElementById('moreButton')
+      const moreMenu = document.getElementById('moreMenu')
+      const listSearch = document.querySelector('.list-search')
+      const listResultCount = document.getElementById('listResultCount')
+      const sortButton = document.getElementById('sortButton')
+      const sopItems = document.getElementById('sopItems')
+      const aiThread = document.getElementById('aiThread')
+      const aiInput = document.querySelector('.ai-composer input')
+      const aiHeaderState = document.querySelector('.ai-panel-header span')
+      let activeIndex = 0
+      let sortByName = false
+      let toastTimer
+
+      function showToast(message) {
+        toast.textContent = message
+        toast.dataset.visible = 'true'
+        window.clearTimeout(toastTimer)
+        toastTimer = window.setTimeout(() => {
+          toast.dataset.visible = 'false'
+        }, 1800)
+      }
+
+      function updateStats() {
+        const lines = bodyText.value ? bodyText.value.split('\n').length : 1
+        document.getElementById('bodyStats').textContent = `${lines} 行 · ${bodyText.value.length} 字符`
+      }
+
+      function markDirty() {
+        saveState.dataset.dirty = 'true'
+        saveState.innerHTML = '<span>●</span> 未保存'
+        sopTitle.textContent = nameInput.value || '未命名 SOP'
+        updateStats()
+      }
+
+      function loadSop(index) {
+        const item = sopData[index]
+        activeIndex = index
+        document.querySelectorAll('.sop-item').forEach((button) => {
+          button.dataset.active = String(Number(button.dataset.index) === index)
+        })
+        nameInput.value = item.name
+        groupInput.value = item.group
+        descriptionInput.value = item.description
+        bodyText.value = item.body
+        sopTitle.textContent = item.name
+        saveState.dataset.dirty = 'false'
+        saveState.innerHTML = '<span>●</span> 已保存'
+        aiHeaderState.textContent = `${item.name} · 未发送`
+        updateStats()
+        showToast(`已载入「${item.name}」`)
+      }
+
+      function toggleAiPanel() {
+        const collapsed = editorWorkspace.dataset.aiCollapsed === 'true'
+        editorWorkspace.dataset.aiCollapsed = String(!collapsed)
+        collapseButton.textContent = collapsed ? '收起 AI 对话' : '展开 AI 对话'
+        collapseButtonSecondary.textContent = collapsed ? '收起' : '展开'
+      }
+
+      function filterSops() {
+        const query = listSearch.value.trim().toLocaleLowerCase()
+        let visibleCount = 0
+        document.querySelectorAll('.sop-item').forEach((button) => {
+          const visible = !query || button.textContent.toLocaleLowerCase().includes(query)
+          button.hidden = !visible
+          if (visible) visibleCount += 1
+        })
+        listResultCount.textContent = `显示 ${visibleCount} 个`
+      }
+
+      function appendAiMessage(role, text) {
+        const message = document.createElement('div')
+        message.className = 'ai-message'
+        message.dataset.role = role
+        const label = document.createElement('strong')
+        label.textContent = role === 'user' ? '你' : 'AI'
+        message.append(label, document.createTextNode(text))
+        aiThread.append(message)
+        aiThread.parentElement.scrollTop = aiThread.parentElement.scrollHeight
+      }
+
+      function sendAiMessage() {
+        const request = aiInput.value.trim()
+        if (!request) {
+          showToast('请先输入修改要求')
+          return
+        }
+        appendAiMessage('user', request)
+        aiInput.value = ''
+        aiHeaderState.textContent = `${sopData[activeIndex].name} · 正在生成提案`
+        window.setTimeout(() => {
+          appendAiMessage('assistant', `已收到“${request}”。我会保留固定约束，并生成一版完整修订提案供你确认。`)
+          aiHeaderState.textContent = `${sopData[activeIndex].name} · 提案已就绪`
+        }, 280)
+      }
+
+      document.querySelectorAll('.sop-item').forEach((button) => {
+        button.addEventListener('click', () => loadSop(Number(button.dataset.index)))
+      })
+
+      listSearch.addEventListener('input', filterSops)
+
+      sortButton.addEventListener('click', () => {
+        sortByName = !sortByName
+        const buttons = Array.from(document.querySelectorAll('.sop-item'))
+        buttons.sort((left, right) =>
+          sortByName
+            ? left.querySelector('strong').textContent.localeCompare(right.querySelector('strong').textContent, 'zh-CN')
+            : Number(left.dataset.index) - Number(right.dataset.index),
+        )
+        buttons.forEach((button) => sopItems.append(button))
+        sortButton.textContent = sortByName ? '按名称 ▾' : '最近编辑 ▾'
+        filterSops()
+      })
+
+      ;[nameInput, groupInput, descriptionInput, bodyText].forEach((input) => {
+        input.addEventListener('input', markDirty)
+        input.addEventListener('change', markDirty)
+      })
+
+      document.getElementById('saveButton').addEventListener('click', () => {
+        saveState.dataset.dirty = 'false'
+        saveState.innerHTML = '<span>●</span> 已保存'
+        showToast('修改已保存')
+      })
+
+      collapseButton.addEventListener('click', toggleAiPanel)
+      collapseButtonSecondary.addEventListener('click', toggleAiPanel)
+
+      moreButton.addEventListener('click', () => {
+        const open = moreMenu.dataset.open === 'true'
+        moreMenu.dataset.open = String(!open)
+        moreButton.setAttribute('aria-expanded', String(!open))
+      })
+
+      moreMenu.querySelectorAll('button').forEach((button) => {
+        button.addEventListener('click', () => {
+          moreMenu.dataset.open = 'false'
+          moreButton.setAttribute('aria-expanded', 'false')
+          showToast(button.dataset.action)
+        })
+      })
+
+      document.getElementById('helpButton').addEventListener('click', () => {
+        showToast('可点击 SOP、编辑参数、收起 AI 对话和测试保存状态')
+      })
+
+      document.getElementById('newSopButton').addEventListener('click', () => {
+        showToast('原型：这里创建新的 SOP')
+      })
+
+      document.getElementById('applyButton').addEventListener('click', () => showToast('原型：SOP 已应用'))
+      document.getElementById('historyButton').addEventListener('click', () => showToast('原型：打开版本历史'))
+      document.getElementById('promptButton').addEventListener('click', () => showToast('原型：打开提示词管理'))
+      document.getElementById('coverButton').addEventListener('click', () => showToast('原型：打开封面选择'))
+      document.getElementById('findButton').addEventListener('click', () => showToast('原型：打开正文查找'))
+      document.getElementById('sendButton').addEventListener('click', sendAiMessage)
+      aiInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') sendAiMessage()
+      })
+
+      document.querySelectorAll('[data-quick]').forEach((button) => {
+        button.addEventListener('click', () => {
+          aiInput.value = button.dataset.quick
+          aiInput.focus()
+          showToast(`已填入快捷指令：${button.dataset.quick}`)
+        })
+      })
+
+      document.querySelectorAll('.group-item').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('.group-item').forEach((item) => (item.dataset.active = 'false'))
+          button.dataset.active = 'true'
+          showToast(`已切换到${button.querySelector('span').textContent}`)
+        })
+      })
+
+      document.querySelectorAll('.tab').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('.tab').forEach((item) => item.setAttribute('aria-selected', 'false'))
+          button.setAttribute('aria-selected', 'true')
+          showToast(`原型：切换到${button.textContent}`)
+        })
+      })
+
+      document.addEventListener('click', (event) => {
+        if (!moreButton.contains(event.target) && !moreMenu.contains(event.target)) {
+          moreMenu.dataset.open = 'false'
+          moreButton.setAttribute('aria-expanded', 'false')
+        }
+      })
+
+      updateStats()
+    </script>
+  </body>
+</html>

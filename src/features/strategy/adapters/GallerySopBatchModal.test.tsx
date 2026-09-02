@@ -117,6 +117,12 @@ function createPromptRun(id: string, title: string, promptGroup?: SopBatchSnapsh
   }
 }
 
+function selectPrompt(renderer: ReturnType<typeof create>, index: number) {
+  act(() => {
+    renderer.root.findByProps({ 'aria-label': `选择第 ${index} 条提示词` }).props.onClick()
+  })
+}
+
 beforeEach(() => {
   dbMocks.getAllSopBatchSnapshots.mockResolvedValue([])
   dbMocks.getSopBatchSnapshot.mockResolvedValue(undefined)
@@ -177,6 +183,52 @@ describe('GallerySopBatchModal background generation', () => {
 
     expect(generateMocks.generatePromptsFromSopStore).toHaveBeenCalledOnce()
     expect(renderer!.root.findByProps({ 'aria-label': '第 1 条提示词' }).props.value).toBe('自动生成的提示词')
+  })
+
+  it('uses the latest input requirement when a mounted modal starts another run', async () => {
+    generateMocks.generatePromptsFromSopStore.mockResolvedValue(['新任务提示词'])
+    let updateBrief!: (value: string) => void
+    let startNextRun!: () => void
+
+    function ReusableSopHost() {
+      const [brief, setBrief] = useState('上一任务要求')
+      const [autoStart, setAutoStart] = useState(false)
+      updateBrief = setBrief
+      startNextRun = () => setAutoStart(true)
+      return (
+        <GallerySopBatchModal
+          workspaceTabId="tab-a"
+          initialSopId="sop-1"
+          initialPromptCount={1}
+          initialBrief={brief}
+          autoStart={autoStart}
+          onAutoStartConsumed={() => setAutoStart(false)}
+          onClose={vi.fn()}
+        />
+      )
+    }
+
+    let renderer: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(<ReusableSopHost />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    mountedRenderers.push(renderer!)
+
+    await act(async () => {
+      updateBrief('新任务要求')
+      startNextRun()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(generateMocks.generatePromptsFromSopStore).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'sop-1' }),
+      1,
+      '新任务要求',
+      expect.anything(),
+    )
   })
 
   it('uses the latest generation count when the same SOP starts again', async () => {
@@ -322,6 +374,7 @@ describe('GallerySopBatchModal background generation', () => {
     })
 
     expect(secondBatchStarted).toBe(true)
+    selectPrompt(renderer!, 2)
     expect(renderer!.root.findByProps({ 'aria-label': '第 2 条提示词' }).props.value).toBe('第二批提示词')
   })
 
@@ -664,12 +717,11 @@ describe('GallerySopBatchModal background generation', () => {
     })
 
     expect(generateMocks.generatePromptsFromSopStore.mock.calls.map((call) => call[1])).toEqual([3, 3])
-    expect(
-      renderer!.root
-        .findAllByType('textarea')
-        .filter((node) => /^第 \d+ 条提示词$/.test(node.props['aria-label'] ?? ''))
-        .map((node) => node.props.value),
-    ).toEqual(['新提示词 1', '新提示词 2', '新提示词 3'])
+    expect(renderer!.root.findByProps({ 'aria-label': '第 1 条提示词' }).props.value).toBe('新提示词 1')
+    selectPrompt(renderer!, 2)
+    expect(renderer!.root.findByProps({ 'aria-label': '第 2 条提示词' }).props.value).toBe('新提示词 2')
+    selectPrompt(renderer!, 3)
+    expect(renderer!.root.findByProps({ 'aria-label': '第 3 条提示词' }).props.value).toBe('新提示词 3')
     expect(storeState.setConfirmDialog).not.toHaveBeenCalled()
   })
 
@@ -852,6 +904,11 @@ describe('GallerySopBatchModal background generation', () => {
     ])
     expect(renderer!.root.findByProps({ title: '生成提示词的文本模型：gpt-new' }).children).toEqual(['gpt-new'])
     expect(renderer!.root.findAllByProps({ 'aria-label': 'SOP 分组 商品图 SOP，2 个提示词集' })).toHaveLength(0)
+    expect(renderer!.root.findAllByProps({ 'aria-label': '选择 新版提示词' })).toHaveLength(0)
+    expect(renderer!.root.findAllByProps({ 'aria-label': '选择 旧版提示词' })).toHaveLength(0)
+    expect(renderer!.root.findByProps({ 'aria-label': '新建提示词集' }).props.className).toContain(
+      'sop-prompt-run-create',
+    )
   })
 
   it('opens previous prompts without an active SOP and keeps generation settings unchanged', async () => {
@@ -892,12 +949,13 @@ describe('GallerySopBatchModal background generation', () => {
     expect(renderer!.root.findByProps({ 'aria-label': '查看提示词集 夏日海报提示词' })).toBeTruthy()
     const promptEditor = renderer!.root.findByProps({ 'aria-label': '第 1 条提示词' })
     expect(promptEditor.props.value).toBe('无需 SOP 也能查看的历史提示词')
-    expect(promptEditor.props.className).toContain('min-h-20')
+    expect(promptEditor.props.className).toContain('sop-prompt-detail-editor-input')
     expect(renderer!.root.findByProps({ 'aria-label': '提示词集名称' }).props.value).toBe('夏日海报提示词')
+    expect(renderer!.root.findByProps({ 'aria-label': '提示词集名称' }).props.title).toBe('夏日海报提示词')
     expect(renderer!.root.findAllByProps({ 'aria-label': '重新生成第 1 条提示词' })).toHaveLength(0)
     expect(renderer!.root.findAllByProps({ 'aria-label': '每生成一条提示词立即发送生图' })).toHaveLength(0)
     expect(renderer!.root.findAllByProps({ 'aria-label': '生成 0 张图片' })).toHaveLength(0)
-    expect(renderer!.root.findAllByType('button').some((button) => button.children.includes('新增提示词'))).toBe(true)
+    expect(renderer!.root.findAllByType('button').some((button) => button.children.includes('添加提示词'))).toBe(true)
     expect(JSON.stringify(renderer!.toJSON())).not.toContain('completed')
     expect(storeState.setParams).not.toHaveBeenCalled()
     expect(generateMocks.generatePromptsFromSopStore).not.toHaveBeenCalled()
@@ -970,13 +1028,59 @@ describe('GallerySopBatchModal background generation', () => {
     expect(renderer!.root.findAllByProps({ 'data-slot': 'item-header' })).toHaveLength(0)
     expect(renderer!.root.findByProps({ 'data-slot': 'button-group' })).toBeTruthy()
     expect(renderer!.root.findByProps({ 'aria-label': '第 1 条提示词的生成结果' })).toBeTruthy()
-    expect(renderer!.root.findByProps({ 'aria-label': '查看第 1 条提示词的生成图片 1' })).toBeTruthy()
+    expect(renderer!.root.findByProps({ 'aria-label': '查看第 1 条提示词的生成图片 1' }).props.style.width).toBe('100%')
     expect(renderer!.root.findByProps({ 'aria-label': '第 1 条提示词的功能与状态' })).toBeTruthy()
     expect(renderer!.root.findByProps({ 'aria-label': '第 1 条提示词操作' })).toBeTruthy()
     expect(renderer!.root.findByProps({ 'aria-label': '复制第 1 条提示词' })).toBeTruthy()
     expect(renderer!.root.findAllByProps({ children: '图片反推 / 改写提示词' })).toHaveLength(0)
     expect(JSON.stringify(renderer!.toJSON())).not.toContain('图片反推后的提示词')
     expect(renderer!.root.findAllByProps({ 'aria-label': '定位第 1 条提示词' })).toHaveLength(0)
+  })
+
+  it('keeps the selected prompt in the detail pane without a redundant result view', async () => {
+    const storedRun = createPromptRun('run-view-switch', '视图切换提示词集')
+    storedRun.promptCount = 2
+    storedRun.prompts = [
+      { id: 'prompt-view-1', text: '第一条提示词', origin: 'ai', edited: false, sourceId: 'text-to-image' },
+      { id: 'prompt-view-2', text: '第二条提示词', origin: 'manual', edited: true, sourceId: 'text-to-image' },
+    ]
+    dbMocks.getAllSopBatchSnapshots.mockResolvedValue([storedRun])
+
+    let renderer: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(<GallerySopBatchModal workspaceTabId="tab-a" onClose={vi.fn()} />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    mountedRenderers.push(renderer!)
+
+    expect(renderer!.root.findAllByProps({ role: 'tab' })).toHaveLength(0)
+    selectPrompt(renderer!, 2)
+    expect(renderer!.root.findByProps({ 'aria-label': '第 2 条提示词' }).props.value).toBe('第二条提示词')
+  })
+
+  it('keeps collection creation separate from the single prompt add action', async () => {
+    const storedRun = createPromptRun('run-actions', '操作提示词集')
+    dbMocks.getAllSopBatchSnapshots.mockResolvedValue([storedRun])
+
+    let renderer: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(<GallerySopBatchModal workspaceTabId="tab-a" onClose={vi.fn()} />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    mountedRenderers.push(renderer!)
+
+    expect(renderer!.root.findAllByProps({ 'aria-label': '新建提示词集' })).toHaveLength(1)
+    expect(renderer!.root.findAllByProps({ 'aria-label': '新增提示词' })).toHaveLength(1)
+
+    await act(async () => {
+      renderer!.root.findByProps({ 'aria-label': '新增提示词' }).props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(renderer!.root.findAllByProps({ 'data-slot': 'item' })).toHaveLength(2)
+    expect(renderer!.root.findByProps({ 'aria-label': '第 2 条提示词' })).toBeTruthy()
   })
 
   it('creates and persists an independent prompt collection without an SOP', async () => {
@@ -990,8 +1094,8 @@ describe('GallerySopBatchModal background generation', () => {
 
     const dialog = renderer!.root.findByProps({ role: 'dialog', 'aria-labelledby': 'gallery-sop-title' })
     expect(dialog.props.style).toMatchObject({
-      height: 'min(86vh, 820px)',
-      maxWidth: '1024px',
+      height: 'min(88vh, 900px)',
+      maxWidth: 'min(98vw, 1560px)',
     })
 
     await act(async () => {
@@ -1223,6 +1327,7 @@ describe('GallerySopBatchModal background generation', () => {
 
     expect(storeMocks.submitTaskWithData).toHaveBeenCalledTimes(2)
     expect(renderer!.root.findByProps({ 'aria-label': '第 1 条提示词' }).props.value).toBe('会失败的提示词')
+    selectPrompt(renderer!, 2)
     expect(renderer!.root.findByProps({ 'aria-label': '第 2 条提示词' }).props.value).toBe('会成功的提示词')
     expect(
       renderer!.root
@@ -1279,8 +1384,8 @@ describe('GallerySopBatchModal background generation', () => {
       }),
     )
     const firstReferenceButton = renderer!.root.findByProps({ title: '图1 · 点击查看大图' })
-    expect(renderer!.root.findByProps({ title: '图2 · 点击查看大图' })).toBeTruthy()
-    expect(renderer!.root.findAllByProps({ 'aria-label': '查看第 1 条提示词的参考图 1 大图' })).toHaveLength(2)
+    expect(renderer!.root.findAllByProps({ title: '图2 · 点击查看大图' })).toHaveLength(0)
+    expect(renderer!.root.findAllByProps({ 'aria-label': '查看第 1 条提示词的参考图 1 大图' })).toHaveLength(1)
     expect(renderer!.root.findAllByProps({ 'aria-label': '查看第 1 条提示词的参考图 2 大图' })).toHaveLength(0)
 
     act(() => firstReferenceButton.props.onClick())
@@ -1289,6 +1394,10 @@ describe('GallerySopBatchModal background generation', () => {
 
     act(() => renderer!.root.findByProps({ 'aria-label': '关闭参考图大图预览' }).props.onClick())
     expect(renderer!.root.findAllByProps({ 'aria-label': '关闭参考图大图预览' })).toHaveLength(0)
+
+    selectPrompt(renderer!, 2)
+    expect(renderer!.root.findByProps({ title: '图2 · 点击查看大图' })).toBeTruthy()
+    expect(renderer!.root.findByProps({ 'aria-label': '查看第 2 条提示词的参考图 1 大图' })).toBeTruthy()
 
     const startButton = renderer!.root
       .findAllByType('button')

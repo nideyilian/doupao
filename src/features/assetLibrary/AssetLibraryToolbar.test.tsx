@@ -15,10 +15,21 @@ afterEach(() => {
     groupBy: 'grouped',
     viewMode: 'grid',
     gridDensity: 'standard',
+    selectedAssetIds: [],
   })
 })
 
 describe('AssetLibraryToolbar', () => {
+  it('shows the selected asset count in the toolbar', () => {
+    useAssetLibraryStore.setState({ selectedAssetIds: ['asset-a', 'asset-b'] })
+    let renderer: ReturnType<typeof create>
+    act(() => {
+      renderer = create(<AssetLibraryToolbar scopeLabel="全部" totalCount={7} />)
+    })
+
+    expect(renderer!.root.findByProps({ 'data-testid': 'asset-selection-count' }).children.join('')).toBe('已选择 2 张')
+  })
+
   it('keeps filter and sort popovers out of the toolbar layout flow', () => {
     let renderer: ReturnType<typeof create>
     act(() => {

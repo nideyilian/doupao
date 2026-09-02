@@ -1214,7 +1214,7 @@ export default function DetailModal() {
                       { label: '1536x1024 (3:2 推荐)', value: '1536x1024' },
                       { label: '1024x1536 (2:3 推荐)', value: '1024x1536' },
                       { label: '1280x720 (16:9 推荐)', value: '1280x720' },
-                      { label: '720x1280 (9:16 推荐)', value: '720x1280' },
+                      { label: '1080x1920 (9:16 推荐)', value: '1080x1920' },
                       { label: '1024x768 (4:3)', value: '1024x768' },
                       { label: '768x1024 (3:4)', value: '768x1024' },
                       { label: '2048x2048 (1:1 推荐)', value: '2048x2048' },
@@ -1456,7 +1456,14 @@ export default function DetailModal() {
         />
       )}
 
-      {hoverPreview && <HoverImagePreview preview={hoverPreview} sizeText={imageSizes[hoverPreview.imageId] || ''} />}
+      {hoverPreview && (
+        <HoverImagePreview
+          preview={hoverPreview}
+          sizeText={imageSizes[hoverPreview.imageId] || ''}
+          portal
+          zIndex={110}
+        />
+      )}
 
       {showRawUrlsModal && rawImageUrls.length > 0 && (
         <div

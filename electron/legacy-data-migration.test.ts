@@ -208,10 +208,23 @@ describe('ensureStateFileReadable', () => {
     expect(readFileSync(path.join(current, STATE_FILE), 'utf-8')).toBe(original)
   })
 
-  it('returns true when the .bak fallback is readable', () => {
+  it('restores the readable .bak file into the state path', () => {
     const current = makeCurrentUserData()
-    writeFileSync(path.join(current, STATE_FILE + '.bak'), JSON.stringify({ state: { ok: true } }), 'utf-8')
+    const backup = JSON.stringify({ state: { ok: true } })
+    writeFileSync(path.join(current, STATE_FILE + '.bak'), backup, 'utf-8')
     expect(ensureStateFileReadable(current)).toBe(true)
+    expect(readFileSync(path.join(current, STATE_FILE), 'utf-8')).toBe(backup)
+  })
+
+  it('prefers the readable .bak file when the main state file is corrupt', () => {
+    const current = makeCurrentUserData()
+    writeFileSync(path.join(current, STATE_FILE), '{broken', 'utf-8')
+    const backup = JSON.stringify({ state: { recovered: true } })
+    writeFileSync(path.join(current, STATE_FILE + '.bak'), backup, 'utf-8')
+
+    expect(ensureStateFileReadable(current)).toBe(true)
+    expect(readFileSync(path.join(current, STATE_FILE), 'utf-8')).toBe(backup)
+    expect(readdirSync(current).some((name) => name.startsWith(STATE_FILE + '.corrupt-'))).toBe(true)
   })
 
   it('restores the newest backup snapshot when state and .bak are missing', () => {

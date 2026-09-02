@@ -1,7 +1,7 @@
 import { create } from 'zustand'
-import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
-import { createCoalescedJsonStorage } from './lib/coalescedJsonStorage'
-import { calculateImageSize, normalizeImageSize, type SizeTier } from './lib/size'
+import { persist } from 'zustand/middleware'
+import { createDesktopJsonStorage } from './lib/desktopJsonStorage'
+import { calculateImageSize, inferSizeTier, normalizeImageSize } from './lib/size'
 import { parseVariablePrompt, renderVariablePromptBatch } from './lib/variablePrompt'
 import { useRuntimeStore } from './stores/runtimeStore'
 import type {
@@ -159,6 +159,7 @@ import {
   commitImportedRecords,
   getMigrationJournal,
   putMigrationJournal,
+  cleanupElectronLegacyIndexedDb,
   getSopBatchSnapshot,
   getAllSopBatchSnapshots,
   putSopBatchSnapshot,
@@ -258,7 +259,11 @@ import {
   fileExistsOnDisk,
 } from './lib/localSave'
 import { migrateLegacyImages } from './lib/imageStorageMigration'
-import { buildElectronImageExportEntries, collectReferencedExportImageIds } from './lib/dataExport'
+import {
+  buildElectronImageExportEntries,
+  buildExportImageRefs,
+  collectReferencedExportImageIds,
+} from './lib/dataExport'
 import { ByteLruCache } from './lib/byteLruCache'
 import { sanitizeSettingsForBackup } from './lib/backupManifest'
 import { reconcileBackupWorkspaceImages, validateBackupArchive } from './lib/backupImport'
@@ -281,7 +286,6 @@ const thumbnailCache = new ByteLruCache<
   string,
   { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }
 >(64 * 1024 * 1024)
-let latestBackupInterval = DEFAULT_SETTINGS.backupInterval
 const thumbnailBackfillIds = new Map<string, 'visible' | 'background'>()
 const thumbnailBackfillRunningIds = new Set<string>()
 const thumbnailSubscribers = new Map<
@@ -4201,49 +4205,21 @@ export const useStore = create<AppState>()(
       migrate: (persistedState) => migratePersistedState(persistedState),
       partialize: getPersistedState,
       merge: mergePersistedState,
-      storage: createJSONStorage((): StateStorage => {
-        const w = window as unknown as {
-          electronAPI?: {
-            getStateFilePath?: () => Promise<string>
-            getDefaultPath: () => Promise<string>
-            readJsonText: (filePath: string) => Promise<string | null>
-            writeJsonText: (
-              filePath: string,
-              content: string,
-              backupIntervalOrSkip?: number | boolean,
-            ) => Promise<boolean>
-            isElectron: boolean
-          }
-        }
-        const isElectronEnv = typeof w?.electronAPI !== 'undefined' && w.electronAPI?.isElectron === true
-        if (!isElectronEnv) return localStorage
-        const api = w.electronAPI!
-        const fileName = 'gpt-image-playground.json'
-        let filePathPromise: Promise<string> | null = null
-        const getFilePath = () => {
-          filePathPromise ??=
-            typeof api.getStateFilePath === 'function'
-              ? api.getStateFilePath()
-              : api
-                  .getDefaultPath()
-                  .then((defaultPath) => defaultPath.replace(/[\\/]local-saves$/, '') + '/' + fileName)
-          return filePathPromise
-        }
-        return createCoalescedJsonStorage({
-          read: async () => api.readJsonText(await getFilePath()),
-          write: async (content, { skipBackup }) =>
-            api.writeJsonText(await getFilePath(), content, skipBackup ? true : latestBackupInterval),
-        })
+      storage: createDesktopJsonStorage('zustand', {
+        read: async () => {
+          const api = window.electronAPI
+          if (!api) return null
+          const fileName = 'gpt-image-playground.json'
+          const defaultPath = await api.getDefaultPath()
+          const filePath = api.getStateFilePath
+            ? await api.getStateFilePath()
+            : defaultPath.replace(/[\\/]local-saves$/, '') + '/' + fileName
+          return api.readJsonText(filePath)
+        },
       }),
     },
   ),
 )
-
-useStore.subscribe((state, previousState) => {
-  if (state.settings.backupInterval !== previousState.settings.backupInterval) {
-    latestBackupInterval = state.settings.backupInterval
-  }
-})
 
 let lastStoredAgentConversations = useStore.getState().agentConversations
 let agentConversationPersistRunning = false
@@ -5253,9 +5229,7 @@ export async function initStore(options: { safeMode?: boolean } = {}) {
 
   // 素材库历史回填与启动补齐：任务恢复、工作区归属恢复之后执行。
   // 链式串行保证不并发争写素材；全部幂等且不阻塞启动。
-  void retryGeneratedAssetLibraryMigration(tasks, currentTabs).catch((error) => {
-    console.error('素材库迁移失败（不影响生成批次视图）:', error)
-  })
+  const assetMigrationPromise = retryGeneratedAssetLibraryMigration(tasks, currentTabs)
 
   showSupportPromptForExistingLocalData(tasks)
   for (const task of tasks) {
@@ -5469,10 +5443,77 @@ export async function initStore(options: { safeMode?: boolean } = {}) {
         : {}),
     })
   }
-  if (!options.safeMode)
-    void ensureImageStorageMigrated().catch((error) => {
-      console.error('图片存储迁移失败:', error)
+  await hydrateWorkspaceTabsInStore()
+  const imageMigrationPromise = options.safeMode ? Promise.resolve() : ensureImageStorageMigrated()
+  void Promise.all([assetMigrationPromise, imageMigrationPromise])
+    .then(() => cleanupElectronLegacyIndexedDb())
+    .catch((error) => {
+      console.error('素材库迁移失败（不影响生成批次视图）:', error)
     })
+}
+
+async function hydrateWorkspaceTabsInStore(): Promise<void> {
+  const current = useStore.getState()
+  if (current.workspaceTabs.length === 0) return
+
+  const workspaceTabs = await Promise.all(
+    current.workspaceTabs.map(async (tab) => {
+      const dataUrls = new Map<string, string>()
+      await Promise.all(
+        [...new Set(tab.inputImages.map((image) => image.id))].map(async (imageId) => {
+          const direct = tab.inputImages.find((image) => image.id === imageId)?.dataUrl
+          const dataUrl = direct || (await ensureImageCached(imageId))
+          if (dataUrl) dataUrls.set(imageId, dataUrl)
+        }),
+      )
+
+      const inputImages = tab.inputImages
+        .map((image) => {
+          const dataUrl = dataUrls.get(image.id)
+          return dataUrl ? { ...image, dataUrl } : null
+        })
+        .filter((image): image is InputImage => image !== null)
+      const inputImageFolder = tab.inputImageFolder
+      const folderImageIds = new Set(tab.inputImageFolder?.imageIds ?? [])
+      const maskDraft =
+        tab.maskDraft && (dataUrls.has(tab.maskDraft.targetImageId) || folderImageIds.has(tab.maskDraft.targetImageId))
+          ? { ...tab.maskDraft }
+          : null
+      const maskEditorImageId =
+        tab.maskEditorImageId && (dataUrls.has(tab.maskEditorImageId) || folderImageIds.has(tab.maskEditorImageId))
+          ? tab.maskEditorImageId
+          : null
+      const changed =
+        inputImages.length !== tab.inputImages.length ||
+        inputImages.some(
+          (image, index) =>
+            image.id !== tab.inputImages[index]?.id || image.dataUrl !== tab.inputImages[index]?.dataUrl,
+        ) ||
+        JSON.stringify(maskDraft) !== JSON.stringify(tab.maskDraft) ||
+        maskEditorImageId !== tab.maskEditorImageId
+      return changed ? { ...tab, inputImages, inputImageFolder, maskDraft, maskEditorImageId } : tab
+    }),
+  )
+
+  const activeTab =
+    current.activeWorkspaceTabId && current.appMode === 'gallery'
+      ? workspaceTabs.find((tab) => tab.id === current.activeWorkspaceTabId)
+      : undefined
+  useStore.setState({
+    workspaceTabs,
+    ...(activeTab
+      ? {
+          prompt: activeTab.prompt,
+          inputImages: activeTab.inputImages.map((image) => ({ ...image })),
+          inputImageFolder: activeTab.inputImageFolder,
+          params: { ...activeTab.params },
+          maskDraft: activeTab.maskDraft ? { ...activeTab.maskDraft } : null,
+          maskEditorImageId: activeTab.maskEditorImageId,
+          customOutputPath: activeTab.customOutputPath,
+          galleryInputDraft: null,
+        }
+      : {}),
+  })
 }
 
 type WorkspaceTaskRecoveryPlan = {
@@ -5648,15 +5689,6 @@ function resolveTaskTabId(tabs: WorkspaceTab[], preferredId: string | null | und
 }
 
 /** 提交新任务（使用显式数据，不依赖全局状态） */
-function inferSizeTier(size: string): SizeTier {
-  const match = normalizeImageSize(size).match(/^(\d+)x(\d+)$/i)
-  if (!match) return '1K'
-  const pixels = Number(match[1]) * Number(match[2])
-  if (pixels > 4_500_000) return '4K'
-  if (pixels > 1_700_000) return '2K'
-  return '1K'
-}
-
 export async function submitTaskWithData(
   data: {
     prompt: string
@@ -6740,17 +6772,11 @@ export async function planPurgeGeneratedAssets(assetIds: string[]): Promise<Asse
 async function purgeGeneratedAssetsNow(records: PurgeRecords): Promise<void> {
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined
   if (api?.assetCatalogPurge) {
-    const result = await api.assetCatalogPurge(records.assetIds, Date.now())
-    try {
-      // 过渡期一致性：任务输出补丁 + 旧 IDB 素材记录/墓碑同步清理；失败不影响 SQLite 权威结果
-      await purgeGeneratedAssetsInTransaction({
-        tasksToPatch: records.tasksToPatch,
-        assetIds: result.purged,
-        tombstones: result.tombstones,
-      })
-    } catch (error) {
-      console.warn('[asset-catalog] IndexedDB 旧记录清理失败（可忽略）', error)
-    }
+    await api.assetCatalogPurge(
+      records.assetIds,
+      Date.now(),
+      records.tasksToPatch.map((task) => ({ id: task.id, value: task })),
+    )
     return
   }
   await purgeGeneratedAssetsInTransaction(records)
@@ -11229,14 +11255,23 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
 }
 
 /** 从 ZIP 归档中提取单个条目（其余条目跳过不解压），并收集全部条目路径清单。 */
-function scanZipArchive(archive: Uint8Array): { manifestBytes: Uint8Array | null; paths: Set<string> } {
+function scanZipArchive(archive: Uint8Array): {
+  manifestBytes: Uint8Array | null
+  paths: Set<string>
+  error: unknown
+} {
   const paths = new Set<string>()
   let manifestBytes: Uint8Array | null = null
+  let error: unknown = null
   const unzip = new Unzip((file) => {
     paths.add(file.name)
     if (file.name === 'manifest.json') {
       const chunks: Uint8Array[] = []
-      file.ondata = (_err, data, final) => {
+      file.ondata = (err, data, final) => {
+        if (err) {
+          error = err
+          return
+        }
         if (data) chunks.push(data)
         if (final) manifestBytes = concatBytes(chunks)
       }
@@ -11247,7 +11282,7 @@ function scanZipArchive(archive: Uint8Array): { manifestBytes: Uint8Array | null
   unzip.register(UnzipInflate)
   unzip.register(UnzipPassThrough)
   unzip.push(archive, true)
-  return { manifestBytes, paths }
+  return { manifestBytes, paths, error }
 }
 
 async function completeRecoveredCustomTask(
@@ -11420,7 +11455,7 @@ async function restoreCompositeBackup(data: ExportData, unzipped: Record<string,
 
 /** 导出数据为 ZIP */
 export async function exportData(
-  options: ExportOptions = { exportConfig: true, exportTasks: true, exportAssets: true },
+  options: ExportOptions = { exportConfig: true, exportTasks: true, exportAssets: true, exportImages: false },
 ) {
   try {
     if (isElectronEnv()) {
@@ -11439,8 +11474,8 @@ export async function exportData(
       }
       return
     }
-    const tasks = options.exportTasks ? await getAllTasks() : []
-    const sopPromptRuns = options.exportTasks ? await getAllSopBatchSnapshots() : []
+    const tasks = options.exportTasks || options.exportImages ? await getAllTasks() : []
+    const sopPromptRuns = options.exportTasks || options.exportImages ? await getAllSopBatchSnapshots() : []
     const state = useStore.getState()
     const {
       settings,
@@ -11452,6 +11487,7 @@ export async function exportData(
       wordGenerationBatches,
     } = state
     const exportedAt = Date.now()
+    const assetLibrary = options.exportAssets || options.exportImages ? await hydrateFull() : null
     const imageCreatedAtFallback = new Map<string, number>()
 
     if (options.exportTasks || options.exportImages) {
@@ -11472,6 +11508,22 @@ export async function exportData(
 
     const imageFiles: ExportData['imageFiles'] = {}
     const thumbnailFiles: NonNullable<ExportData['thumbnailFiles']> = {}
+    const missingOriginalImageIds = new Set<string>()
+    const imageIds = [
+      ...new Set([
+        ...collectReferencedExportImageIds(
+          options.exportTasks || options.exportImages ? tasks : [],
+          options.exportTasks || options.exportImages ? agentConversations : [],
+          options.exportConfig || options.exportImages ? state.workspaceTabs : [],
+          options.exportAssets || options.exportImages ? (assetLibrary?.assets ?? []) : [],
+        ),
+        ...(options.exportConfig || options.exportImages
+          ? wordGenerationBatches.flatMap((batch) => batch.referenceImageIds)
+          : []),
+        ...(options.exportTasks || options.exportImages ? sopPromptRuns.flatMap((run) => run.referenceImageIds) : []),
+      ]),
+    ]
+    const imageRefs = await buildExportImageRefs(imageIds, getImage)
     // 流式 ZIP：逐条目写入并立即丢弃，不再全量驻留图片字节 + zipSync 同步压缩。
     // 图片/缩略图/合成资源用 ZipPassThrough（存储模式）——它们已是压缩格式，
     // 再压缩收益极小，且避免压缩内存翻倍；manifest 用 Deflate 压缩。
@@ -11492,18 +11544,23 @@ export async function exportData(
 
     if (options.exportTasks || options.exportImages) {
       const IMAGE_BATCH = 16
-      const imageIds = await getAllImageIds()
       const thumbnailIds: string[] = []
       for (let batchStart = 0; batchStart < imageIds.length; batchStart += IMAGE_BATCH) {
-        const batch = await batchGetImages(imageIds.slice(batchStart, batchStart + IMAGE_BATCH))
-        for (const img of batch.values()) {
-          if (!img || !img.dataUrl) continue
-
-          const { ext, bytes } = dataUrlToBytes(img.dataUrl)
-          const path = `images/${img.id}.${ext}`
+        const batchIds = imageIds.slice(batchStart, batchStart + IMAGE_BATCH)
+        const batch = await batchGetImages(batchIds)
+        for (const imageId of batchIds) {
+          const img = batch.get(imageId)
+          if (!img) {
+            if (options.exportImages) missingOriginalImageIds.add(imageId)
+            continue
+          }
           const createdAt = img.createdAt ?? imageCreatedAtFallback.get(img.id) ?? exportedAt
 
-          if (options.exportImages) {
+          if (options.exportImages && !img.dataUrl) {
+            missingOriginalImageIds.add(img.id)
+          } else if (options.exportImages && img.dataUrl) {
+            const { ext, bytes } = dataUrlToBytes(img.dataUrl)
+            const path = `images/${img.id}.${ext}`
             imageFiles[img.id] = {
               path,
               createdAt,
@@ -11558,11 +11615,16 @@ export async function exportData(
         }
       }
     }
+    if (options.exportImages && missingOriginalImageIds.size > 0) {
+      throw new Error(`原始图片无法完整导出：${[...missingOriginalImageIds].join('、')}`)
+    }
 
     const manifest: ExportData = {
       version: 7,
       exportedAt: new Date(exportedAt).toISOString(),
       includesSecrets: options.includeSecrets === true,
+      includesOriginalImages: options.exportImages === true,
+      ...(imageIds.length > 0 ? { imageRefs } : {}),
     }
 
     if (options.exportConfig) {
@@ -11589,11 +11651,10 @@ export async function exportData(
       manifest.thumbnailFiles = thumbnailFiles
     }
     if (options.exportAssets) {
-      const assetLibrary = await hydrate()
-      manifest.generatedAssets = assetLibrary.assets
-      manifest.assetCollections = assetLibrary.collections
-      manifest.assetTags = assetLibrary.tags
-      manifest.assetTombstones = assetLibrary.tombstones
+      manifest.generatedAssets = assetLibrary?.assets ?? []
+      manifest.assetCollections = assetLibrary?.collections ?? []
+      manifest.assetTags = assetLibrary?.tags ?? []
+      manifest.assetTombstones = assetLibrary?.tombstones ?? []
       manifest.assetUsageEvents = await getAllAssetUsageEvents()
     }
     if (options.exportImages) {
@@ -11621,7 +11682,7 @@ export async function exportData(
 /** 导出数据到指定路径 */
 export async function exportDataToPath(
   filePath: string,
-  options: ExportOptions = { exportConfig: true, exportTasks: true, exportAssets: true },
+  options: ExportOptions = { exportConfig: true, exportTasks: true, exportAssets: true, exportImages: false },
   behavior: ExportDataToPathBehavior = {},
 ): Promise<{ success: boolean; omittedCount: number }> {
   try {
@@ -11633,24 +11694,36 @@ export async function exportDataToPath(
     const exportedAt = Date.now()
     const compositeBackup = options.exportConfig ? await buildCompositeBackup() : null
     const assetLibrary = options.exportAssets || options.exportImages ? await hydrateFull() : null
-    const ids = options.exportImages
-      ? [
-          ...new Set([
-            ...collectReferencedExportImageIds(
-              allTasks,
-              state.agentConversations,
-              state.workspaceTabs,
-              assetLibrary?.assets ?? [],
-            ),
-            ...sopPromptRuns.flatMap((run) => run.referenceImageIds),
-            ...useRequirementPrototype
+    const ids = [
+      ...new Set([
+        ...collectReferencedExportImageIds(
+          options.exportTasks || options.exportImages ? allTasks : [],
+          options.exportTasks || options.exportImages ? state.agentConversations : [],
+          options.exportConfig || options.exportImages ? state.workspaceTabs : [],
+          options.exportAssets || options.exportImages ? (assetLibrary?.assets ?? []) : [],
+        ),
+        ...(options.exportConfig || options.exportImages
+          ? state.wordGenerationBatches.flatMap((batch) => batch.referenceImageIds)
+          : []),
+        ...(options.exportTasks || options.exportImages ? sopPromptRuns.flatMap((run) => run.referenceImageIds) : []),
+        ...(options.exportImages
+          ? useRequirementPrototype
               .getState()
-              .sopLibrary.flatMap((item) => (item.coverImageId ? [item.coverImageId] : [])),
-          ]),
-        ]
-      : []
-    const { entries, omittedCount } = await buildElectronImageExportEntries(ids, getImage)
+              .sopLibrary.flatMap((item) => (item.coverImageId ? [item.coverImageId] : []))
+          : []),
+      ]),
+    ]
+    const imageRefs = await buildExportImageRefs(ids, getImage)
+    const imagePlan = options.exportImages
+      ? await buildElectronImageExportEntries(ids, getImage)
+      : { entries: [], omittedCount: 0, omittedImageIds: [] }
+    if (imagePlan.omittedImageIds.length > 0) {
+      throw new Error(`原始图片无法完整导出：${imagePlan.omittedImageIds.join('、')}`)
+    }
+    const { entries, omittedCount } = imagePlan
     const imageFiles: ExportData['imageFiles'] = {}
+    const thumbnailFiles: NonNullable<ExportData['thumbnailFiles']> = {}
+    const thumbnailEntries: Array<{ archivePath: string; data: Uint8Array; mtime?: number }> = []
     for (const entry of entries) {
       const image = await getImage(entry.imageId)
       imageFiles[entry.imageId] = {
@@ -11661,10 +11734,31 @@ export async function exportDataToPath(
         height: image?.height,
       }
     }
+    if (options.exportTasks) {
+      for (const imageId of ids) {
+        const thumbnail = await getImageThumbnail(imageId)
+        if (!thumbnail?.thumbnailDataUrl) continue
+        const { ext, bytes } = dataUrlToBytes(thumbnail.thumbnailDataUrl)
+        const archivePath = `thumbnails/${imageId}.${ext}`
+        thumbnailFiles[imageId] = {
+          path: archivePath,
+          width: thumbnail.width,
+          height: thumbnail.height,
+          thumbnailVersion: thumbnail.thumbnailVersion,
+        }
+        thumbnailEntries.push({
+          archivePath,
+          data: bytes,
+          mtime: imageRefs[imageId]?.createdAt,
+        })
+      }
+    }
     const manifest: ExportData = {
       version: 7,
       exportedAt: new Date(exportedAt).toISOString(),
       includesSecrets: options.includeSecrets === true,
+      includesOriginalImages: options.exportImages === true,
+      ...(ids.length > 0 ? { imageRefs } : {}),
       ...(options.exportConfig
         ? {
             settings: sanitizeSettingsForBackup(state.settings, options.includeSecrets === true),
@@ -11700,6 +11794,7 @@ export async function exportDataToPath(
             assetUsageEvents: await getAllAssetUsageEvents(),
           }
         : {}),
+      ...(options.exportTasks ? { thumbnailFiles } : {}),
       ...(options.exportImages ? { imageFiles } : {}),
     }
     const result = await exportZipToPath({
@@ -11711,6 +11806,7 @@ export async function exportDataToPath(
           archivePath: entry.archivePath,
           mtime: entry.createdAt,
         })),
+        ...thumbnailEntries,
         ...(compositeBackup
           ? await Promise.all(
               [...compositeBackup.assets].map(async ([id, asset]) => ({
@@ -11747,16 +11843,18 @@ export interface ImportOptions {
 interface ImportExtractionState {
   compositeFiles: Map<string, Uint8Array>
   importedImageIds: string[]
+  availableImageIds: Set<string>
   pendingImages: StoredImage[]
   pendingThumbnails: StoredImageThumbnail[]
   processingChain: Promise<void>
   processingError: unknown
 }
 
-function createImportExtractionState(): ImportExtractionState {
+function createImportExtractionState(availableImageIds: Iterable<string> = []): ImportExtractionState {
   return {
     compositeFiles: new Map<string, Uint8Array>(),
     importedImageIds: [],
+    availableImageIds: new Set(availableImageIds),
     pendingImages: [],
     pendingThumbnails: [],
     processingChain: Promise.resolve(),
@@ -11770,7 +11868,12 @@ function flushImportImageBatches(state: ImportExtractionState): Promise<void> {
   const thumbnails = state.pendingThumbnails
   state.pendingImages = []
   state.pendingThumbnails = []
-  return commitImportedRecords({ images, thumbnails, tasks: [] })
+  return commitImportedRecords({ images, thumbnails, tasks: [] }).then(() => {
+    for (const image of images) {
+      state.importedImageIds.push(image.id)
+      state.availableImageIds.add(image.id)
+    }
+  })
 }
 
 function enqueueImportedImage(
@@ -11801,7 +11904,6 @@ function enqueueImportedImage(
       if (!localPath) {
         cacheImage(id, dataUrl)
       }
-      state.importedImageIds.push(id)
       if (state.pendingImages.length >= 32) await flushImportImageBatches(state)
     })
     .catch((error: unknown) => {
@@ -11864,14 +11966,22 @@ export async function importDataFromPath(
     if (!manifestResult.success) throw new Error(manifestResult.error)
     const parsedData = manifestResult.manifest as ExportData
     const paths = new Set(manifestResult.entryPaths)
-    const reconciledBackup =
+    const existingImageIds = new Set(await getAllImageIds())
+    const candidateImageIds = new Set(existingImageIds)
+    if (options.importImages) {
+      Object.keys(parsedData.imageFiles ?? {}).forEach((id) => candidateImageIds.add(id))
+    }
+    const preflightBackup =
       parsedData.version >= 5 && options.importConfig && options.importTasks
-        ? reconcileBackupWorkspaceImages(parsedData)
+        ? reconcileBackupWorkspaceImages(parsedData, candidateImageIds)
         : { data: parsedData, omittedImageCount: 0 }
-    const data = reconciledBackup.data
-    validateBackupArchive(data, {}, options, paths)
+    const preflightData = preflightBackup.data
+    validateBackupArchive(preflightData, {}, options, paths, candidateImageIds)
     const replaceWorkspace =
-      data.version >= 5 && Boolean(data.workspaceState) && options.importConfig === true && options.importTasks === true
+      preflightData.version >= 5 &&
+      Boolean(preflightData.workspaceState) &&
+      options.importConfig === true &&
+      options.importTasks === true
 
     const readEntry = async (archivePath: string): Promise<Uint8Array> => {
       const result = await api.readZipEntry!(filePath, archivePath)
@@ -11879,30 +11989,38 @@ export async function importDataFromPath(
       return result.bytes
     }
 
-    const state = createImportExtractionState()
+    const state = createImportExtractionState(existingImageIds)
     // 按清单条目逐条读取（主进程每次只解压一个条目，渲染端不驻留整包）
-    if (options.importImages && data.imageFiles) {
-      for (const [id, info] of Object.entries(data.imageFiles)) {
+    if (options.importImages && preflightData.imageFiles) {
+      for (const [id, info] of Object.entries(preflightData.imageFiles)) {
         const bytes = await readEntry(info.path)
         enqueueImportedImage(state, id, info, bytes, info.path)
       }
     }
-    if (options.importTasks && data.thumbnailFiles) {
-      for (const [id, info] of Object.entries(data.thumbnailFiles)) {
+    if (options.importTasks && preflightData.thumbnailFiles) {
+      for (const [id, info] of Object.entries(preflightData.thumbnailFiles)) {
         const bytes = await readEntry(info.path)
         enqueueImportedThumbnail(state, id, info, bytes, info.path)
       }
     }
-    if (options.importConfig && data.compositeAssetFiles) {
-      for (const info of Object.values(data.compositeAssetFiles)) {
+    if (options.importConfig && preflightData.compositeAssetFiles) {
+      for (const info of Object.values(preflightData.compositeAssetFiles)) {
         const bytes = await readEntry(info.path)
         state.compositeFiles.set(info.path, bytes)
       }
     }
     await settleImportExtraction(state)
 
+    const reconciledBackup =
+      parsedData.version >= 5 && options.importConfig && options.importTasks
+        ? reconcileBackupWorkspaceImages(parsedData, state.availableImageIds)
+        : { data: parsedData, omittedImageCount: 0 }
+    const data = reconciledBackup.data
     await importBackupTail(data, state, replaceWorkspace, options)
-    showImportedBackupSummary(data, options, reconciledBackup.omittedImageCount)
+    const missingImageCount = Object.keys(data.imageRefs ?? data.imageFiles ?? {}).filter(
+      (id) => !state.availableImageIds.has(id),
+    ).length
+    showImportedBackupSummary(data, options, reconciledBackup.omittedImageCount, missingImageCount)
     return true
   } catch (error) {
     useStore.getState().showToast(`导入失败：${error instanceof Error ? error.message : String(error)}`, 'error')
@@ -11919,20 +12037,29 @@ export async function importData(
     const archiveBytes = new Uint8Array(await file.arrayBuffer())
 
     // 第一遍：只解压 manifest.json + 收集全部条目路径清单（其余条目跳过、不解压不驻留）
-    const { manifestBytes, paths } = scanZipArchive(archiveBytes)
+    const { manifestBytes, paths, error: scanError } = scanZipArchive(archiveBytes)
+    if (scanError) throw scanError
     if (!manifestBytes) throw new Error('ZIP 中缺少 manifest.json')
 
     const parsedData: ExportData = JSON.parse(strFromU8(manifestBytes))
-    const reconciledBackup =
+    const existingImageIds = new Set(await getAllImageIds())
+    const candidateImageIds = new Set(existingImageIds)
+    if (options.importImages) {
+      Object.keys(parsedData.imageFiles ?? {}).forEach((id) => candidateImageIds.add(id))
+    }
+    const preflightBackup =
       parsedData.version >= 5 && options.importConfig && options.importTasks
-        ? reconcileBackupWorkspaceImages(parsedData)
+        ? reconcileBackupWorkspaceImages(parsedData, candidateImageIds)
         : { data: parsedData, omittedImageCount: 0 }
-    const data = reconciledBackup.data
-    validateBackupArchive(data, {}, options, paths)
+    const preflightData = preflightBackup.data
+    validateBackupArchive(preflightData, {}, options, paths, candidateImageIds)
     const replaceWorkspace =
-      data.version >= 5 && Boolean(data.workspaceState) && options.importConfig === true && options.importTasks === true
+      preflightData.version >= 5 &&
+      Boolean(preflightData.workspaceState) &&
+      options.importConfig === true &&
+      options.importTasks === true
 
-    const state = createImportExtractionState()
+    const state = createImportExtractionState(existingImageIds)
 
     const unzip = new Unzip((file) => {
       const name = file.name
@@ -11940,9 +12067,13 @@ export async function importData(
 
       if (options.importImages && name.startsWith('images/')) {
         const id = entryIdFromArchivePath('images/', name)
-        const info = data.imageFiles?.[id]
+        const info = preflightData.imageFiles?.[id]
         const chunks: Uint8Array[] = []
-        file.ondata = (_err, data, final) => {
+        file.ondata = (err, data, final) => {
+          if (err) {
+            state.processingError = err
+            return
+          }
           if (data) chunks.push(data)
           if (!final) return
           enqueueImportedImage(state, id, info, concatBytes(chunks), name)
@@ -11953,9 +12084,13 @@ export async function importData(
 
       if (options.importTasks && name.startsWith('thumbnails/')) {
         const id = entryIdFromArchivePath('thumbnails/', name)
-        const info = data.thumbnailFiles?.[id]
+        const info = preflightData.thumbnailFiles?.[id]
         const chunks: Uint8Array[] = []
-        file.ondata = (_err, data, final) => {
+        file.ondata = (err, data, final) => {
+          if (err) {
+            state.processingError = err
+            return
+          }
           if (data) chunks.push(data)
           if (!final) return
           enqueueImportedThumbnail(state, id, info, concatBytes(chunks), name)
@@ -11966,7 +12101,11 @@ export async function importData(
 
       if (options.importConfig && name.startsWith('composite-assets/')) {
         const chunks: Uint8Array[] = []
-        file.ondata = (_err, data, final) => {
+        file.ondata = (err, data, final) => {
+          if (err) {
+            state.processingError = err
+            return
+          }
           if (data) chunks.push(data)
           if (final) state.compositeFiles.set(name, concatBytes(chunks))
         }
@@ -11980,8 +12119,16 @@ export async function importData(
     unzip.push(archiveBytes, true)
     await settleImportExtraction(state)
 
+    const reconciledBackup =
+      parsedData.version >= 5 && options.importConfig && options.importTasks
+        ? reconcileBackupWorkspaceImages(parsedData, state.availableImageIds)
+        : { data: parsedData, omittedImageCount: 0 }
+    const data = reconciledBackup.data
     await importBackupTail(data, state, replaceWorkspace, options)
-    showImportedBackupSummary(data, options, reconciledBackup.omittedImageCount)
+    const missingImageCount = Object.keys(data.imageRefs ?? data.imageFiles ?? {}).filter(
+      (id) => !state.availableImageIds.has(id),
+    ).length
+    showImportedBackupSummary(data, options, reconciledBackup.omittedImageCount, missingImageCount)
     return true
   } catch (e) {
     useStore.getState().showToast(`导入失败：${e instanceof Error ? e.message : String(e)}`, 'error')
@@ -12095,11 +12242,7 @@ async function importBackupTail(
     const tasks = await getAllTasks()
     const normalizedFavorites = normalizeLoadedFavoriteState(tasks, favoriteCollections, defaultFavoriteCollectionId)
     const restoredWorkspace = replaceWorkspace
-      ? restoreWorkspaceBackupState(
-          data.workspaceState!,
-          normalizedFavorites.tasks,
-          new Set(Object.keys(data.imageFiles ?? {})),
-        )
+      ? restoreWorkspaceBackupState(data.workspaceState!, normalizedFavorites.tasks, state.availableImageIds)
       : null
     useStore.setState({
       tasks: normalizedFavorites.tasks,
@@ -12114,6 +12257,7 @@ async function importBackupTail(
           }
         : {}),
     })
+    await hydrateWorkspaceTabsInStore()
     if (normalizedFavorites.changed) await Promise.all(normalizedFavorites.tasks.map((task) => putTask(task)))
 
     if (data.wordLibraryGroups && data.wordLibraryEntries) {
@@ -12190,7 +12334,12 @@ async function importBackupTail(
   }
 }
 
-function showImportedBackupSummary(data: ExportData, options: ImportOptions, omittedImageCount: number): void {
+function showImportedBackupSummary(
+  data: ExportData,
+  options: ImportOptions,
+  omittedImageCount: number,
+  missingImageCount: number,
+): void {
   let msg = '数据已成功导入'
   if (options.importTasks && data.tasks) {
     msg = `已导入 ${data.tasks.length} 个任务`
@@ -12200,7 +12349,10 @@ function showImportedBackupSummary(data: ExportData, options: ImportOptions, omi
     msg = '配置已成功导入'
   }
   if (omittedImageCount > 0) {
-    msg += `，已跳过 ${omittedImageCount} 张旧备份中未包含的工作区输入图片`
+    msg += `，已移除 ${omittedImageCount} 张不可用的工作区图片`
+  }
+  if (missingImageCount > 0) {
+    msg += `，${missingImageCount} 张原图未包含在备份中`
   }
   useStore.getState().showToast(msg, 'success')
 }

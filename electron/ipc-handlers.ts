@@ -334,6 +334,18 @@ function writeLocalSettings(settings: Record<string, unknown>): void {
   writeFileSync(getLocalSettingsPath(), JSON.stringify(settings, null, 2), 'utf-8')
 }
 
+export function readValidJsonText(filePath: string): string | null {
+  try {
+    if (!existsSync(filePath)) return null
+    const content = readFileSync(filePath, 'utf-8')
+    if (!content.trim()) return null
+    JSON.parse(content)
+    return content
+  } catch {
+    return null
+  }
+}
+
 function getCacheImagesDir(): string | null {
   return getLibraryPaths().cacheImages
 }
@@ -1323,23 +1335,15 @@ export function registerIpcHandlers(): void {
   handleChecked('fs:read-json-text', async (_event, { filePath }: { filePath: string }) => {
     try {
       const safeFilePath = assertAllowedPath(filePath)
-      if (!existsSync(safeFilePath)) return null
-      const content = readFileSync(safeFilePath, 'utf-8')
-      if (content && content.trim()) return content
-      const bakPath = safeFilePath + '.bak'
-      if (existsSync(bakPath)) {
-        const bakContent = readFileSync(bakPath, 'utf-8')
-        if (bakContent && bakContent.trim()) return bakContent
-      }
-      return null
+      const content = readValidJsonText(safeFilePath)
+      if (content) return content
+      const bakPath = assertAllowedPath(safeFilePath + '.bak')
+      return readValidJsonText(bakPath)
     } catch (err) {
       console.error('读取 JSON 文本失败:', err)
       try {
         const bakPath = assertAllowedPath(filePath) + '.bak'
-        if (existsSync(bakPath)) {
-          const bakContent = readFileSync(bakPath, 'utf-8')
-          if (bakContent && bakContent.trim()) return bakContent
-        }
+        return readValidJsonText(bakPath)
       } catch {}
       return null
     }
@@ -1447,9 +1451,23 @@ export function registerIpcHandlers(): void {
         const safeBackupPath = assertAllowedPath(backupPath)
         const safeTargetPath = assertAllowedPath(targetPath)
         if (!existsSync(safeBackupPath)) return false
+        const content = readValidJsonText(safeBackupPath)
+        if (!content) return false
         const dir = path.dirname(safeTargetPath)
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-        copyFileSync(safeBackupPath, safeTargetPath)
+        const tempPath = `${safeTargetPath}.restore-tmp`
+        try {
+          writeFileSync(tempPath, content, 'utf-8')
+          try {
+            renameSync(tempPath, safeTargetPath)
+          } catch {
+            copyFileSync(tempPath, safeTargetPath)
+          }
+        } finally {
+          try {
+            unlinkSync(tempPath)
+          } catch {}
+        }
         return true
       } catch (err) {
         console.error('从备份恢复失败:', err)

@@ -371,7 +371,8 @@ export default function LegacyDataImportModal({ open, onClose }: Props) {
             <h4 className="text-xs font-semibold text-ds-text">导出 / 导入数据文件（跨模式迁移）</h4>
             <p className="text-xs leading-relaxed text-ds-muted">
               在旧版本（或开发模式）中「导出数据」生成 JSON 文件，再在新版本（或安装版）中「导入数据文件」，
-              即可迁移任务、词条库与 Agent 对话；图片通过磁盘原图自动关联，无需重复占用空间。
+              即可迁移任务、词条库与 Agent 对话；该 JSON 只保存图片引用元数据，不包含原始图片。跨设备恢复原图请使用 ZIP
+              导出并勾选「包含原始图片」。
             </p>
             <div className="flex flex-wrap gap-2">
               <button

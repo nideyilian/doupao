@@ -203,6 +203,7 @@ export default function SopManagementCenter({
   const pasteImageGateRef = useRef({ enabled: false })
   const importInputRef = useRef<HTMLInputElement>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const sopSelectionAnchorRef = useRef<string | null>(null)
   const [versionDialogOpen, setVersionDialogOpen] = useState(false)
   const showToast = useStore((state) => state.showToast)
   const [groupContextMenu, setGroupContextMenu] = useState<{ x: number; y: number; groupId?: string } | null>(null)
@@ -503,6 +504,37 @@ export default function SopManagementCenter({
     runAfterDraftConfirmation(select)
   }
 
+  const selectItemWithModifiers = (
+    item: SopLibraryItem,
+    event?: Pick<React.MouseEvent<HTMLElement>, 'ctrlKey' | 'metaKey' | 'shiftKey'>,
+  ) => {
+    const orderedIds = filteredItems.map((candidate) => candidate.id)
+    const anchorId = sopSelectionAnchorRef.current ?? selectedItemId
+
+    if (event?.shiftKey) {
+      const anchorIndex = orderedIds.indexOf(anchorId)
+      const targetIndex = orderedIds.indexOf(item.id)
+      if (anchorIndex !== -1 && targetIndex !== -1) {
+        const range = orderedIds.slice(Math.min(anchorIndex, targetIndex), Math.max(anchorIndex, targetIndex) + 1)
+        setSelectedIds((current) => new Set([...current, ...range]))
+      } else {
+        setSelectedIds(new Set([item.id]))
+      }
+    } else if (event?.ctrlKey || event?.metaKey) {
+      setSelectedIds((current) => {
+        const next = new Set(current)
+        if (next.has(item.id)) next.delete(item.id)
+        else next.add(item.id)
+        return next
+      })
+    } else {
+      setSelectedIds(new Set())
+    }
+
+    sopSelectionAnchorRef.current = item.id
+    selectItem(item)
+  }
+
   const openCoverPickerForItem = (item: SopLibraryItem) => {
     if (item.id === selectedItemId) {
       setCoverPickerOpen(true)
@@ -707,21 +739,6 @@ export default function SopManagementCenter({
     showToast('已新建生成元指令', 'success')
   }
 
-  const toggleSelectItem = (itemId: string) => {
-    setSelectedIds((current) => {
-      const next = new Set(current)
-      if (next.has(itemId)) next.delete(itemId)
-      else next.add(itemId)
-      return next
-    })
-  }
-
-  const selectAllFiltered = () => {
-    setSelectedIds(new Set(filteredItems.map((item) => item.id)))
-  }
-
-  const clearSelection = () => setSelectedIds(new Set())
-
   const batchDeleteSelected = () => {
     if (selectedIds.size === 0) return
     openConfirmDialog({
@@ -733,27 +750,30 @@ export default function SopManagementCenter({
         const count = selectedIds.size
         selectedIds.forEach((itemId) => onDeleteItem(itemId))
         setSelectedIds(new Set())
+        sopSelectionAnchorRef.current = null
         showToast(`已删除 ${count} 个 SOP`, 'success')
       },
     })
   }
 
-  const batchMoveSelected = (targetGroupId: string) => {
-    if (selectedIds.size === 0) {
-      showToast('请先选择要移动的 SOP', 'info')
-      return
-    }
+  const moveItemsToGroup = (itemIds: string[], targetGroupId: string) => {
+    const selectedItemIds = new Set(itemIds)
+    if (selectedItemIds.size === 0) return
     const nextGroupId = targetGroupId || undefined
     let movedCount = 0
     items.forEach((item) => {
-      if (selectedIds.has(item.id) && item.groupId !== nextGroupId) {
+      if (selectedItemIds.has(item.id) && item.groupId !== nextGroupId) {
         onSaveItem({ ...item, groupId: nextGroupId, updatedAt: Date.now() })
         movedCount += 1
       }
     })
     setSelectedIds(new Set())
+    sopSelectionAnchorRef.current = null
     const groupName = groups.find((group) => group.id === nextGroupId)?.name ?? '未分组'
-    showToast(`已移动 ${movedCount} 个 SOP 到「${groupName}」`, 'success')
+    showToast(
+      movedCount > 0 ? `已移动 ${movedCount} 个 SOP 到「${groupName}」` : `所选 SOP 已在「${groupName}」`,
+      movedCount > 0 ? 'success' : 'info',
+    )
   }
 
   const handleExport = () => {
@@ -1350,6 +1370,7 @@ export default function SopManagementCenter({
           <SopLibraryTab
             groups={groups}
             items={items}
+            tasks={tasks}
             filteredItems={filteredItems}
             search={search}
             setSearch={setSearch}
@@ -1363,15 +1384,11 @@ export default function SopManagementCenter({
             cancelRenameGroup={cancelRenameGroup}
             openGroupContextMenu={openGroupContextMenu}
             selectedIds={selectedIds}
-            toggleSelectItem={toggleSelectItem}
-            selectAllFiltered={selectAllFiltered}
-            clearSelection={clearSelection}
-            batchMoveSelected={batchMoveSelected}
-            batchDeleteSelected={batchDeleteSelected}
+            moveItemsToGroup={moveItemsToGroup}
             addItem={addItem}
             selectedItemId={selectedItemId}
             setSelectedItemId={setSelectedItemId}
-            selectItem={selectItem}
+            selectItemWithModifiers={selectItemWithModifiers}
             openCoverPickerForItem={openCoverPickerForItem}
             itemDraft={itemDraft}
             setItemDraft={setItemDraft}

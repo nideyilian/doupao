@@ -22,6 +22,7 @@ import { useAppDialog } from '../../hooks/useAppDialog'
 import { useStore } from '../../store'
 import type { SopMetaInstruction } from './types'
 import SopAiRevisionPanel from './SopAiRevisionPanel'
+import { META_QUICK_INSTRUCTIONS } from './sopAiQuickInstructions'
 
 export type SopMetaTabProps = {
   filteredMetaInstructions: SopMetaInstruction[]
@@ -220,6 +221,7 @@ export default function SopMetaTab({
           value={metaDraft.instruction}
           revisionTarget="meta-instruction"
           onApply={(instruction) => setMetaDraft({ ...metaDraft, instruction })}
+          instructionTemplates={META_QUICK_INSTRUCTIONS}
         />
       )}
     </DialogWorkspace>

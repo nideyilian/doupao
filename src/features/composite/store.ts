@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { createDesktopJsonStorage } from '../../lib/desktopJsonStorage'
 import {
   createBlankCompositeCategory,
   createBlankCompositePage,
@@ -368,6 +369,9 @@ export const useCompositeStore = create<CompositeStoreState>()(
     {
       name: 'doupao-composite-workspace-storage',
       version: 1,
+      storage: createDesktopJsonStorage('compositeWorkspace', {
+        read: async () => localStorage.getItem('doupao-composite-workspace-storage'),
+      }),
       partialize: (state) => ({
         categories: state.categories,
         activeCategoryId: state.activeCategoryId,

@@ -489,6 +489,52 @@ describe('callAgentResponsesApi', () => {
     })
   })
 
+  it('rejects a generalization revision that adds variable-prompt syntax', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output: [
+            {
+              type: 'message',
+              content: [
+                {
+                  type: 'output_text',
+                  text: JSON.stringify({
+                    assistant_reply: '已泛化具体描述。',
+                    change_summary: ['泛化具体词'],
+                    revised_sop: '# SOP\n\n泛化后的描述。\n\n可变项：\n{{主体}}：猫 / 狗',
+                  }),
+                },
+              ],
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      model: 'agent-sop-chat-model',
+    })
+
+    await expect(
+      reviseSopDocument({
+        settings: DEFAULT_SETTINGS,
+        profile,
+        content: '# 元素池\n\n层级一：主体\n1. 具体主体\n\n层级二：背景\n1. 具体背景',
+        conversation: [{ role: 'user', text: '将具体词泛化' }],
+      }),
+    ).rejects.toThrow('不允许新增可变项')
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.instructions).toContain('Variable-prompt work is a separate feature')
+  })
+
   it('falls back when a compatible provider rejects structured SOP revision output', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')

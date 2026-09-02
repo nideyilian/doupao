@@ -29,8 +29,8 @@ module.exports = {
       { target: 'nsis', arch: ['x64'] },
       { target: 'portable', arch: ['x64'] },
     ],
-    // 有证书环境变量时签名；否则保持不签（现状）
-    signAndEditExecutable: Boolean(process.env.CSC_LINK),
+    // 无证书时跳过签名，但仍编辑 EXE 资源（图标、版本信息等）。
+    signExecutable: Boolean(process.env.CSC_LINK),
   },
   ...(process.env.CSC_LINK && process.env.CSC_PUBLISHER_NAME
     ? { publisherName: [process.env.CSC_PUBLISHER_NAME] }

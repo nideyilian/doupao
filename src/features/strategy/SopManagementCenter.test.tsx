@@ -115,10 +115,15 @@ function findButton(root: ReactTestInstance, label: string) {
   return root.findAllByType('button').find((button) => textContent(button).includes(label))
 }
 
+function openMoreSopActions(root: ReactTestInstance) {
+  act(() => root.findByProps({ 'aria-label': '更多 SOP 操作' }).props.onClick())
+}
+
 function renderCenter(
   options: {
     selectedSopId?: string
     tasks?: TaskRecord[]
+    groups?: SopGroup[]
     items?: SopLibraryItem[]
     metaInstructions?: SopMetaInstruction[]
     sopVersionHistory?: Record<string, SopVersion[]>
@@ -131,7 +136,7 @@ function renderCenter(
   const onApply = vi.fn()
   const renderer = create(
     <SopManagementCenter
-      groups={[]}
+      groups={options.groups ?? []}
       items={options.items ?? [item]}
       tasks={options.tasks}
       metaInstructions={options.metaInstructions ?? []}
@@ -317,13 +322,13 @@ describe('SopManagementCenter apply and save actions', () => {
     result.renderer.unmount()
   })
 
-  it('uses a compact list cover and opens cover selection by double-clicking it', () => {
+  it('uses the first five generated images as a stacked list cover and opens cover selection by double-clicking it', () => {
     const generatedTask: TaskRecord = {
       id: 'task-1',
       prompt: '生成结果',
       params: { ...DEFAULT_PARAMS },
       inputImageIds: [],
-      outputImages: ['image-1'],
+      outputImages: ['image-1', 'image-2', 'image-3', 'image-4', 'image-5', 'image-6'],
       status: 'done',
       error: null,
       createdAt: 2,
@@ -337,9 +342,13 @@ describe('SopManagementCenter apply and save actions', () => {
     })
 
     const coverButton = result.renderer.root.findByProps({ 'aria-label': `选择 ${item.name}` })
-    const cover = coverButton.findAll((node) => String(node.props.className).includes('h-ds-12 w-ds-12'))[0]
-    expect(cover.props.className).toContain('h-ds-12')
-    expect(cover.props.className).toContain('w-ds-12')
+    expect(
+      result.renderer.root.findAll((node) => typeof node.props['data-sop-image-stack-layer'] === 'string'),
+    ).toHaveLength(5)
+    expect(result.renderer.root.findAll((node) => node.props['data-sop-image-stack-plus'])).toHaveLength(0)
+    const stackButton = result.renderer.root.findByProps({ 'data-sop-image-stack': item.id })
+    expect(stackButton.props.onPointerEnter).toBeTypeOf('function')
+    expect(stackButton.props.onPointerMove).toBeTypeOf('function')
     expect(result.renderer.root.findAllByProps({ 'aria-label': 'SOP 封面' })).toHaveLength(0)
     expect(
       result.renderer.root.findAll((node) => String(node.props.className).includes('sop-center-badge')),
@@ -387,7 +396,10 @@ describe('SopManagementCenter apply and save actions', () => {
         .className,
     ).toContain('flex-1')
     expect(result.renderer.root.findByProps({ 'aria-label': '正文格式与编辑工具' })).toBeTruthy()
-    expect(findButton(result.renderer.root, '自动分段')).toBeTruthy()
+    expect(result.renderer.root.findByProps({ 'aria-label': '自动分段' })).toBeTruthy()
+    expect(result.renderer.root.findByProps({ 'aria-label': '清理粘贴' })).toBeTruthy()
+    expect(result.renderer.root.findByProps({ 'aria-label': '关闭自动换行' })).toBeTruthy()
+    expect(result.renderer.root.findByProps({ 'aria-label': '复制正文' })).toBeTruthy()
     expect(findButton(result.renderer.root, 'AI 检查')).toBeTruthy()
     expect(findButton(result.renderer.root, '最小化')).toBeUndefined()
     // AI 对话常驻右侧:正文编辑区 + 对话输入区两个 textarea
@@ -396,7 +408,10 @@ describe('SopManagementCenter apply and save actions', () => {
       true,
     )
     expect(result.renderer.root.findAllByProps({ 'aria-label': 'SOP AI 对话优化' })).toHaveLength(1)
-    expect(result.renderer.root.findAll((node) => node.children.includes(item.description))).toHaveLength(0)
+    expect(result.renderer.root.findAll((node) => node.children.includes(item.description))).toHaveLength(1)
+    expect(
+      result.renderer.root.findAll((node) => String(node.props.className).includes('sop-center-sop-description')),
+    ).toHaveLength(1)
     result.renderer.unmount()
   })
 
@@ -452,10 +467,9 @@ describe('SopManagementCenter apply and save actions', () => {
     act(() => undoButton.props.onClick())
     expect(result.renderer.root.findByProps({ 'aria-label': 'SOP 正文' }).props.value).toBe(item.content)
 
-    const wrapButton = result.renderer.root.findByProps({ title: '自动换行' })
-    expect(wrapButton.props['aria-pressed']).toBe(true)
+    const wrapButton = result.renderer.root.findByProps({ 'aria-label': '关闭自动换行' })
     act(() => wrapButton.props.onClick())
-    expect(result.renderer.root.findByProps({ title: '自动换行' }).props['aria-pressed']).toBe(false)
+    expect(result.renderer.root.findByProps({ 'aria-label': '开启自动换行' })).toBeTruthy()
 
     // 无全屏模式：编辑器保持单层工具栏，空间全部留给正文
     expect(findButton(result.renderer.root, '全屏编辑')).toBeUndefined()
@@ -715,14 +729,14 @@ describe('SopManagementCenter apply and save actions', () => {
         dataTransfer: {
           types: ['Files'],
           files: Array.from(
-            { length: 8 },
+            { length: 20 },
             (_, index) => new File([String(index)], `参考图 ${index + 1}.png`, { type: 'image/png' }),
           ),
         },
       })
     })
 
-    expect(result.renderer.root.findByProps({ 'data-reference-count': 8 }).findAllByType('img')).toHaveLength(8)
+    expect(result.renderer.root.findByProps({ 'data-reference-count': 20 }).findAllByType('img')).toHaveLength(20)
     expect(findButton(result.renderer.root, '开始生成并保存')).toBeTruthy()
     expect(result.renderer.root.findByProps({ 'data-sop-reference-dropzone': true }).props['data-disabled']).toBe(true)
     result.renderer.unmount()
@@ -901,6 +915,7 @@ describe('SopManagementCenter apply and save actions', () => {
       result = renderCenter()
     })
 
+    openMoreSopActions(result.renderer.root)
     act(() => findButton(result.renderer.root, '选择封面')!.props.onClick())
     expect(result.renderer.root.findByProps({ 'aria-labelledby': 'sop-cover-picker-title' })).toBeTruthy()
     result.renderer.unmount()
@@ -1027,20 +1042,38 @@ describe('SopManagementCenter apply and save actions', () => {
     result.renderer.unmount()
   })
 
-  it('selects multiple SOPs and shows the bulk toolbar', () => {
+  it('selects multiple SOPs with Ctrl/Cmd and prepares a drag payload', () => {
     let result!: ReturnType<typeof renderCenter>
     act(() => {
       result = renderCenter({ items: [item, item2] })
     })
 
-    expect(result.renderer.root.findAllByProps({ 'aria-label': '批量操作' })).toHaveLength(0)
+    expect(result.renderer.root.findAllByProps({ type: 'checkbox' })).toHaveLength(0)
 
-    act(() => result.renderer.root.findByProps({ 'aria-label': `勾选 ${item.name}` }).props.onChange())
-    act(() => result.renderer.root.findByProps({ 'aria-label': `勾选 ${item2.name}` }).props.onChange())
+    act(() =>
+      result.renderer.root.findByProps({ title: item.name }).props.onClick({
+        ctrlKey: true,
+        metaKey: false,
+        shiftKey: false,
+      }),
+    )
+    act(() =>
+      result.renderer.root.findByProps({ title: item2.name }).props.onClick({
+        ctrlKey: true,
+        metaKey: false,
+        shiftKey: false,
+      }),
+    )
 
-    const bulkBar = result.renderer.root.findByProps({ 'aria-label': '批量操作' })
-    expect(bulkBar).toBeTruthy()
-    expect(textContent(bulkBar)).toContain('已选 2 项')
+    const rows = result.renderer.root.findAllByProps({ role: 'listitem' })
+    const data = new Map<string, string>()
+    const dataTransfer = {
+      effectAllowed: '',
+      setData: (type: string, value: string) => data.set(type, value),
+    }
+    act(() => rows[0].props.onDragStart({ dataTransfer }))
+
+    expect(data.get('application/x-doupao-sop-ids')).toBe(JSON.stringify([item.id, item2.id]))
     result.renderer.unmount()
   })
 
@@ -1050,9 +1083,54 @@ describe('SopManagementCenter apply and save actions', () => {
       result = renderCenter()
     })
 
+    openMoreSopActions(result.renderer.root)
     const versionButton = findButton(result.renderer.root, '版本历史')
     expect(versionButton).toBeTruthy()
     expect(versionButton?.props.disabled).toBe(false)
+    result.renderer.unmount()
+  })
+
+  it('moves the selected SOPs when they are dropped on a group', () => {
+    const group: SopGroup = {
+      id: 'group-image',
+      name: '图片提示词',
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    let result!: ReturnType<typeof renderCenter>
+    act(() => {
+      result = renderCenter({ groups: [group], items: [item, item2] })
+    })
+
+    act(() =>
+      result.renderer.root.findByProps({ title: item.name }).props.onClick({
+        ctrlKey: true,
+        metaKey: false,
+        shiftKey: false,
+      }),
+    )
+    act(() =>
+      result.renderer.root.findByProps({ title: item2.name }).props.onClick({
+        ctrlKey: true,
+        metaKey: false,
+        shiftKey: false,
+      }),
+    )
+
+    const dropTarget = result.renderer.root.findByProps({ 'data-sop-drop-group': group.id })
+    act(() =>
+      dropTarget.props.onDrop({
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+        dataTransfer: {
+          getData: () => JSON.stringify([item.id, item2.id]),
+        },
+      }),
+    )
+
+    expect(result.onSaveItem).toHaveBeenCalledWith(expect.objectContaining({ id: item.id, groupId: group.id }))
+    expect(result.onSaveItem).toHaveBeenCalledWith(expect.objectContaining({ id: item2.id, groupId: group.id }))
+    expect(result.renderer.root.findAllByProps({ 'aria-label': '批量操作' })).toHaveLength(0)
     result.renderer.unmount()
   })
 

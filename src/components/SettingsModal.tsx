@@ -947,7 +947,7 @@ export default function SettingsModal() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('api')
   const [exportConfig, setExportConfig] = useState(true)
   const [exportTasks, setExportTasks] = useState(true)
-  const [exportImages, setExportImages] = useState(true)
+  const [exportImages, setExportImages] = useState(false)
   const [exportAssets, setExportAssets] = useState(true)
   const [includeBackupSecrets, setIncludeBackupSecrets] = useState(false)
   const [importConfig, setImportConfig] = useState(true)
@@ -4199,7 +4199,7 @@ export default function SettingsModal() {
                     <div className="flex flex-wrap gap-x-6 gap-y-3">
                       <Checkbox checked={exportConfig} onChange={setExportConfig} label="包含配置和词条库" />
                       <Checkbox checked={exportTasks} onChange={setExportTasks} label="包含任务和预览图" />
-                      <Checkbox checked={exportImages} onChange={setExportImages} label="包含原始图片" />
+                      <Checkbox checked={exportImages} onChange={setExportImages} label="包含原始图片（体积较大）" />
                       <Checkbox checked={exportAssets} onChange={setExportAssets} label="包含素材库元数据" />
                       {exportConfig && (
                         <Checkbox
@@ -4253,7 +4253,7 @@ export default function SettingsModal() {
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs text-ds-muted dark:text-ds-muted">
                         备份默认保存到素材库的 <code>backups/</code>{' '}
-                        目录；复制库根文件夹即可整体备份（退出应用后复制）。
+                        目录；默认导出轻量数据和预览图，不包含原始图片。复制库根文件夹或勾选「包含原始图片」才适合换机恢复完整素材。
                       </p>
                       <button
                         onClick={async () => {
@@ -4476,8 +4476,9 @@ export default function SettingsModal() {
                     <div className="text-ds-sm leading-relaxed text-ds-muted dark:text-ds-muted">
                       每次保存应用状态时，系统会自动备份上一份状态
                       JSON。备份包含设置、输入草稿、收藏夹、词条库、工作区标签等持久化状态；不包含 IndexedDB
-                      中的任务图片数据。需要完整迁移任务、图片和缩略图时，请使用「数据管理」中的 ZIP
-                      导出。自动备份最多保留 30 份，设置为 0 表示每次保存都备份。
+                      中的任务图片数据。ZIP
+                      导出默认也不包含原始图片，仅保存任务、引用关系和预览图；换电脑时请勾选「包含原始图片」。
+                      自动备份最多保留 30 份，设置为 0 表示每次保存都备份。
                     </div>
                   </div>
 

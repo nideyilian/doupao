@@ -7,6 +7,7 @@ import {
   getSopGeneratorInstruction,
   parseGeneratedSop,
   parseGeneratedVariablePrompt,
+  prepareSopReferenceImages,
   validateSopGenerationInput,
   type GenerateSop,
   type GeneratedSop,
@@ -141,7 +142,14 @@ export const generateSopFromStore: GenerateSop = async (
         ? `正在整理 ${referenceImages.length} 张参考图片与生成说明`
         : '正在整理生成说明与元指令',
   })
-  const content = buildSopRequestContent(brief, context, referenceImages, kind, excludeText)
+  const preparedReferences = await prepareSopReferenceImages(referenceImages)
+  if (preparedReferences.compressedCount > 0) {
+    options?.onProgress?.({
+      stage: 'prepare',
+      message: `已自动压缩 ${preparedReferences.compressedCount} 张过大参考图，正在继续生成`,
+    })
+  }
+  const content = buildSopRequestContent(brief, context, preparedReferences.images, kind, excludeText)
   const useChatCompletions = settings.agentTextProtocol === 'chat-completions'
   const url = buildApiUrl(
     profile.baseUrl,

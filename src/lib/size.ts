@@ -5,6 +5,7 @@ const MAX_EDGE = 3840
 const MAX_ASPECT_RATIO = 3
 const MIN_PIXELS = 655_360
 const MAX_PIXELS = 8_294_400
+const PRESERVED_SIZE_PRESETS = new Set(['1080x1920'])
 
 export type SizeTier = '1K' | '2K' | '4K'
 type PresetRatio = '1:1' | '3:2' | '2:3' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9'
@@ -19,9 +20,8 @@ const RECOMMENDED_SIZE_SET = new Set([
   '3840x2160',
   '2160x3840',
   '1280x720',
-  '1088x1920',
   '1136x640',
-  '720x1280',
+  '1080x1920',
   '368x256',
 ])
 
@@ -80,6 +80,8 @@ function normalizeDimensions(width: number, height: number) {
 
 export function normalizeImageSize(size: string) {
   const trimmed = size.trim()
+  if (PRESERVED_SIZE_PRESETS.has(trimmed)) return trimmed
+
   const match = trimmed.match(SIZE_PATTERN)
   if (!match) return trimmed
 
@@ -185,7 +187,7 @@ const COMMON_SIZE_PRESETS: Record<SizeTier, Record<PresetRatio, string>> = {
     '3:2': '1536x1024',
     '2:3': '1024x1536',
     '16:9': '1280x720',
-    '9:16': '720x1280',
+    '9:16': '1080x1920',
     '4:3': '1024x768',
     '3:4': '768x1024',
     '21:9': '1280x544',
@@ -212,10 +214,19 @@ const COMMON_SIZE_PRESETS: Record<SizeTier, Record<PresetRatio, string>> = {
   },
 }
 
-const POSTPROCESS_SIZE_PRESET_OVERRIDES: Partial<Record<SizeTier, Partial<Record<PresetRatio, string>>>> = {
-  '1K': {
-    '9:16': '1080x1920',
-  },
+export function inferSizeTier(size: string): SizeTier {
+  const normalized = normalizeImageSize(size)
+  const tiers: SizeTier[] = ['1K', '2K', '4K']
+  const presetTier = tiers.find((tier) => Object.values(COMMON_SIZE_PRESETS[tier]).includes(normalized))
+  if (presetTier) return presetTier
+
+  const match = normalized.match(/^(\d+)x(\d+)$/i)
+  if (!match) return '1K'
+
+  const pixels = Number(match[1]) * Number(match[2])
+  if (pixels > 4_500_000) return '4K'
+  if (pixels > 1_700_000) return '2K'
+  return '1K'
 }
 
 function getPresetRatioKey(ratioWidth: number, ratioHeight: number): PresetRatio | null {
@@ -281,9 +292,7 @@ export function calculatePostprocessImageSize(tier: SizeTier, ratio: string) {
   if (!parsed) return null
 
   const presetRatioKey = getPresetRatioKey(parsed.width, parsed.height)
-  if (presetRatioKey) {
-    return POSTPROCESS_SIZE_PRESET_OVERRIDES[tier]?.[presetRatioKey] ?? COMMON_SIZE_PRESETS[tier][presetRatioKey]
-  }
+  if (presetRatioKey) return COMMON_SIZE_PRESETS[tier][presetRatioKey]
 
   return calculateImageSize(tier, ratio)
 }

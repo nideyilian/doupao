@@ -105,6 +105,15 @@ describe('ipc composite background filesystem helpers', () => {
     expect(backupJsonHasData!({ state: {} })).toBe(false)
   })
 
+  it('reads only valid JSON text so a corrupt main state can fall back to .bak', async () => {
+    const mod = await import('./ipc-handlers')
+    writeFileSync(path.join(fixtureDir, 'state.json'), '{broken', 'utf-8')
+    writeFileSync(path.join(fixtureDir, 'state.json.bak'), JSON.stringify({ state: { recovered: true } }), 'utf-8')
+
+    expect(mod.readValidJsonText(path.join(fixtureDir, 'state.json'))).toBeNull()
+    expect(mod.readValidJsonText(path.join(fixtureDir, 'state.json.bak'))).toContain('recovered')
+  })
+
   it('copies cache files to a new storage root without deleting the source', async () => {
     const mod = await import('./ipc-handlers')
     const copyCacheImageDirectory = (

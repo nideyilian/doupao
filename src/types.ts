@@ -1181,6 +1181,21 @@ export interface ExportData {
   assetTags?: AssetTag[]
   assetTombstones?: AssetTombstone[]
   assetUsageEvents?: AssetUsageEvent[]
+  /** imageId -> 图片引用元数据；不包含绝对路径或原图二进制 */
+  imageRefs?: Record<
+    string,
+    {
+      available: boolean
+      createdAt?: number
+      source?: 'upload' | 'generated' | 'mask'
+      width?: number
+      height?: number
+      mimeType?: string
+      byteSize?: number
+    }
+  >
+  /** 是否在 ZIP 中包含原始图片二进制 */
+  includesOriginalImages?: boolean
   /** imageId → 图片信息 */
   imageFiles?: Record<
     string,

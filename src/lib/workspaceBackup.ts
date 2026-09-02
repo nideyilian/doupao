@@ -33,7 +33,7 @@ export function createWorkspaceBackupState(
 export function restoreWorkspaceBackupState(
   snapshot: WorkspaceBackupState,
   tasks: TaskRecord[],
-  availableImageIds: Set<string>,
+  availableImageIds: ReadonlySet<string>,
 ): {
   tabs: WorkspaceTab[]
   groups: WorkspaceTabGroup[]
@@ -79,6 +79,12 @@ export function restoreWorkspaceBackupState(
       if (!availableImageIds.has(imageId)) {
         throw new Error(`标签页 ${tab.id} 引用了不存在的输入图片：${imageId}`)
       }
+    }
+    if (tab.maskDraft && !availableImageIds.has(tab.maskDraft.targetImageId)) {
+      throw new Error(`标签页 ${tab.id} 引用了不存在的遮罩目标图片：${tab.maskDraft.targetImageId}`)
+    }
+    if (tab.maskEditorImageId && !availableImageIds.has(tab.maskEditorImageId)) {
+      throw new Error(`标签页 ${tab.id} 引用了不存在的遮罩编辑图片：${tab.maskEditorImageId}`)
     }
 
     return {

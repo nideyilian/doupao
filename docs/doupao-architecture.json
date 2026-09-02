@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DOUPAO 豆泡应用架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/nideyilian/doupao",
+      "revision": "1b2a6e4c8fd9ce13fa075f35bd34bc741a532154"
+    },
+    "viewBox": [1240, 720]
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [70, 40],
+    "cols": 5,
+    "gapX": 40,
+    "gapY": 34,
+    "cellW": 190,
+    "cellH": 80
+  },
+  "components": [
+    {
+      "id": "renderer-ui",
+      "type": "frontend",
+      "label": "React 渲染界面",
+      "sublabel": "React 19 + Vite",
+      "tag": "Renderer",
+      "sources": [{ "path": "src/main.tsx" }],
+      "row": 0,
+      "col": 0,
+      "size": [190, 80]
+    },
+    {
+      "id": "app-state",
+      "type": "backend",
+      "label": "应用状态与交互编排",
+      "sublabel": "Zustand store / runtime stores",
+      "tag": "State",
+      "sources": [{ "path": "src/store.ts" }, { "path": "src/stores/runtimeStore.ts" }],
+      "row": 0,
+      "col": 1,
+      "size": [190, 80]
+    },
+    {
+      "id": "ai-workflows",
+      "type": "backend",
+      "label": "AI 生成与 Agent 工作流",
+      "sublabel": "单次生成、批处理、素材引用",
+      "tag": "AI",
+      "sources": [
+        { "path": "src/lib/agentApi.ts" },
+        { "path": "src/lib/agentBatchExecution.ts" },
+        { "path": "src/lib/api.ts" }
+      ],
+      "row": 0,
+      "col": 2,
+      "size": [190, 80]
+    },
+    {
+      "id": "ai-providers",
+      "type": "external",
+      "label": "AI 服务提供方",
+      "sublabel": "fal.ai / 自定义 Provider",
+      "tag": "HTTPS",
+      "sources": [{ "path": "src/lib/apiProfiles.ts" }],
+      "row": 0,
+      "col": 4,
+      "size": [190, 80]
+    },
+    {
+      "id": "browser-storage",
+      "type": "database",
+      "label": "渲染进程本地存储",
+      "sublabel": "IndexedDB / JSON 状态持久化",
+      "tag": "Local",
+      "sources": [{ "path": "src/lib/db.ts" }, { "path": "src/lib/coalescedJsonStorage.ts" }],
+      "row": 1,
+      "col": 2,
+      "size": [190, 80]
+    },
+    {
+      "id": "github-releases",
+      "type": "cloud",
+      "label": "GitHub Releases",
+      "sublabel": "electron-updater 更新源",
+      "tag": "Update",
+      "sources": [{ "path": "electron/main.ts" }],
+      "row": 1,
+      "col": 4,
+      "size": [190, 80]
+    },
+    {
+      "id": "preload-bridge",
+      "type": "security",
+      "label": "Preload 安全桥",
+      "sublabel": "contextIsolation + 受控 IPC",
+      "tag": "Bridge",
+      "sources": [{ "path": "electron/preload.ts" }],
+      "row": 2,
+      "col": 0,
+      "size": [190, 80]
+    },
+    {
+      "id": "electron-main",
+      "type": "backend",
+      "label": "Electron 主进程",
+      "sublabel": "窗口、生命周期、CSP、深链接",
+      "tag": "Main",
+      "sources": [{ "path": "electron/main.ts" }],
+      "row": 1,
+      "col": 1,
+      "size": [190, 80]
+    },
+    {
+      "id": "ipc-handlers",
+      "type": "backend",
+      "label": "IPC 处理器",
+      "sublabel": "渲染端命令与本地能力适配",
+      "tag": "IPC",
+      "sources": [{ "path": "electron/ipc-handlers.ts" }],
+      "row": 2,
+      "col": 1,
+      "size": [190, 80]
+    },
+    {
+      "id": "asset-kernel",
+      "type": "backend",
+      "label": "素材内核",
+      "sublabel": "目录协调、协议、索引、命令回传",
+      "tag": "Kernel",
+      "sources": [{ "path": "electron/asset-kernel.ts" }],
+      "row": 2,
+      "col": 2,
+      "size": [190, 80]
+    },
+    {
+      "id": "sqlite-catalog",
+      "type": "database",
+      "label": "SQLite 素材目录",
+      "sublabel": "FTS5 搜索、版本与关系数据",
+      "tag": "SQLite",
+      "sources": [{ "path": "electron/asset-catalog.ts" }],
+      "row": 3,
+      "col": 1,
+      "size": [190, 80]
+    },
+    {
+      "id": "indexer-worker",
+      "type": "backend",
+      "label": "素材索引 Worker",
+      "sublabel": "utilityProcess 文本向量/索引任务",
+      "tag": "Worker",
+      "sources": [{ "path": "electron/asset-indexer.ts" }],
+      "row": 3,
+      "col": 3,
+      "size": [190, 80]
+    },
+    {
+      "id": "local-asset-api",
+      "type": "backend",
+      "label": "本地素材 API",
+      "sublabel": "127.0.0.1 HTTP + SSE",
+      "tag": "API",
+      "sources": [{ "path": "electron/asset-api-server.ts" }],
+      "row": 4,
+      "col": 2,
+      "size": [190, 80]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "渲染进程",
+      "wraps": ["renderer-ui", "app-state", "ai-workflows", "browser-storage"],
+      "pad": 28
+    },
+    {
+      "kind": "region",
+      "label": "Electron 桌面运行时",
+      "wraps": [
+        "preload-bridge",
+        "electron-main",
+        "ipc-handlers",
+        "asset-kernel",
+        "sqlite-catalog",
+        "indexer-worker",
+        "local-asset-api"
+      ],
+      "pad": 28
+    }
+  ],
+  "connections": [
+    {
+      "id": "ui-state",
+      "from": "renderer-ui",
+      "to": "app-state",
+      "label": "组件事件 / 状态订阅",
+      "route": "straight",
+      "labelDy": 76
+    },
+    {
+      "id": "state-storage",
+      "from": "app-state",
+      "to": "browser-storage",
+      "label": "持久化读写",
+      "route": "orthogonal-v",
+      "labelAt": [510, 134]
+    },
+    {
+      "id": "ui-ai",
+      "from": "app-state",
+      "to": "ai-workflows",
+      "label": "生成请求 / Agent 任务",
+      "route": "straight",
+      "labelDy": 76,
+      "labelDx": 90
+    },
+    {
+      "id": "ai-provider",
+      "from": "ai-workflows",
+      "to": "ai-providers",
+      "label": "HTTPS 图像生成与模型调用",
+      "route": "straight",
+      "labelDy": 76
+    },
+    {
+      "id": "ui-bridge",
+      "from": "renderer-ui",
+      "to": "preload-bridge",
+      "label": "electronAPI",
+      "route": "orthogonal-v"
+    },
+    {
+      "id": "bridge-ipc",
+      "from": "preload-bridge",
+      "to": "ipc-handlers",
+      "label": "IPC 调用",
+      "route": "orthogonal-h",
+      "labelDy": 76
+    },
+    {
+      "id": "main-bridge",
+      "from": "electron-main",
+      "to": "preload-bridge",
+      "label": "创建窗口 / 注入桥接",
+      "via": [[278, 194], [278, 308]],
+      "fromSide": "left",
+      "toSide": "right",
+      "labelAt": [285, 248]
+    },
+    {
+      "id": "ipc-kernel",
+      "from": "ipc-handlers",
+      "to": "asset-kernel",
+      "label": "素材目录命令",
+      "route": "straight",
+      "labelAt": [420, 366]
+    },
+    {
+      "id": "kernel-catalog",
+      "from": "asset-kernel",
+      "to": "sqlite-catalog",
+      "label": "查询 / 写入素材元数据",
+      "route": "orthogonal-v",
+      "labelAt": [560, 362]
+    },
+    {
+      "id": "kernel-indexer",
+      "from": "asset-kernel",
+      "to": "indexer-worker",
+      "label": "utilityProcess 索引任务",
+      "route": "orthogonal-v",
+      "labelAt": [740, 362]
+    },
+    {
+      "id": "kernel-api",
+      "from": "asset-kernel",
+      "to": "local-asset-api",
+      "label": "启动本地 API / 事件推送",
+      "route": "orthogonal-v"
+    },
+    {
+      "id": "api-catalog",
+      "from": "local-asset-api",
+      "to": "sqlite-catalog",
+      "label": "素材查询与内容流",
+      "route": "orthogonal-h",
+      "labelAt": [510, 476]
+    },
+    {
+      "id": "main-updater",
+      "from": "electron-main",
+      "to": "github-releases",
+      "label": "检查 / 下载更新",
+      "via": [[395, 252], [1085, 252]],
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    }
+  ]
+}

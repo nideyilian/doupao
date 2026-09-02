@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlignLeftIcon as AlignLeft,
+  ClipboardPlusIcon as ClipboardPlus,
+  ChevronDownIcon as ChevronDown,
   CloseIcon as Close,
-  CodeIcon as Code,
   CollectionManageIcon as List,
   CopyIcon as Copy,
   LoaderCircleIcon as Loader,
   RotateCcwIcon as Undo,
   SearchIcon as Search,
   SparklesIcon as Sparkles,
+  TypeIcon as Type,
   TypeIcon as Heading,
 } from '../../design-system/icons'
 import { transformSopDocument, type SopAiOperation } from '../../lib/agentApi'
@@ -17,6 +20,7 @@ import { useStore } from '../../store'
 import { autoParagraphSopText, cleanPastedSopText, formatSopDocument } from './sopTextFormatting'
 import { parseElementPool } from './elementPool'
 import SopAiRevisionPanel from './SopAiRevisionPanel'
+import { createElementPoolQuickInstructions, SOP_QUICK_INSTRUCTIONS } from './sopAiQuickInstructions'
 import type { SopVariableMeta } from './types'
 
 type Selection = {
@@ -41,62 +45,6 @@ const AI_ACTION_LABELS: Record<SopAiOperation, string> = {
   'pool-test-run': '试跑验证',
 }
 
-/** 元素池 SOP 的对话式指令：点击后把可编辑模板注入右侧 AI 对话输入框（可改作用域/数量/主题后发送）。 */
-const POOL_INSTRUCTION_BUTTONS = [
-  {
-    label: '选项泛化',
-    instruction:
-      '对元素池执行上钻泛化。作用域：全部层（如只想泛化某层，请把「全部层」改为具体层级，例如「层级二」）。强度：中等（可改为轻微/彻底）。要求：1) 每个选项从具体实例向上一级语义类别移动，保持意思相关，为 AI 生成留出变化空间；2) 保留画风常量、文案排版常量与排他性红线不变；3) 同层泛化程度一致；多层时保持跨层语义关联（共同主题线、抽象层级对齐）；4) 泛化后仍是完整可直接使用的描述；5) 变更摘要逐条列出「泛化前 → 泛化后」对照，并标注与其它层的关联建议。输出完整修订后的元素池（未修改的层原样保留）。',
-  },
-  {
-    label: '衍生选项',
-    instruction:
-      '为元素池中「第 X 层」追加 N 个新选项（请把 X 改为实际层级、N 改为数量；想全部层都扩充请写「各层」）。要求：1) 与现有选项同粒度、同风格、同抽象层级；2) 与其它层的既有主题线契合，保持层间关联；3) 不重复、不近义改写现有选项；4) 输出完整修订后的元素池（未修改的层原样保留），变更摘要列出新增项。',
-  },
-  {
-    label: '改写选项',
-    instruction:
-      '按主题重写元素池中「第 X 层」的全部选项（请把 X 改为实际层级，并补充主题，例如「新年主题」；想全部层都换主题请写「全部层」并让主题贯穿各层）。要求：1) 新选项保持原层的语义槽位与粒度；2) 保留画风常量与排他性红线；3) 输出完整修订后的元素池，变更摘要说明重写逻辑。',
-  },
-] as const
-
-/**
- * 就地 AI 快捷指令：与元素池指令同一范式——点击后把可编辑模板注入右侧 AI 对话输入框，
- * 用户可调整后发送，AI 结果以对话提案形式确认后再替换正文（正文编辑的唯一 AI 通道是对话）。
- */
-const AI_CHAT_TEMPLATES = [
-  {
-    label: '将具体词泛化',
-    instruction:
-      '扫描正文中写死的具体描述词（如具体颜色、材质、场景、尺寸、风格），把不适合固定的改为通用类别表述；适合做成可选参数的，转为 {{变量}} 并在文末「可变项：」区块给出 4~6 个选项。数字、ID、阈值、价格、禁止项和验收标准一律原样保留。变更摘要逐条列出每处改动。',
-  },
-  {
-    label: '结构化重排',
-    instruction:
-      '把正文重排为规范、易扫读的 Markdown SOP：只使用原文能支撑的章节（目标、适用范围、前置条件、输入、执行步骤、验收标准、异常处理、禁止项、输出）；执行步骤编号化，条件与约束归入对应步骤；结构上必要但缺失的字段写「待补充」，不要臆造；删除重复表述但保留全部独立要求。输出完整修订后的 SOP 与变更摘要。',
-  },
-  {
-    label: '精简压缩',
-    instruction:
-      '在保留全部步骤、数字、约束、禁止项和验收标准的前提下压缩正文：删除重复说明与填充词，合并冗余段落，保持每条要求仍然可执行。若某处删除会丢失信息，保留原文并在变更摘要中说明。',
-  },
-  {
-    label: '拆分步骤',
-    instruction:
-      '把正文中过长的执行段落拆分为编号步骤，每步只做一件事；前置条件、注意事项、异常处理归入对应步骤；必要的缺失步骤用「待补充」占位，不要臆造操作。',
-  },
-  {
-    label: '补全缺失',
-    instruction:
-      '对照 目标 / 适用范围 / 输入 / 执行步骤 / 异常处理 / 验收标准 / 禁止项 检查这份 SOP：缺失的环节用「待补充」补齐框架，把歧义动词改明确；不要臆造业务规则、数字或系统。',
-  },
-  {
-    label: '统一术语',
-    instruction:
-      '找出正文中指向同一概念的多种说法，统一为同一种表述，并在变更摘要中列出术语对照表；不改变任何规则、数字与禁止项的内容。',
-  },
-] as const
-
 /** AI 结果预览条状态：audit 出检查报告，report（池子诊断/试跑）出只读报告；正文修订统一走 AI 对话。 */
 type AiResultState = { kind: 'audit'; content: string } | { kind: 'report'; label: string; content: string }
 
@@ -119,23 +67,6 @@ function formatSelectedLines(
     selection: {
       start: selection.start + prefix.length,
       end: selection.end + prefix.length * selectedLines.split('\n').length,
-    },
-  }
-}
-
-function wrapSelection(
-  value: string,
-  selection: Selection,
-  before: string,
-  after: string,
-): { value: string; selection: Selection } {
-  const selected = value.slice(selection.start, selection.end)
-  const next = `${value.slice(0, selection.start)}${before}${selected}${after}${value.slice(selection.end)}`
-  return {
-    value: next,
-    selection: {
-      start: selection.start + before.length,
-      end: selection.end + before.length,
     },
   }
 }
@@ -205,12 +136,14 @@ export default function SopTextEditor({
 }: SopTextEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const findReplaceRef = useRef<HTMLDivElement>(null)
   const aiAbortRef = useRef<AbortController | null>(null)
   const historyRef = useRef<string[]>([value])
   const historyIndexRef = useRef(0)
   const settings = useStore((state) => state.settings)
   const showToast = useStore((state) => state.showToast)
   const [searchQuery, setSearchQuery] = useState('')
+  const [replaceQuery, setReplaceQuery] = useState('')
   const [searchMessage, setSearchMessage] = useState('')
   const [activeSearchMatchStart, setActiveSearchMatchStart] = useState<number | null>(null)
   const [copied, setCopied] = useState(false)
@@ -219,6 +152,16 @@ export default function SopTextEditor({
   const [aiLoading, setAiLoading] = useState<string | null>(null)
   const [aiError, setAiError] = useState('')
   const [aiResult, setAiResult] = useState<AiResultState | null>(null)
+  const [findReplaceOpen, setFindReplaceOpen] = useState(false)
+
+  useEffect(() => {
+    if (!findReplaceOpen) return
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFindReplaceOpen(false)
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [findReplaceOpen])
 
   /** 正文是否为「层级式元素池」多变体 SOP（影响可用指令集） */
   const elementPool = useMemo(() => parseElementPool(value), [value])
@@ -246,15 +189,26 @@ export default function SopTextEditor({
     historyRef.current = [value]
     historyIndexRef.current = 0
     setHistoryState({ canUndo: false, canRedo: false })
+    setReplaceQuery('')
     setSearchMessage('')
     setActiveSearchMatchStart(null)
     setCopied(false)
     setAiLoading(null)
     setAiError('')
     setAiResult(null)
+    setFindReplaceOpen(false)
   }, [documentId])
 
   useEffect(() => () => aiAbortRef.current?.abort(), [])
+
+  useEffect(() => {
+    if (!findReplaceOpen) return
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!findReplaceRef.current?.contains(event.target as Node)) setFindReplaceOpen(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [findReplaceOpen])
 
   function syncHistoryState() {
     setHistoryState({
@@ -291,12 +245,6 @@ export default function SopTextEditor({
 
   function formatLines(prefix: string) {
     const result = formatSelectedLines(value, getSelection(), prefix)
-    commit(result.value, result.selection)
-  }
-
-  function insertCodeBlock() {
-    const selection = getSelection()
-    const result = wrapSelection(value, selection, '```\n', '\n```')
     commit(result.value, result.selection)
   }
 
@@ -395,6 +343,54 @@ export default function SopTextEditor({
     locateSearchMatch(prevIndex, true)
   }
 
+  function replaceCurrentMatch() {
+    const query = searchQuery.trim()
+    if (!query) {
+      searchInputRef.current?.focus()
+      setSearchMessage('请输入查找内容')
+      return
+    }
+    if (searchMatches.length === 0) {
+      setSearchMessage(`未找到“${query}”`)
+      return
+    }
+
+    const matchIndex = activeSearchMatchIndex >= 0 ? activeSearchMatchIndex : 0
+    const matchStart = searchMatches[matchIndex]
+    const matchEnd = matchStart + query.length
+    const nextValue = `${value.slice(0, matchStart)}${replaceQuery}${value.slice(matchEnd)}`
+    commit(nextValue, {
+      start: matchStart,
+      end: matchStart + replaceQuery.length,
+    })
+    setActiveSearchMatchStart(null)
+    setSearchMessage('已替换当前匹配')
+  }
+
+  function replaceAllMatches() {
+    const query = searchQuery.trim()
+    if (!query) {
+      searchInputRef.current?.focus()
+      setSearchMessage('请输入查找内容')
+      return
+    }
+    if (searchMatches.length === 0) {
+      setSearchMessage(`未找到“${query}”`)
+      return
+    }
+
+    let cursor = 0
+    let nextValue = ''
+    for (const matchStart of searchMatches) {
+      nextValue += `${value.slice(cursor, matchStart)}${replaceQuery}`
+      cursor = matchStart + query.length
+    }
+    nextValue += value.slice(cursor)
+    commit(nextValue)
+    setActiveSearchMatchStart(null)
+    setSearchMessage(`已替换 ${searchMatches.length} 处`)
+  }
+
   async function copyContent() {
     try {
       await copyTextToClipboard(value)
@@ -474,19 +470,6 @@ export default function SopTextEditor({
     }
   }
 
-  /** 在正文末尾插入「可变项：」示例区块，让 AI 对话启用可变项工作台。 */
-  function insertVariableBlock() {
-    const skeleton = `${value.trimEnd()}
-
-画面统一采用 {{变量名}} 描述的方案，并匹配 {{风格}} 风格。
-
-可变项：
-{{变量名}}：方案A / 方案B / 方案C
-{{风格}}：简约 / 复古 / 科技`
-    commit(skeleton)
-    setSearchMessage('已插入可变项示例区块，可在 AI 对话中调整参数并衍生选项')
-  }
-
   return (
     <section className="sop-center-text-editor" aria-label="SOP 正文编辑器">
       <div className="sop-center-text-editor__toolbar" role="toolbar" aria-label="正文格式与编辑工具">
@@ -531,35 +514,9 @@ export default function SopTextEditor({
           >
             <List size={15} />
           </button>
-          <button
-            type="button"
-            onClick={() => formatLines('> ')}
-            className="sop-center-editor-tool sop-center-editor-tool--text"
-            aria-label="引用"
-            title="引用"
-          >
-            “
-          </button>
-          <button
-            type="button"
-            onClick={insertCodeBlock}
-            className="sop-center-editor-tool"
-            aria-label="代码块"
-            title="代码块"
-          >
-            <Code size={15} />
-          </button>
         </div>
         <div className="sop-center-editor-tool-group sop-center-editor-tool-group--text">
           <span className="sop-center-editor-action-label">整理</span>
-          <button
-            type="button"
-            onClick={() => runDocumentTool('自动分段', autoParagraphSopText)}
-            className="sop-center-editor-tool sop-center-editor-tool--label"
-            title="自动分段"
-          >
-            自动分段
-          </button>
           <button
             type="button"
             onClick={() => runDocumentTool('统一格式', formatSopDocument)}
@@ -567,14 +524,6 @@ export default function SopTextEditor({
             title="统一格式"
           >
             统一格式
-          </button>
-          <button
-            type="button"
-            onClick={() => runDocumentTool('清理粘贴', cleanPastedSopText)}
-            className="sop-center-editor-tool sop-center-editor-tool--label"
-            title="清理粘贴"
-          >
-            清理粘贴
           </button>
         </div>
         {elementPool.detected && (
@@ -606,51 +555,114 @@ export default function SopTextEditor({
             {agentProfile.model || '未配置模型'}
           </span>
         </div>
-        <div className="sop-center-editor-search">
-          <Search size={14} aria-hidden="true" />
-          <input
-            ref={searchInputRef}
-            value={searchQuery}
-            onChange={(event) => {
-              setSearchQuery(event.target.value)
-              setSearchMessage('')
-              setActiveSearchMatchStart(null)
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter') return
-              event.preventDefault()
-              if (event.shiftKey) findPrev()
-              else findNext()
-            }}
-            placeholder="查找正文"
-            aria-label="查找正文"
-          />
-          <span
-            className="sop-center-editor-search__result"
-            data-empty={Boolean(searchQuery.trim()) && searchMatches.length === 0 ? true : undefined}
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {searchFeedback}
-          </span>
-          <button type="button" onClick={findPrev} aria-label="查找上一处">
-            上一个
-          </button>
-          <button type="button" onClick={findNext} aria-label="查找下一处">
-            下一个
-          </button>
+        <div ref={findReplaceRef} className="sop-center-editor-search" aria-label="查找替换">
+          <div className="sop-center-editor-search__row">
+            <Search size={14} aria-hidden="true" />
+            <input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(event) => {
+                setSearchQuery(event.target.value)
+                setSearchMessage('')
+                setActiveSearchMatchStart(null)
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return
+                event.preventDefault()
+                if (event.shiftKey) findPrev()
+                else findNext()
+              }}
+              placeholder="查找正文"
+              aria-label="查找正文"
+            />
+            <span
+              className="sop-center-editor-search__result"
+              data-empty={Boolean(searchQuery.trim()) && searchMatches.length === 0 ? true : undefined}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {searchFeedback}
+            </span>
+            <button type="button" onClick={findPrev} aria-label="查找上一处">
+              上一个
+            </button>
+            <button type="button" onClick={findNext} aria-label="查找下一处">
+              下一个
+            </button>
+            <button
+              type="button"
+              onClick={() => setFindReplaceOpen((current) => !current)}
+              aria-label="替换操作"
+              aria-expanded={findReplaceOpen}
+              aria-haspopup="dialog"
+            >
+              替换
+            </button>
+          </div>
+          {findReplaceOpen && (
+            <div className="sop-center-editor-search__replace-popover" role="dialog" aria-label="查找替换操作">
+              <span className="sop-center-editor-search__label">替换为</span>
+              <input
+                value={replaceQuery}
+                onChange={(event) => setReplaceQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  if (event.shiftKey) replaceAllMatches()
+                  else replaceCurrentMatch()
+                }}
+                placeholder="输入替换内容"
+                aria-label="替换为"
+              />
+              <button
+                type="button"
+                onClick={replaceCurrentMatch}
+                disabled={!searchQuery.trim() || searchMatches.length === 0}
+                aria-label="替换当前匹配"
+              >
+                替换
+              </button>
+              <button
+                type="button"
+                onClick={replaceAllMatches}
+                disabled={!searchQuery.trim() || searchMatches.length === 0}
+                aria-label="替换全部匹配"
+              >
+                全部替换
+              </button>
+            </div>
+          )}
         </div>
-        <div className="sop-center-editor-tool-group sop-center-editor-tool-group--end">
+        <div className="sop-center-editor-tool-group sop-center-editor-tool-group--end" aria-label="正文工具">
+          <button
+            type="button"
+            onClick={() => runDocumentTool('自动分段', autoParagraphSopText)}
+            className="sop-center-editor-tool"
+            aria-label="自动分段"
+            title="自动分段"
+          >
+            <AlignLeft size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => runDocumentTool('清理粘贴', cleanPastedSopText)}
+            className="sop-center-editor-tool"
+            aria-label="清理粘贴"
+            title="清理粘贴"
+          >
+            <ClipboardPlus size={15} />
+          </button>
           <button
             type="button"
             onClick={() => setWrap((current) => !current)}
-            className="sop-center-editor-tool sop-center-editor-tool--label"
+            className="sop-center-editor-tool"
             data-active={wrap || undefined}
             aria-pressed={wrap}
-            title="自动换行"
+            aria-label={wrap ? '关闭自动换行' : '开启自动换行'}
+            title={wrap ? '关闭自动换行' : '开启自动换行'}
           >
-            换行
+            <Type size={15} />
           </button>
           <button
             type="button"
@@ -736,8 +748,15 @@ export default function SopTextEditor({
           onTestRevision={onTestRevision}
           variableMeta={variableMeta}
           onVariableMetaChange={onVariableMetaChange}
-          onInsertVariableBlock={insertVariableBlock}
-          instructionTemplates={elementPool.detected ? POOL_INSTRUCTION_BUTTONS : AI_CHAT_TEMPLATES}
+          instructionTemplates={
+            elementPool.detected
+              ? [
+                  ...SOP_QUICK_INSTRUCTIONS.filter((item) => item.id !== 'sop-generalize'),
+                  ...createElementPoolQuickInstructions(elementPool.levels),
+                ]
+              : SOP_QUICK_INSTRUCTIONS
+          }
+          quickInstructionScope={elementPool.detected ? 'element-pool' : undefined}
         />
       </div>
     </section>

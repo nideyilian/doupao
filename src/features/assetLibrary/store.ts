@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { createDesktopJsonStorage } from '../../lib/desktopJsonStorage'
 import type {
   AssetCollection,
   AssetLibraryFilters,
@@ -1986,6 +1987,9 @@ export const useAssetLibraryStore = create<AssetLibraryStoreState>()(
     {
       name: 'doupao-asset-library-ui',
       version: 6,
+      storage: createDesktopJsonStorage('assetLibraryUi', {
+        read: async () => localStorage.getItem('doupao-asset-library-ui'),
+      }),
       partialize: partializeAssetLibraryStore,
       migrate: (persisted) => {
         const state = persisted as Partial<

@@ -50,7 +50,7 @@ import {
   resolveVariableMentionEntry,
   stripImageMentionMarkers,
 } from '../lib/promptImageMentions'
-import { calculateImageSize, formatImageRatio, normalizeImageSize } from '../lib/size'
+import { calculateImageSize, formatImageRatio, inferSizeTier, normalizeImageSize } from '../lib/size'
 import { parseVariablePrompt } from '../lib/variablePrompt'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
@@ -148,15 +148,6 @@ const QUICK_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const
 function getAspectRatioFromSize(size: string): string {
   const match = normalizeImageSize(size).match(/^(\d+)x(\d+)$/i)
   return match ? formatImageRatio(Number(match[1]), Number(match[2])).replace(/^≈/, '') : ''
-}
-
-function getSizeTierForVariablePrompt(size: string): '1K' | '2K' | '4K' {
-  const match = normalizeImageSize(size).match(/^(\d+)x(\d+)$/i)
-  if (!match) return '1K'
-  const pixels = Number(match[1]) * Number(match[2])
-  if (pixels > 4_500_000) return '4K'
-  if (pixels > 1_700_000) return '2K'
-  return '1K'
 }
 
 function withAspectRatioPrompt(prompt: string, ratio: string): string {
@@ -733,6 +724,7 @@ export default function InputBar() {
   const activeAgentConversationId = useStore((s) => s.activeAgentConversationId)
   const filterStatus = useStore((s) => s.filterStatus)
   const filterFavorite = useStore((s) => s.filterFavorite)
+  const galleryViewMode = useStore((s) => s.galleryViewMode)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   const openFavoritePicker = useStore((s) => s.openFavoritePicker)
   const searchQuery = useStore((s) => s.searchQuery)
@@ -833,6 +825,7 @@ export default function InputBar() {
   const gallerySopPromptCount = gallerySopPromptCountsByTab[gallerySopScopeKey] ?? 5
   const gallerySopImagesPerPrompt = gallerySopImagesPerPromptByTab[gallerySopScopeKey] ?? 1
   const gallerySopAutoGenerate = gallerySopAutoGenerateByTab[gallerySopScopeKey] ?? false
+  const gallerySopSecondReference = gallerySopSecondReferenceByTab[gallerySopScopeKey] ?? false
   const gallerySopTotalImages = getSopTotalImageCount(gallerySopPromptCount, gallerySopImagesPerPrompt)
   const gallerySopRunStatus = gallerySopRunStatusByTab[gallerySopScopeKey]
   const setGallerySopId = useCallback(
@@ -897,6 +890,13 @@ export default function InputBar() {
     setGallerySopCountsNonce((current) => current + 1)
     showToast(next ? '自动生图已开启' : '自动生图已关闭', 'success')
   }, [gallerySopAutoGenerate, gallerySopScopeKey, showToast])
+
+  const toggleGallerySopSecondReference = useCallback(() => {
+    const next = !gallerySopSecondReference
+    setGallerySopSecondReferenceByTab((current) => ({ ...current, [gallerySopScopeKey]: next }))
+    setGallerySopCountsNonce((current) => current + 1)
+    showToast(next ? '二次参考已开启' : '二次参考已关闭', 'success')
+  }, [gallerySopScopeKey, gallerySopSecondReference, showToast])
 
   /** 输入栏胶囊「提示词数量」直接输入：规范化后写入并同步弹窗。 */
   const handleGallerySopPromptCountInput = useCallback(
@@ -1420,6 +1420,11 @@ export default function InputBar() {
   const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
   // 一键衍生阶段文案：驱动按钮显示「生成中…」进度，避免黑盒等待
   const [oneClickDerivePhase, setOneClickDerivePhase] = useState('')
+  // 一键衍生必须由用户显式开启，避免挂图后拦截普通图生图。
+  const [oneClickDeriveEnabled, setOneClickDeriveEnabled] = useState(false)
+  useEffect(() => {
+    if (inputImages.length === 0) setOneClickDeriveEnabled(false)
+  }, [inputImages.length])
   // 衍生维度策略：控制一键衍生时哪些维度锁定/微调/大改
   const [derivePolicy, setDerivePolicy] = useState<DeriveDimensionPolicy>({ ...DEFAULT_DERIVE_DIMENSION_POLICY })
   // 文案处理模式：纯视觉 / 保留原文案 / 文案也衍生
@@ -1446,7 +1451,7 @@ export default function InputBar() {
       : hasSubmitApiConfig
         ? maskDraft
           ? '遮罩编辑'
-          : inputImages.length > 0 && !prompt.trim()
+          : oneClickDeriveEnabled && inputImages.length > 0
             ? '一键衍生'
             : '生成图像'
         : '请先配置 API'
@@ -1462,7 +1467,7 @@ export default function InputBar() {
             : `生成 ${gallerySopPromptCount} 条提示词`
         : maskDraft
           ? '遮罩编辑'
-          : inputImages.length > 0 && !prompt.trim()
+          : oneClickDeriveEnabled && inputImages.length > 0
             ? '一键衍生'
             : '生成图像'
   const submitTooltipText = activeAgentIsRunning
@@ -1560,7 +1565,7 @@ export default function InputBar() {
           // 提交失败已由 submitTask 内部 toast 反馈，这里只需吞掉 rejection 避免未处理告警
         },
       )
-    } else if (inputImages.length > 0) {
+    } else if (oneClickDeriveEnabled && inputImages.length > 0) {
       // 一键衍生：挂图未选 SOP 时，自动反推变量提示词模板 → 保存为资产 → 自动批量出图
       void runOneClickDerive()
     } else {
@@ -1584,6 +1589,7 @@ export default function InputBar() {
     gallerySopScopeKey,
     inputImages.length,
     maskDraft,
+    oneClickDeriveEnabled,
     openGallerySopBatch,
     revealGallerySopBatch,
     runOneClickDerive,
@@ -1779,7 +1785,7 @@ export default function InputBar() {
 
   useEffect(() => {
     if (!variablePromptState.enabled || !variablePromptState.aspectRatio) return
-    const size = calculateImageSize(getSizeTierForVariablePrompt(params.size), variablePromptState.aspectRatio)
+    const size = calculateImageSize(inferSizeTier(params.size), variablePromptState.aspectRatio)
     if (!size || normalizeImageSize(params.size) === normalizeImageSize(size)) return
     setParams({ size })
   }, [params.size, setParams, variablePromptState.aspectRatio, variablePromptState.enabled])
@@ -3047,11 +3053,20 @@ export default function InputBar() {
   }
 
   const renderReferenceModeControl = () => {
-    const imageCount = inputImageFolder?.imageIds.length ?? inputImages.length
+    const imageCount = Math.max(inputImageFolder?.imageIds.length ?? 0, inputImages.length)
     if (imageCount === 0) return null
     return (
       <div className="mb-3 flex items-center justify-between gap-3 px-1">
-        <span className="text-xs text-ds-muted dark:text-ds-muted">参考方式</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            data-testid="input-image-count"
+            aria-live="polite"
+            className="inline-flex h-ds-control-sm shrink-0 items-center rounded-full border border-ds-primary/30 bg-ds-primary-subtle px-2.5 text-xs font-semibold text-ds-primary dark:border-ds-primary/25 dark:bg-ds-primary/10 dark:text-ds-primary"
+          >
+            已选择 {imageCount} 张参考图
+          </span>
+          <span className="shrink-0 text-xs text-ds-muted dark:text-ds-muted">参考方式</span>
+        </div>
         <div className="flex rounded-lg bg-ds-surface p-0.5 dark:bg-ds-surface">
           <button
             type="button"
@@ -3473,7 +3488,17 @@ export default function InputBar() {
               预计 {gallerySopTotalImages} 张
             </span>
             <span className="inline-flex h-ds-control-md shrink-0 items-center rounded-full bg-ds-surface px-3 text-xs font-medium text-ds-muted dark:bg-ds-surface dark:text-ds-muted">
-              共同参考 · {sharedReferenceCount} 张
+              <button
+                type="button"
+                onClick={() => setShowAssetPicker(true)}
+                disabled={gallerySopIsRunning}
+                aria-label={`选择 SOP 参考图，当前 ${sharedReferenceCount} 张`}
+                title="选择或追加 SOP 参考图"
+                className="flex h-full items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ImageIcon size={14} />
+                参考图 · {sharedReferenceCount} 张
+              </button>
             </span>
             <span
               className="inline-flex h-ds-control-md shrink-0 items-center rounded-full border border-ds-border/70 bg-ds-surface/55 pl-2.5 pr-1 shadow-sm dark:border-ds-border dark:bg-ds-surface"
@@ -3485,6 +3510,23 @@ export default function InputBar() {
                 disabled={gallerySopIsRunning}
                 aria-label="自动生图"
                 label={<span className="text-xs">自动生图</span>}
+                className="gap-1.5"
+              />
+            </span>
+            <span
+              className="inline-flex h-ds-control-md shrink-0 items-center rounded-full border border-ds-border/70 bg-ds-surface/55 pl-2.5 pr-1 shadow-sm dark:border-ds-border dark:bg-ds-surface"
+              title={
+                gallerySopSecondReference
+                  ? '已开启：提示词生成和实际生图都会使用参考图'
+                  : '已关闭：参考图只用于生成提示词'
+              }
+            >
+              <Switch
+                checked={gallerySopSecondReference}
+                onCheckedChange={toggleGallerySopSecondReference}
+                disabled={gallerySopIsRunning}
+                aria-label="二次参考"
+                label={<span className="text-xs">二次参考</span>}
                 className="gap-1.5"
               />
             </span>
@@ -3529,6 +3571,13 @@ export default function InputBar() {
 
   const showFavoriteCollectionBatchBar = inCollectionOverview && selectedFavoriteCollectionIds.length > 0
   const showTaskBatchBar = !showFavoriteCollectionBatchBar && selectedTaskIds.length > 0
+  const selectedGalleryImageCount =
+    galleryViewMode === 'images'
+      ? selectedTaskIds.reduce(
+          (count, taskId) => count + (tasks.find((task) => task.id === taskId)?.outputImages.length ?? 0),
+          0,
+        )
+      : 0
 
   return (
     <>
@@ -3716,6 +3765,15 @@ export default function InputBar() {
         {showTaskBatchBar && (
           <div className="flex justify-center mb-3">
             <div className="bg-ds-surface/90 dark:bg-ds-subtle/90 backdrop-blur shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-lg rounded-full flex items-center p-1 border border-ds-border/50 dark:border-ds-border pointer-events-auto">
+              {galleryViewMode === 'images' && (
+                <span
+                  data-testid="gallery-selection-count"
+                  aria-live="polite"
+                  className="px-2 text-xs font-semibold tabular-nums text-ds-text dark:text-ds-text-subtle"
+                >
+                  已选择 {selectedGalleryImageCount} 张图片
+                </span>
+              )}
               <BatchActionButton
                 onClick={clearSelection}
                 className="p-2 text-ds-muted dark:text-ds-muted hover:text-ds-text dark:hover:text-white transition-colors"
@@ -3982,27 +4040,39 @@ export default function InputBar() {
 
           {renderReferenceModeControl()}
 
-          {/* 一键衍生设置行：挂图未选 SOP 时显示，控制哪些维度衍生 */}
+          {/* 一键衍生设置行：默认关闭，用户显式开启后才接管挂图发送 */}
           {inputImages.length > 0 && !gallerySopModeActive && !maskDraft && (
-            <div className="flex items-center justify-between px-1 pb-1">
-              <span className="text-xs text-ds-muted">
-                衍生维度：{DERIVE_DIMENSIONS.filter((dimension) => derivePolicy[dimension] !== 'lock').length}/8
-                参与变化
-              </span>
-              <button
-                type="button"
-                onClick={() => setDerivePolicyOpen(true)}
-                className="inline-flex items-center gap-1 rounded-ds-lg border border-ds-border bg-ds-surface px-2.5 py-1 text-xs text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text"
-              >
-                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                  <path
-                    strokeLinecap="round"
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <circle cx="12" cy="12" r="3" />
-                </svg>
-                衍生设置
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-1">
+              <Switch
+                checked={oneClickDeriveEnabled}
+                onCheckedChange={setOneClickDeriveEnabled}
+                disabled={Boolean(oneClickDerivePhase)}
+                aria-label="启用一键衍生"
+                title="开启后，挂图发送时先生成变量提示词，再自动出图"
+                label={<span className="text-xs">启用一键衍生</span>}
+                labelPosition="end"
+                className="gap-1.5"
+              />
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-ds-muted">
+                  衍生维度：{DERIVE_DIMENSIONS.filter((dimension) => derivePolicy[dimension] !== 'lock').length}/8
+                  参与变化
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDerivePolicyOpen(true)}
+                  className="inline-flex items-center gap-1 rounded-ds-lg border border-ds-border bg-ds-surface px-2.5 py-1 text-xs text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text"
+                >
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                    <path
+                      strokeLinecap="round"
+                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                    />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                  衍生设置
+                </button>
+              </div>
             </div>
           )}
           {derivePolicyOpen && (
@@ -4333,6 +4403,9 @@ export default function InputBar() {
             </div>
             {/* 移动端布局 */}
             <div className="sm:hidden flex flex-col gap-2">
+              {gallerySopModeActive && (
+                <div className="flex min-w-0 flex-wrap items-center gap-2">{renderSopContextControls()}</div>
+              )}
               <div className={`collapse-section${mobileCollapsed ? ' collapsed' : ''}`}>
                 <div className="collapse-inner">
                   {renderParams('grid-cols-2')}
@@ -4663,6 +4736,7 @@ export default function InputBar() {
                 promptCount: gallerySopPromptCountsByTab[scopeKey] ?? 5,
                 imagesPerPrompt: gallerySopImagesPerPromptByTab[scopeKey] ?? 1,
                 autoGenerate: gallerySopAutoGenerateByTab[scopeKey] ?? false,
+                secondReference: gallerySopSecondReferenceByTab[scopeKey] ?? false,
                 nonce: gallerySopCountsNonce,
               }}
               initialSecondReference={gallerySopSecondReferenceByTab[scopeKey] ?? false}

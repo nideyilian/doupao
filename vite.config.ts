@@ -10,9 +10,7 @@ const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 
 function loadDevProxyConfig() {
   try {
-    return normalizeDevProxyConfig(
-      JSON.parse(readFileSync('./dev-proxy.config.json', 'utf-8')) as unknown,
-    )
+    return normalizeDevProxyConfig(JSON.parse(readFileSync('./dev-proxy.config.json', 'utf-8')) as unknown)
   } catch (error) {
     const err = error as NodeJS.ErrnoException
     if (err.code === 'ENOENT') return null
@@ -107,9 +105,8 @@ export default defineConfig(({ command }) => {
       env: { TZ: 'Asia/Shanghai' },
       // CI runner（2 核）上 fork worker 偶发崩溃（Worker exited unexpectedly）导致
       // 部分测试丢失，改为单进程串行执行保证发布流水线稳定。
-      poolOptions: {
-        forks: { singleFork: true },
-      },
+      fileParallelism: false,
+      maxWorkers: 1,
     },
     // 只从根 index.html 扫描依赖，避免把 dist-verify/、release/ 里的
     // 同名 index.html 当作多入口，导致 dep-scan 对无关目录报解析错误。
@@ -126,21 +123,17 @@ export default defineConfig(({ command }) => {
       host: '127.0.0.1',
       port: 41731,
       strictPort: true,
-      proxy:
-        devProxyConfig?.enabled
-          ? {
-              [devProxyConfig.prefix]: {
-                target: devProxyConfig.target,
-                changeOrigin: devProxyConfig.changeOrigin,
-                secure: devProxyConfig.secure,
-                rewrite: (path) =>
-                  path.replace(
-                    new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
-                    '',
-                  ),
-              },
-            }
-          : undefined,
+      proxy: devProxyConfig?.enabled
+        ? {
+            [devProxyConfig.prefix]: {
+              target: devProxyConfig.target,
+              changeOrigin: devProxyConfig.changeOrigin,
+              secure: devProxyConfig.secure,
+              rewrite: (path) =>
+                path.replace(new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), ''),
+            },
+          }
+        : undefined,
     },
   }
 })

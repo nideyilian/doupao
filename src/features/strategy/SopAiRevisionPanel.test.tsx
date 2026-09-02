@@ -1,13 +1,24 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ReactNode } from 'react'
 import { act, create, type ReactTestInstance } from 'react-test-renderer'
-import SopAiRevisionPanel, { loadCustomInstructions, saveCustomInstructions } from './SopAiRevisionPanel'
+import SopAiRevisionPanel, {
+  loadCustomInstructions,
+  loadQuickInstructionOverrides,
+  saveCustomInstructions,
+  saveQuickInstructionOverrides,
+} from './SopAiRevisionPanel'
 
 const agentApiMocks = vi.hoisted(() => ({
   reviseSopDocument: vi.fn(),
   reviseSopMetaInstruction: vi.fn(),
   reviseVariablePromptOptions: vi.fn(),
+  introducesVariablePromptSyntax: vi.fn(
+    (source: string, revised: string) =>
+      !/\{\{\s*[^{}\r\n]+\s*\}\}|^\s*可变项\s*[：:]\s*$/mu.test(source) &&
+      /\{\{\s*[^{}\r\n]+\s*\}\}|^\s*可变项\s*[：:]\s*$/mu.test(revised),
+  ),
 }))
 const storeMocks = vi.hoisted(() => ({
   showToast: vi.fn(),
@@ -37,6 +48,30 @@ vi.mock('../../lib/apiProfiles', () => ({
 }))
 vi.mock('../../store', () => storeMocks)
 vi.mock('../../hooks/useAppDialog', () => dialogMocks)
+vi.mock('../../design-system', async () => {
+  const actual = await vi.importActual<typeof import('../../design-system')>('../../design-system')
+  return {
+    ...actual,
+    Dialog: ({
+      open,
+      title,
+      description,
+      children,
+    }: {
+      open: boolean
+      title: ReactNode
+      description?: ReactNode
+      children: ReactNode
+    }) =>
+      open ? (
+        <div role="dialog">
+          <h2>{title}</h2>
+          {description && <p>{description}</p>}
+          {children}
+        </div>
+      ) : null,
+  }
+})
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -59,12 +94,20 @@ function findButton(root: ReactTestInstance, label: string) {
   return root.findAllByType('button').find((button) => textContent(button).includes(label))
 }
 
+function openQuickMenu(root: ReactTestInstance) {
+  const trigger = root.findAllByType('button').find((button) => {
+    return String(button.props['aria-label']).startsWith('选择快捷指令')
+  })
+  if (!trigger) throw new Error('快捷指令入口未渲染')
+  act(() => trigger.props.onClick())
+}
+
 function renderPanel(options: {
   value?: string
   variableMeta?: Parameters<typeof SopAiRevisionPanel>[0]['variableMeta']
   onVariableMetaChange?: (meta: NonNullable<Parameters<typeof SopAiRevisionPanel>[0]['variableMeta']>) => void
-  onInsertVariableBlock?: () => void
   instructionTemplates?: Parameters<typeof SopAiRevisionPanel>[0]['instructionTemplates']
+  quickInstructionScope?: Parameters<typeof SopAiRevisionPanel>[0]['quickInstructionScope']
 }) {
   const onApply = vi.fn()
   const renderer = create(
@@ -74,8 +117,8 @@ function renderPanel(options: {
       onApply={onApply}
       variableMeta={options.variableMeta}
       onVariableMetaChange={options.onVariableMetaChange}
-      onInsertVariableBlock={options.onInsertVariableBlock}
       instructionTemplates={options.instructionTemplates}
+      quickInstructionScope={options.quickInstructionScope}
     />,
   )
   return { renderer, onApply }
@@ -98,43 +141,17 @@ describe('SopAiRevisionPanel variable workspace', () => {
     result.renderer.unmount()
   })
 
-  it('keeps the workspace hidden for plain SOP text and shows the enable guide', () => {
+  it('keeps the variable workspace hidden for plain SOP text', () => {
     let result!: ReturnType<typeof renderPanel>
     act(() => {
-      result = renderPanel({ value: '# 普通 SOP\n\n1. 执行\n2. 验收', onInsertVariableBlock: vi.fn() })
+      result = renderPanel({ value: '# 普通 SOP\n\n1. 执行\n2. 验收' })
     })
 
     expect(result.renderer.root.findAllByProps({ 'aria-label': '可变项参数工作台' })).toHaveLength(0)
-    expect(result.renderer.root.findByProps({ 'aria-label': '可变项工作台启用引导' })).toBeTruthy()
-    expect(textContent(result.renderer.root)).toContain('插入可变项示例')
+    openQuickMenu(result.renderer.root)
+    expect(result.renderer.root.findAllByProps({ 'aria-label': '可变项工作台启用引导' })).toHaveLength(0)
+    expect(textContent(result.renderer.root)).not.toContain('插入可变项示例')
     result.renderer.unmount()
-  })
-
-  it('hides the enable guide when no insert callback is provided', () => {
-    let renderer!: ReturnType<typeof create>
-    act(() => {
-      renderer = create(<SopAiRevisionPanel documentId="doc-2" value="# 普通 SOP" onApply={vi.fn()} />)
-    })
-    expect(renderer.root.findAllByProps({ 'aria-label': '可变项工作台启用引导' })).toHaveLength(0)
-    renderer.unmount()
-  })
-
-  it('invokes the insert callback from the enable guide', () => {
-    const onInsertVariableBlock = vi.fn()
-    let renderer!: ReturnType<typeof create>
-    act(() => {
-      renderer = create(
-        <SopAiRevisionPanel
-          documentId="doc-3"
-          value="# 普通 SOP"
-          onApply={vi.fn()}
-          onInsertVariableBlock={onInsertVariableBlock}
-        />,
-      )
-    })
-    act(() => findButton(renderer.root, '插入可变项示例')!.props.onClick())
-    expect(onInsertVariableBlock).toHaveBeenCalledOnce()
-    renderer.unmount()
   })
 
   it('seeds card parameters from persisted variableMeta and notifies changes', () => {
@@ -268,7 +285,8 @@ describe('SopAiRevisionPanel custom quick instructions', () => {
       })
     })
 
-    // 自定义胶囊与内置模板同排展示
+    openQuickMenu(result.renderer.root)
+
     expect(findButton(result.renderer.root, '内置指令')).toBeTruthy()
     const capsule = findButton(result.renderer.root, '我的指令')
     expect(capsule).toBeTruthy()
@@ -287,13 +305,261 @@ describe('SopAiRevisionPanel custom quick instructions', () => {
 
     const added = [
       ...before,
-      { id: 'sop-quick-a', label: '红线检查', instruction: '逐条检查禁止项与红线。' },
-      { id: 'sop-quick-b', label: '术语统一', instruction: '统一全文术语。' },
+      { id: 'sop-quick-a', label: '红线检查', instruction: '逐条检查禁止项与红线。', scope: 'sop' as const },
+      { id: 'sop-quick-b', label: '术语统一', instruction: '统一全文术语。', scope: 'all' as const },
     ]
     saveCustomInstructions(added)
     expect(loadCustomInstructions()).toEqual(added)
 
     saveCustomInstructions(added.filter((item) => item.id !== 'sop-quick-a'))
     expect(loadCustomInstructions()).toEqual([added[1]])
+  })
+
+  it('does not silently overwrite an existing draft when a quick instruction is clicked', () => {
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({
+        value: '# 普通 SOP\n\n1. 执行',
+        instructionTemplates: [{ label: '内置指令', instruction: '内置模板' }],
+      })
+    })
+
+    const chatInput = result.renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
+    act(() => chatInput.props.onChange({ target: { value: '我已经写好的草稿' } }))
+    openQuickMenu(result.renderer.root)
+    act(() => findButton(result.renderer.root, '内置指令')!.props.onClick())
+
+    expect(chatInput.props.value).toBe('我已经写好的草稿')
+    expect(findButton(result.renderer.root, '替换草稿')).toBeTruthy()
+    expect(findButton(result.renderer.root, '追加到末尾')).toBeTruthy()
+
+    act(() => findButton(result.renderer.root, '追加到末尾')!.props.onClick())
+    expect(chatInput.props.value).toBe('我已经写好的草稿\n\n内置模板')
+    result.renderer.unmount()
+  })
+
+  it('blocks applying a plain SOP revision that introduces variable-prompt syntax', async () => {
+    agentApiMocks.reviseSopDocument.mockResolvedValueOnce({
+      reply: '已泛化具体描述。',
+      content: '# 普通 SOP\n\n泛化后的描述。\n\n可变项：\n{{主体}}：猫 / 狗',
+      changeSummary: ['泛化具体词'],
+    })
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({ value: '# 普通 SOP\n\n1. 执行' })
+    })
+    const chatInput = result.renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
+    act(() => {
+      chatInput.props.onChange({ target: { value: '将具体词泛化' } })
+    })
+    await act(async () => {
+      result.renderer.root.findByProps({ 'aria-label': '发送 SOP 修改要求' }).props.onClick()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    act(() => findButton(result.renderer.root, '应用到正文')!.props.onClick())
+    expect(result.onApply).not.toHaveBeenCalled()
+    expect(storeMocks.showToast).toHaveBeenLastCalledWith(
+      '当前 SOP 对话不能新增可变项，请使用独立的变量提示词功能',
+      'error',
+    )
+    result.renderer.unmount()
+  })
+
+  it('fills parameterized instructions with selected values instead of placeholders', () => {
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({
+        value: '# 元素池',
+        quickInstructionScope: 'element-pool',
+        instructionTemplates: [
+          {
+            id: 'pool-test',
+            label: '参数指令',
+            scope: 'element-pool',
+            description: '需要填写目标层和数量。',
+            parameters: [
+              {
+                key: 'level',
+                label: '目标层级',
+                kind: 'select',
+                options: [{ value: '层级二', label: '层级二' }],
+                required: true,
+              },
+              { key: 'count', label: '新增数量', kind: 'number', defaultValue: '4', required: true },
+            ],
+            buildInstruction: ({ level, count }) => `为「${level}」追加 ${count} 个选项。`,
+          },
+        ],
+      })
+    })
+
+    openQuickMenu(result.renderer.root)
+    act(() => findButton(result.renderer.root, '参数指令')!.props.onClick())
+    const parameterSelect = result.renderer.root.findByType('select')
+    const parameterCount = result.renderer.root.findAllByType('input').at(-1)!
+    act(() => parameterSelect.props.onChange({ target: { value: '层级二' } }))
+    act(() => parameterCount.props.onChange({ target: { value: '6' } }))
+    act(() => findButton(result.renderer.root, '填入输入框')!.props.onClick())
+
+    const chatInput = result.renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
+    expect(chatInput.props.value).toBe('为「层级二」追加 6 个选项。')
+    expect(chatInput.props.value).not.toContain('X')
+    expect(chatInput.props.value).not.toContain('N')
+    result.renderer.unmount()
+  })
+
+  it('supports selecting multiple layers for a parameterized instruction', () => {
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({
+        value: '# 元素池',
+        quickInstructionScope: 'element-pool',
+        instructionTemplates: [
+          {
+            id: 'multi-scope-test',
+            label: '多选指令',
+            scope: 'element-pool',
+            parameters: [
+              {
+                key: 'scope',
+                label: '作用域',
+                kind: 'multi-select',
+                options: [
+                  { value: '全部层', label: '全部层' },
+                  { value: '层级一', label: '层级一' },
+                  { value: '层级二', label: '层级二' },
+                ],
+                defaultValue: '全部层',
+                required: true,
+              },
+            ],
+            instructionTemplate: '作用域：[[scope]]',
+          },
+        ],
+      })
+    })
+
+    openQuickMenu(result.renderer.root)
+    act(() => findButton(result.renderer.root, '多选指令')!.props.onClick())
+    let checkboxes = result.renderer.root.findAllByType('input').filter((input) => input.props.type === 'checkbox')
+    expect(checkboxes[0].props.checked).toBe(true)
+
+    act(() => checkboxes[0].props.onChange({ target: { checked: false } }))
+    checkboxes = result.renderer.root.findAllByType('input').filter((input) => input.props.type === 'checkbox')
+    act(() => checkboxes[1].props.onChange({ target: { checked: true } }))
+    act(() => checkboxes[2].props.onChange({ target: { checked: true } }))
+    act(() => findButton(result.renderer.root, '填入输入框')!.props.onClick())
+
+    const chatInput = result.renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
+    expect(chatInput.props.value).toBe('作用域：层级一、层级二')
+    result.renderer.unmount()
+  })
+
+  it('supports selecting multiple layers for a parameterized instruction', () => {
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({
+        value: '# 元素池',
+        quickInstructionScope: 'element-pool',
+        instructionTemplates: [
+          {
+            id: 'multi-scope-test',
+            label: '多选指令',
+            scope: 'element-pool',
+            parameters: [
+              {
+                key: 'scope',
+                label: '作用域',
+                kind: 'multi-select',
+                options: [
+                  { value: '全部层', label: '全部层' },
+                  { value: '层级一', label: '层级一' },
+                  { value: '层级二', label: '层级二' },
+                ],
+                defaultValue: '全部层',
+                required: true,
+              },
+            ],
+            instructionTemplate: '作用域：[[scope]]',
+          },
+        ],
+      })
+    })
+
+    openQuickMenu(result.renderer.root)
+    act(() => findButton(result.renderer.root, '多选指令')!.props.onClick())
+    let checkboxes = result.renderer.root.findAllByType('input').filter((input) => input.props.type === 'checkbox')
+    expect(checkboxes[0].props.checked).toBe(true)
+
+    act(() => checkboxes[0].props.onChange({ target: { checked: false } }))
+    checkboxes = result.renderer.root.findAllByType('input').filter((input) => input.props.type === 'checkbox')
+    act(() => checkboxes[1].props.onChange({ target: { checked: true } }))
+    act(() => checkboxes[2].props.onChange({ target: { checked: true } }))
+    act(() => findButton(result.renderer.root, '填入输入框')!.props.onClick())
+
+    const chatInput = result.renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
+    expect(chatInput.props.value).toBe('作用域：层级一、层级二')
+    result.renderer.unmount()
+  })
+
+  it('shows the custom entry without templates and filters custom instructions by scope', () => {
+    saveCustomInstructions([
+      { id: 'sop-only', label: 'SOP 指令', instruction: '只用于 SOP。', scope: 'sop' },
+      { id: 'meta-only', label: '元指令指令', instruction: '只用于元指令。', scope: 'meta-instruction' },
+    ])
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({ value: '# 普通 SOP' })
+    })
+
+    openQuickMenu(result.renderer.root)
+    expect(result.renderer.root.findByProps({ 'aria-label': '添加自定义快捷指令' })).toBeTruthy()
+    expect(findButton(result.renderer.root, 'SOP 指令')).toBeTruthy()
+    expect(findButton(result.renderer.root, '元指令指令')).toBeUndefined()
+    result.renderer.unmount()
+  })
+
+  it('shows and persists edits to built-in quick instructions', () => {
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({ value: '# 普通 SOP\n\n1. 执行' })
+    })
+
+    act(() => result.renderer.root.findByProps({ 'aria-label': '查看和编辑 SOP 指令' }).props.onClick())
+    expect(result.renderer.root.findByProps({ 'aria-label': '查看和编辑内置指令 将具体词泛化' })).toBeTruthy()
+    expect(textContent(result.renderer.root)).toContain('直接泛化正文或元素池中的具体描述，不创建可变项。')
+
+    act(() => result.renderer.root.findByProps({ 'aria-label': '查看和编辑内置指令 将具体词泛化' }).props.onClick())
+    const labelInput = result.renderer.root
+      .findAllByType('input')
+      .find((input) => input.props.value === '将具体词泛化')!
+    const instructionInput = result.renderer.root
+      .findAllByType('textarea')
+      .find((textarea) => textarea.props.value.includes('降低大批量生图时的重复度'))!
+    act(() => labelInput.props.onChange({ target: { value: '泛化具体词' } }))
+    act(() =>
+      instructionInput.props.onChange({
+        target: { value: '直接把元素池中的具体词改写为更通用的描述，不创建变量。' },
+      }),
+    )
+    act(() => findButton(result.renderer.root, '保存修改')!.props.onClick())
+
+    expect(textContent(result.renderer.root)).toContain('泛化具体词')
+    expect(loadQuickInstructionOverrides()['sop-generalize']).toEqual({
+      label: '泛化具体词',
+      instruction: '直接把元素池中的具体词改写为更通用的描述，不创建变量。',
+    })
+    result.renderer.unmount()
+  })
+
+  it('persists and restores built-in instruction overrides', () => {
+    saveQuickInstructionOverrides({
+      'sop-generalize': { label: '自定义泛化', description: '只改具体词', instruction: '直接改写具体词。' },
+    })
+
+    expect(loadQuickInstructionOverrides()).toEqual({
+      'sop-generalize': { label: '自定义泛化', description: '只改具体词', instruction: '直接改写具体词。' },
+    })
   })
 })

@@ -305,7 +305,7 @@ export default function App() {
                   useStore.getState().showToast('正在生成备份...', 'info')
                   const success = await exportDataToPath(
                     filePath,
-                    { exportConfig: true, exportTasks: true, exportImages: true, exportAssets: true },
+                    { exportConfig: true, exportTasks: true, exportImages: false, exportAssets: true },
                     { showErrorToast: false },
                   )
                   if (success.success) {
@@ -336,14 +336,14 @@ export default function App() {
               const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
               const fileName = `doupao_backup_${ts}.zip`
               const filePath = desktop.replace(/\\/g, '/') + '/' + fileName
-              useStore.getState().setLastAutoBackupAt(Date.now())
               exportDataToPath(
                 filePath,
-                { exportConfig: true, exportTasks: true, exportImages: true, exportAssets: true },
+                { exportConfig: true, exportTasks: true, exportImages: false, exportAssets: true },
                 { showErrorToast: false },
               )
                 .then((result) => {
                   if (result.success) {
+                    useStore.getState().setLastAutoBackupAt(Date.now())
                     useStore
                       .getState()
                       .showToast(

@@ -40,6 +40,45 @@ type PendingCommand = {
   timeout: ReturnType<typeof setTimeout>
 }
 
+const APP_DATA_NAMESPACES = new Set([
+  'tasks',
+  'images',
+  'thumbnails',
+  'agentConversations',
+  'wordLibrary',
+  'compositeAssets',
+  'meta',
+  'sopBatchSnapshots',
+  'sopGenerationRecords',
+  'assetUsageEvents',
+  'assetBlobs',
+  'assetVersions',
+  'zustand',
+  'postprocess',
+  'compositeWorkspace',
+  'requirementPrototype',
+  'assetLibraryUi',
+])
+
+function appDataNamespace(value: unknown): string {
+  if (typeof value !== 'string' || !APP_DATA_NAMESPACES.has(value)) throw new Error('invalid app data namespace')
+  return value
+}
+
+function appDataId(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 512) throw new Error('invalid app data id')
+  return value
+}
+
+function appDataRecords(value: unknown): Array<{ id: string; value: unknown }> {
+  if (!Array.isArray(value)) throw new Error('invalid app data records')
+  return value.map((record) => {
+    if (!record || typeof record !== 'object') throw new Error('invalid app data record')
+    const item = record as { id?: unknown; value?: unknown }
+    return { id: appDataId(item.id), value: item.value }
+  })
+}
+
 function normalizeApiConfig(value: unknown): AssetApiConfig {
   const raw = (value ?? {}) as Partial<AssetApiConfig>
   return {
@@ -154,6 +193,12 @@ export class AssetKernelManager {
       for (const event of events) if (event.action === 'derived') this.apiServer?.publish('asset.derived', event)
       return { success: true }
     })
+    handle<[]>('asset-catalog:usage-export-all', () => this.catalog.getAllUsageEvents())
+    handle<[string]>('asset-catalog:usage-by-asset', (assetId) => this.catalog.getUsageEvents(assetId))
+    handle<[]>('asset-catalog:usage-clear', () => {
+      this.catalog.clearUsageEvents()
+      return { success: true }
+    })
     handle<[string[]]>('asset-catalog:delete', (assetIds) => {
       this.catalog.deleteAssets(assetIds)
       return { success: true }
@@ -210,7 +255,10 @@ export class AssetKernelManager {
       this.catalog.setMeta(key, value)
       return { success: true }
     })
-    handle<[string[], number]>('asset-catalog:purge', (assetIds, now) => this.catalog.purgeAssets(assetIds, now))
+    handle<[string[], number, Array<{ id: string; value: unknown }>?]>(
+      'asset-catalog:purge',
+      (assetIds, now, tasksToPatch) => this.catalog.purgeAssets(assetIds, now, tasksToPatch ?? []),
+    )
     handle<[]>('asset-catalog:cleanup-reference-assets', () => this.catalog.cleanupReferenceOnlyAssets())
     handle<[number | undefined]>('asset-catalog:near-duplicates', (threshold) =>
       this.catalog.findNearDuplicates(threshold ?? 8),
@@ -225,6 +273,85 @@ export class AssetKernelManager {
       assetCount: await this.catalog.size(),
       backend: 'sqlite-fts5' as const,
     }))
+    handle<[string, string]>('app-data:get', (namespace, id) =>
+      this.catalog.appDataGet(appDataNamespace(namespace), appDataId(id)),
+    )
+    handle<[string]>('app-data:get-all', (namespace) => this.catalog.appDataGetAll(appDataNamespace(namespace)))
+    handle<[string, string[]]>('app-data:get-many', (namespace, ids) =>
+      this.catalog.appDataGetMany(appDataNamespace(namespace), ids.map(appDataId)),
+    )
+    handle<[string, string, unknown]>('app-data:put', (namespace, id, value) => {
+      this.catalog.appDataPut(appDataNamespace(namespace), appDataId(id), value)
+      return { success: true }
+    })
+    handle<[string, Array<{ id: string; value: unknown }>]>('app-data:put-many', (namespace, records) => {
+      this.catalog.appDataPutMany(appDataNamespace(namespace), appDataRecords(records))
+      return { success: true }
+    })
+    handle<[string, Array<{ id: string; value: unknown }>]>('app-data:replace', (namespace, records) => {
+      this.catalog.appDataReplace(appDataNamespace(namespace), appDataRecords(records))
+      return { success: true }
+    })
+    handle<[string, string]>('app-data:delete', (namespace, id) => {
+      this.catalog.appDataDelete(appDataNamespace(namespace), appDataId(id))
+      return { success: true }
+    })
+    handle<[string, string[]]>('app-data:delete-many', (namespace, ids) => {
+      this.catalog.appDataDeleteMany(appDataNamespace(namespace), ids.map(appDataId))
+      return { success: true }
+    })
+    handle<[string[]]>('app-data:delete-image-records', (ids) => {
+      this.catalog.appDataDeleteImageRecords(ids.map(appDataId))
+      return { success: true }
+    })
+    handle<[]>('app-data:clear-image-records', () => {
+      this.catalog.appDataClearImageRecords()
+      return { success: true }
+    })
+    handle<[string]>('app-data:clear', (namespace) => {
+      this.catalog.appDataClear(appDataNamespace(namespace))
+      return { success: true }
+    })
+    handle<[string[]]>('app-data:counts', (namespaces) => {
+      return this.catalog.appDataCounts(namespaces.map(appDataNamespace))
+    })
+    handle<[Record<string, unknown[]>]>('app-data:import-stores', (stores) => {
+      if (!stores || typeof stores !== 'object' || Array.isArray(stores)) throw new Error('invalid app data stores')
+      const normalized: Record<string, unknown[]> = {}
+      for (const [namespace, values] of Object.entries(stores)) {
+        appDataNamespace(namespace)
+        if (!Array.isArray(values)) throw new Error('invalid app data store values')
+        normalized[namespace] = values
+      }
+      this.catalog.appDataImportStores(normalized)
+      return { success: true }
+    })
+    handle<
+      [
+        {
+          images: unknown[]
+          thumbnails: unknown[]
+          tasks: unknown[]
+          replaceTasks?: boolean
+        },
+      ]
+    >('app-data:commit-imported-records', (records) => {
+      if (
+        !records ||
+        !Array.isArray(records.images) ||
+        !Array.isArray(records.thumbnails) ||
+        !Array.isArray(records.tasks)
+      ) {
+        throw new Error('invalid imported app data')
+      }
+      this.catalog.appDataCommitImportedRecords(records)
+      return { success: true }
+    })
+    handle<[Array<{ from: string; to: string }>]>('app-data:update-image-local-paths', (mappings) => {
+      if (!Array.isArray(mappings)) throw new Error('invalid image path mappings')
+      this.catalog.appDataUpdateImageLocalPaths(mappings)
+      return { success: true }
+    })
     handle<[]>('asset-api:status', () => this.getApiStatus())
     handle<[{ enabled: boolean; port?: number }]>('asset-api:configure', async (input) => {
       this.apiConfig = normalizeApiConfig({

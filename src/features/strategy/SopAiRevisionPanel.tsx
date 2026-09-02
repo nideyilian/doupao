@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Dialog, IconButton, TextArea, TextField } from '../../design-system'
+import { Button, Checkbox, Dialog, IconButton, SelectField, TextArea, TextField } from '../../design-system'
 import {
   CheckCircleIcon as CheckCircle,
+  ChevronDownIcon as ChevronDown,
   CopyIcon as Copy,
+  EditIcon as Edit,
   HistoryIcon as History,
   LoaderCircleIcon as Loader,
   PlayIcon as Play,
   PlusIcon as Plus,
   RefreshIcon as RefreshCw,
   SaveIcon as Save,
+  SearchIcon as Search,
   SendIcon as Send,
+  Settings2Icon as Settings2,
   SparklesIcon as Sparkles,
   TagsIcon as Tags,
   TrashIcon as Trash,
@@ -23,6 +27,7 @@ import {
 } from '../../lib/agentApi'
 import { getAgentTextApiProfile, validateApiProfile } from '../../lib/apiProfiles'
 import { useAppDialog } from '../../hooks/useAppDialog'
+import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
 import { useStore } from '../../store'
 import { parseVariablePrompt } from '../../lib/variablePrompt'
 import {
@@ -45,6 +50,14 @@ import {
   subscribeSopAiRevisionJob,
   type SopAiRevisionMessage,
 } from './sopAiRevision'
+import {
+  getSopQuickInstructionScopeLabel,
+  META_QUICK_INSTRUCTIONS,
+  matchesSopQuickInstructionScope,
+  SOP_QUICK_INSTRUCTIONS,
+  type SopQuickInstruction,
+  type SopQuickInstructionScope,
+} from './sopAiQuickInstructions'
 
 type SopAiRevisionPanelProps = {
   documentId: string
@@ -57,13 +70,13 @@ type SopAiRevisionPanelProps = {
   variableMeta?: SopVariableMeta[]
   /** 应用可变项选项提案后回传最新参数（用于持久化） */
   onVariableMetaChange?: (meta: SopVariableMeta[]) => void
-  /** 正文不是变量模板时，一键在正文末尾插入「可变项：」示例区块 */
-  onInsertVariableBlock?: () => void
   /**
-   * 快捷指令模板（来自正文编辑器）：点击直接填入输入框，发送前可编辑。
+   * 快捷指令模板（来自正文编辑器）：点击填入输入框，发送前可编辑。
    * AI 指令与对话同处侧栏，避免在编辑区与对话区之间来回寻找入口。
    */
-  instructionTemplates?: ReadonlyArray<{ label: string; instruction: string }>
+  instructionTemplates?: ReadonlyArray<SopQuickInstruction>
+  /** 当前快捷指令场景；缺省时根据修订目标与正文自动判断。 */
+  quickInstructionScope?: SopQuickInstructionScope
 }
 
 const STARTER_REQUESTS = {
@@ -87,6 +100,11 @@ function toConversationMessages(messages: SopAiRevisionMessage[]): SopRevisionCo
   }))
 }
 
+function introducesVariablePromptSyntax(source: string, revised: string) {
+  const syntaxPattern = /\{\{\s*[^{}\r\n]+\s*\}\}|^\s*可变项\s*[：:]\s*$/mu
+  return !syntaxPattern.test(source) && syntaxPattern.test(revised)
+}
+
 function formatMessageTime(timestamp: number) {
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(timestamp)
 }
@@ -98,35 +116,161 @@ function normalizeCountInput(value: string) {
 }
 
 /** 自定义快捷指令：用户自建的对话预填模板，持久化在 localStorage（本机生效）。 */
-export type SopCustomInstruction = { id: string; label: string; instruction: string }
+export type SopCustomInstruction = {
+  id: string
+  label: string
+  instruction: string
+  scope: SopQuickInstructionScope
+}
+type SopCustomInstructionInput = Omit<SopCustomInstruction, 'scope'> & { scope?: SopQuickInstructionScope }
+export type SopQuickInstructionOverride = {
+  label?: string
+  description?: string
+  instruction?: string
+  instructionTemplate?: string
+}
 
 const CUSTOM_INSTRUCTIONS_KEY = 'doupao.sop-custom-quick-instructions'
+const QUICK_INSTRUCTION_OVERRIDES_KEY = 'doupao.sop-quick-instruction-overrides'
 const MAX_CUSTOM_INSTRUCTIONS = 20
+const QUICK_SCOPE_OPTIONS = [
+  { value: 'all', label: '全部场景' },
+  { value: 'sop', label: '通用 SOP' },
+  { value: 'element-pool', label: '元素池' },
+  { value: 'variable-prompt', label: '变量提示词' },
+  { value: 'meta-instruction', label: '元指令' },
+] satisfies Array<{ value: SopQuickInstructionScope; label: string }>
 
 export function loadCustomInstructions(): SopCustomInstruction[] {
+  if (typeof window === 'undefined') return []
   try {
     const raw = window.localStorage.getItem(CUSTOM_INSTRUCTIONS_KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : []
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (item): item is SopCustomInstruction =>
-        Boolean(item) &&
-        typeof item === 'object' &&
-        typeof (item as SopCustomInstruction).id === 'string' &&
-        typeof (item as SopCustomInstruction).label === 'string' &&
-        typeof (item as SopCustomInstruction).instruction === 'string',
-    )
+    return parsed.flatMap((item) => {
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        typeof (item as SopCustomInstruction).id !== 'string' ||
+        typeof (item as SopCustomInstruction).label !== 'string' ||
+        typeof (item as SopCustomInstruction).instruction !== 'string'
+      ) {
+        return []
+      }
+      const rawScope = (item as Partial<SopCustomInstruction>).scope
+      const scope: SopQuickInstructionScope =
+        rawScope === 'all' ||
+        rawScope === 'sop' ||
+        rawScope === 'element-pool' ||
+        rawScope === 'variable-prompt' ||
+        rawScope === 'meta-instruction'
+          ? rawScope
+          : 'all'
+      return [
+        {
+          id: (item as SopCustomInstruction).id,
+          label: (item as SopCustomInstruction).label,
+          instruction: (item as SopCustomInstruction).instruction,
+          scope,
+        },
+      ]
+    })
   } catch {
     return []
   }
 }
 
-export function saveCustomInstructions(items: SopCustomInstruction[]): void {
+export function saveCustomInstructions(items: SopCustomInstructionInput[]): void {
+  if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(CUSTOM_INSTRUCTIONS_KEY, JSON.stringify(items))
   } catch {
     // 存储失败不影响当前会话内的使用
   }
+}
+
+export function loadQuickInstructionOverrides(): Record<string, SopQuickInstructionOverride> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(QUICK_INSTRUCTION_OVERRIDES_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.entries(parsed).reduce<Record<string, SopQuickInstructionOverride>>((result, [id, value]) => {
+      if (!value || typeof value !== 'object') return result
+      const item = value as Partial<SopQuickInstructionOverride>
+      const override: SopQuickInstructionOverride = {}
+      if (typeof item.label === 'string') override.label = item.label
+      if (typeof item.description === 'string') override.description = item.description
+      if (typeof item.instruction === 'string') override.instruction = item.instruction
+      if (typeof item.instructionTemplate === 'string') override.instructionTemplate = item.instructionTemplate
+      if (Object.keys(override).length > 0) result[id] = override
+      return result
+    }, {})
+  } catch {
+    return {}
+  }
+}
+
+export function saveQuickInstructionOverrides(overrides: Record<string, SopQuickInstructionOverride>): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(QUICK_INSTRUCTION_OVERRIDES_KEY, JSON.stringify(overrides))
+  } catch {
+    // 存储失败不影响当前会话内的使用
+  }
+}
+
+function normalizeQuickInstruction(
+  item: SopQuickInstruction,
+  index: number,
+  activeScope: SopQuickInstructionScope,
+): SopQuickInstruction {
+  return {
+    ...item,
+    id: item.id ?? `quick-instruction-${activeScope}-${index}`,
+    description: item.description ?? item.instruction ?? '点击后填入输入框，发送前可继续编辑。',
+    scope: item.scope ?? activeScope,
+  }
+}
+
+function applyQuickInstructionOverride(
+  item: SopQuickInstruction,
+  overrides: Record<string, SopQuickInstructionOverride>,
+) {
+  const override = item.id ? overrides[item.id] : undefined
+  return {
+    ...item,
+    ...(override?.label !== undefined ? { label: override.label } : {}),
+    ...(override?.description !== undefined ? { description: override.description } : {}),
+    ...(override?.instruction !== undefined ? { instruction: override.instruction } : {}),
+    ...(override?.instructionTemplate !== undefined ? { instructionTemplate: override.instructionTemplate } : {}),
+  }
+}
+
+function formatInstructionTemplate(template: string, values: Record<string, string>) {
+  return template.replace(/\[\[([^[\]]+)\]\]/gu, (placeholder, key: string) => values[key] ?? placeholder)
+}
+
+function getMultiSelectValues(value: string) {
+  return value
+    .split('、')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function toggleMultiSelectValue(currentValue: string, nextValue: string, allValue = '全部层') {
+  if (nextValue === allValue) return allValue
+  const selectedValues = getMultiSelectValues(currentValue).filter((item) => item !== allValue)
+  const nextValues = selectedValues.includes(nextValue)
+    ? selectedValues.filter((item) => item !== nextValue)
+    : [...selectedValues, nextValue]
+  return nextValues.join('、')
+}
+
+function getQuickInstructionBody(item: SopQuickInstruction) {
+  return item.parameters?.length
+    ? (item.instructionTemplate ?? item.instruction ?? '该指令会在填写参数后生成。')
+    : (item.instruction ?? '')
 }
 
 export default function SopAiRevisionPanel({
@@ -138,8 +282,8 @@ export default function SopAiRevisionPanel({
   revisionTarget = 'sop',
   variableMeta,
   onVariableMetaChange,
-  onInsertVariableBlock,
   instructionTemplates,
+  quickInstructionScope,
 }: SopAiRevisionPanelProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
@@ -155,17 +299,44 @@ export default function SopAiRevisionPanel({
   const [activeOptionVariable, setActiveOptionVariable] = useState<string | null>(null)
   const [customInstructions, setCustomInstructions] = useState<SopCustomInstruction[]>(loadCustomInstructions)
   const [customDialogOpen, setCustomDialogOpen] = useState(false)
+  const [customEditingId, setCustomEditingId] = useState<string | null>(null)
   const [customLabel, setCustomLabel] = useState('')
   const [customInstruction, setCustomInstruction] = useState('')
+  const [customScope, setCustomScope] = useState<SopQuickInstructionScope>('all')
+  const [quickInstructionOverrides, setQuickInstructionOverrides] = useState(loadQuickInstructionOverrides)
+  const [instructionManagerOpen, setInstructionManagerOpen] = useState(false)
+  const [quickMenuOpen, setQuickMenuOpen] = useState(false)
+  const [quickSearch, setQuickSearch] = useState('')
+  const quickMenuRef = useRef<HTMLDivElement>(null)
+  const quickSearchInputRef = useRef<HTMLInputElement>(null)
+  const [quickInstructionEditor, setQuickInstructionEditor] = useState<{
+    item: SopQuickInstruction
+    base: SopQuickInstruction
+    label: string
+    description: string
+    body: string
+  } | null>(null)
+  const [pendingQuickInstruction, setPendingQuickInstruction] = useState<string | null>(null)
+  const [parameterDialog, setParameterDialog] = useState<{
+    instruction: SopQuickInstruction
+    values: Record<string, string>
+  } | null>(null)
   const loading = jobState.status === 'running'
   const error = localError || (jobState.status === 'error' ? jobState.error : '')
   const canRetry = !localError && jobState.status === 'error'
   const isMetaInstruction = revisionTarget === 'meta-instruction'
 
+  useCloseOnEscape(quickMenuOpen, () => {
+    setQuickMenuOpen(false)
+    setQuickSearch('')
+  })
+
   const isVariablePrompt = useMemo(
     () => !isMetaInstruction && parseVariablePrompt(value).detected,
     [isMetaInstruction, value],
   )
+  const activeQuickScope =
+    quickInstructionScope ?? (isMetaInstruction ? 'meta-instruction' : isVariablePrompt ? 'variable-prompt' : 'sop')
   const [localVariableMeta, setLocalVariableMeta] = useState<SopVariableMeta[]>(() =>
     isVariablePrompt ? normalizeVariableMeta(value, variableMeta ?? deriveVariableMetaFromContent(value)) : [],
   )
@@ -224,17 +395,91 @@ export default function SopAiRevisionPanel({
           sendLabel: '发送 SOP 修改要求',
         }
 
+  const baseQuickInstructions = useMemo(() => {
+    const source =
+      instructionTemplates ??
+      (activeQuickScope === 'meta-instruction' ? META_QUICK_INSTRUCTIONS : SOP_QUICK_INSTRUCTIONS)
+    return source.map((item, index) => normalizeQuickInstruction(item, index, activeQuickScope))
+  }, [activeQuickScope, instructionTemplates])
+  const availableQuickInstructions = useMemo(
+    () => baseQuickInstructions.map((item) => applyQuickInstructionOverride(item, quickInstructionOverrides)),
+    [baseQuickInstructions, quickInstructionOverrides],
+  )
+  const visibleQuickInstructions = useMemo(
+    () => availableQuickInstructions.filter((item) => matchesSopQuickInstructionScope(item.scope, activeQuickScope)),
+    [activeQuickScope, availableQuickInstructions],
+  )
+  const visibleCustomInstructions = useMemo(
+    () => customInstructions.filter((item) => matchesSopQuickInstructionScope(item.scope, activeQuickScope)),
+    [activeQuickScope, customInstructions],
+  )
+  const quickGroups = useMemo(() => {
+    const groups: Array<{ key: string; label: string; items: SopQuickInstruction[] }> = []
+    const common = visibleQuickInstructions.filter((item) => item.scope === 'all' || item.scope === 'sop')
+    const pool = visibleQuickInstructions.filter((item) => item.scope === 'element-pool')
+    const meta = visibleQuickInstructions.filter((item) => item.scope === 'meta-instruction')
+    const variable = visibleQuickInstructions.filter((item) => item.scope === 'variable-prompt')
+    if (common.length > 0) groups.push({ key: 'common', label: '通用优化', items: common })
+    if (pool.length > 0) groups.push({ key: 'pool', label: '元素池专项', items: pool })
+    if (variable.length > 0) groups.push({ key: 'variable', label: '变量提示词专项', items: variable })
+    if (meta.length > 0) groups.push({ key: 'meta', label: '元指令专项', items: meta })
+    if (visibleCustomInstructions.length > 0) {
+      groups.push({
+        key: 'custom',
+        label: '我的指令',
+        items: visibleCustomInstructions.map((item) => ({
+          id: item.id,
+          label: item.label,
+          description: item.instruction,
+          instruction: item.instruction,
+          scope: item.scope,
+        })),
+      })
+    }
+    return groups
+  }, [visibleCustomInstructions, visibleQuickInstructions])
+  const filteredQuickGroups = useMemo(() => {
+    const query = quickSearch.trim().toLocaleLowerCase()
+    if (!query) return quickGroups
+    return quickGroups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) =>
+          `${item.label} ${item.description ?? ''} ${getQuickInstructionBody(item)}`
+            .toLocaleLowerCase()
+            .includes(query),
+        ),
+      }))
+      .filter((group) => group.items.length > 0)
+  }, [quickGroups, quickSearch])
+  const quickInstructionCount = quickGroups.reduce((total, group) => total + group.items.length, 0)
+
   useEffect(() => {
     setMessages(loadSopAiRevisionThread(documentId).messages)
     setInput('')
     setJobState(getSopAiRevisionJobState(documentId))
     setLocalError('')
     setTestingMessageId('')
+    setQuickMenuOpen(false)
+    setQuickSearch('')
     return subscribeSopAiRevisionJob(documentId, (state) => {
       setJobState(state)
       setMessages(loadSopAiRevisionThread(documentId).messages)
     })
   }, [documentId])
+
+  useEffect(() => {
+    if (!quickMenuOpen) return
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!quickMenuRef.current?.contains(event.target as Node)) {
+        setQuickMenuOpen(false)
+        setQuickSearch('')
+      }
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    requestAnimationFrame(() => quickSearchInputRef.current?.focus())
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick)
+  }, [quickMenuOpen])
 
   // 正文变化时以正文为准重算可变项参数（面板内编辑的参数保留）。
   useEffect(() => {
@@ -377,6 +622,10 @@ export default function SopAiRevisionPanel({
 
   function applyRevision(message: SopAiRevisionMessage) {
     if (!message.revision) return
+    if (!isMetaInstruction && introducesVariablePromptSyntax(value, message.revision.content)) {
+      showToast('当前 SOP 对话不能新增可变项，请使用独立的变量提示词功能', 'error')
+      return
+    }
     onApply(message.revision.content)
     if (message.revision.variableName && message.revision.options) {
       // 选项应用后把目标数量同步为实际选项数；主题/类型保留卡片上的当前值。
@@ -438,37 +687,111 @@ export default function SopAiRevisionPanel({
     })
   }
 
-  /** 填入输入框并聚焦：内置模板与自定义指令共用。 */
+  function closeQuickMenu() {
+    setQuickMenuOpen(false)
+    setQuickSearch('')
+  }
+
+  /** 填入输入框并聚焦：内置模板与自定义指令共用；已有草稿时先让用户选择处理方式。 */
   function applyQuickInstruction(instruction: string) {
+    if (!instruction.trim()) return
+    if (input.trim()) {
+      setPendingQuickInstruction(instruction)
+      return
+    }
     setInput(instruction)
     composerRef.current?.focus()
   }
 
-  function addCustomInstruction() {
+  function openParameterizedInstruction(instruction: SopQuickInstruction) {
+    const values = Object.fromEntries(
+      (instruction.parameters ?? []).map((parameter) => [
+        parameter.key,
+        parameter.defaultValue ?? parameter.options?.[0]?.value ?? '',
+      ]),
+    )
+    setParameterDialog({ instruction, values })
+  }
+
+  function selectQuickInstruction(instruction: SopQuickInstruction) {
+    closeQuickMenu()
+    if (instruction.parameters && instruction.parameters.length > 0) {
+      openParameterizedInstruction(instruction)
+      return
+    }
+    applyQuickInstruction(instruction.instruction ?? '')
+  }
+
+  function submitParameterizedInstruction() {
+    if (!parameterDialog) return
+    const missing = (parameterDialog.instruction.parameters ?? []).find(
+      (parameter) => parameter.required && !parameterDialog.values[parameter.key]?.trim(),
+    )
+    if (missing) {
+      showToast(`请填写${missing.label}`, 'error')
+      return
+    }
+    const instruction = parameterDialog.instruction.instructionTemplate
+      ? formatInstructionTemplate(parameterDialog.instruction.instructionTemplate, parameterDialog.values)
+      : (parameterDialog.instruction.buildInstruction?.(parameterDialog.values) ??
+        parameterDialog.instruction.instruction ??
+        '')
+    setParameterDialog(null)
+    applyQuickInstruction(instruction)
+  }
+
+  function resolveQuickConflict(mode: 'replace' | 'append') {
+    if (!pendingQuickInstruction) return
+    const nextValue = mode === 'append' ? `${input.trimEnd()}\n\n${pendingQuickInstruction}` : pendingQuickInstruction
+    setInput(nextValue)
+    setPendingQuickInstruction(null)
+    composerRef.current?.focus()
+  }
+
+  function openCustomInstructionDialog(item?: SopCustomInstruction) {
+    setCustomEditingId(item?.id ?? null)
+    setCustomLabel(item?.label ?? '')
+    setCustomInstruction(item?.instruction ?? '')
+    setCustomScope(item?.scope ?? 'all')
+    setCustomDialogOpen(true)
+  }
+
+  function submitCustomInstruction() {
     const label = customLabel.trim()
     const instruction = customInstruction.trim()
     if (!label || !instruction) {
       showToast('请填写指令名称与内容', 'error')
       return
     }
-    if (customInstructions.length >= MAX_CUSTOM_INSTRUCTIONS) {
+    if (label.length > 40 || instruction.length > 4000) {
+      showToast('指令名称最多 40 字，指令内容最多 4000 字', 'error')
+      return
+    }
+    if (!customEditingId && customInstructions.length >= MAX_CUSTOM_INSTRUCTIONS) {
       showToast(`最多添加 ${MAX_CUSTOM_INSTRUCTIONS} 条自定义指令`, 'error')
       return
     }
-    const next = [
-      ...customInstructions,
-      {
-        id: `sop-quick-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        label,
-        instruction,
-      },
-    ]
+    const next = customEditingId
+      ? customInstructions.map((item) =>
+          item.id === customEditingId ? { ...item, label, instruction, scope: customScope } : item,
+        )
+      : [
+          ...customInstructions,
+          {
+            id: `sop-quick-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            label,
+            instruction,
+            scope: customScope,
+          },
+        ]
     setCustomInstructions(next)
     saveCustomInstructions(next)
     setCustomLabel('')
     setCustomInstruction('')
+    setCustomScope('all')
+    setCustomEditingId(null)
     setCustomDialogOpen(false)
-    showToast(`已添加快捷指令「${label}」`, 'success')
+    showToast(`${customEditingId ? '已更新' : '已添加'}快捷指令「${label}」`, 'success')
   }
 
   function removeCustomInstruction(id: string) {
@@ -476,6 +799,64 @@ export default function SopAiRevisionPanel({
     setCustomInstructions(next)
     saveCustomInstructions(next)
     showToast('已删除自定义快捷指令', 'info')
+  }
+
+  function openQuickInstructionEditor(item: SopQuickInstruction) {
+    const base = baseQuickInstructions.find((candidate) => candidate.id === item.id) ?? item
+    setQuickInstructionEditor({
+      item,
+      base,
+      label: item.label,
+      description: item.description ?? '',
+      body: getQuickInstructionBody(item),
+    })
+  }
+
+  function saveQuickInstructionEdit() {
+    const id = quickInstructionEditor?.item.id
+    if (!quickInstructionEditor || !id) return
+    const label = quickInstructionEditor.label.trim()
+    const description = quickInstructionEditor.description.trim()
+    const body = quickInstructionEditor.body.trim()
+    if (!label || !body) {
+      showToast('请填写指令名称与指令内容', 'error')
+      return
+    }
+    const { base, item } = quickInstructionEditor
+    const override: SopQuickInstructionOverride = {
+      ...(label !== base.label ? { label } : {}),
+      ...(description !== (base.description ?? '') ? { description } : {}),
+      ...(item.parameters?.length
+        ? body !== (base.instructionTemplate ?? base.instruction ?? '')
+          ? { instructionTemplate: body }
+          : {}
+        : body !== (base.instruction ?? '')
+          ? { instruction: body }
+          : {}),
+    }
+    const next = { ...quickInstructionOverrides }
+    if (Object.keys(override).length === 0) delete next[id]
+    else next[id] = override
+    setQuickInstructionOverrides(next)
+    saveQuickInstructionOverrides(next)
+    setQuickInstructionEditor(null)
+    showToast(`已保存内置指令「${label}」`, 'success')
+  }
+
+  function resetQuickInstruction() {
+    if (!quickInstructionEditor?.item.id) return
+    const next = { ...quickInstructionOverrides }
+    delete next[quickInstructionEditor.item.id]
+    setQuickInstructionOverrides(next)
+    saveQuickInstructionOverrides(next)
+    setQuickInstructionEditor({
+      ...quickInstructionEditor,
+      item: quickInstructionEditor.base,
+      label: quickInstructionEditor.base.label,
+      description: quickInstructionEditor.base.description ?? '',
+      body: getQuickInstructionBody(quickInstructionEditor.base),
+    })
+    showToast(`已恢复内置指令「${quickInstructionEditor.base.label}」`, 'success')
   }
 
   return (
@@ -595,7 +976,7 @@ export default function SopAiRevisionPanel({
             <p>{ui.emptyDescription}</p>
             <div className="sop-ai-chat__starters">
               {STARTER_REQUESTS[revisionTarget].map((request) => (
-                <button key={request} type="button" onClick={() => setInput(request)}>
+                <button key={request} type="button" onClick={() => applyQuickInstruction(request)}>
                   {request}
                 </button>
               ))}
@@ -693,59 +1074,238 @@ export default function SopAiRevisionPanel({
         <div ref={endRef} />
       </div>
 
-      {((instructionTemplates?.length ?? 0) > 0 ||
-        customInstructions.length > 0 ||
-        (!isMetaInstruction && !isVariablePrompt && onInsertVariableBlock)) && (
-        <div className="sop-ai-chat__quick" aria-label="AI 快捷指令">
-          {instructionTemplates?.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              disabled={loading}
-              onClick={() => applyQuickInstruction(item.instruction)}
-            >
-              {item.label}
-            </button>
-          ))}
-          {customInstructions.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              disabled={loading}
-              title={item.instruction}
-              onClick={() => applyQuickInstruction(item.instruction)}
-            >
-              {item.label}
-            </button>
-          ))}
-          {!isMetaInstruction && !isVariablePrompt && onInsertVariableBlock && (
-            <button
-              type="button"
-              aria-label="可变项工作台启用引导"
-              title="在正文末尾插入「可变项：」区块，即可按主题/类型/数量衍生变量选项"
-              onClick={onInsertVariableBlock}
-            >
-              <Tags size={12} />
-              插入可变项示例
-            </button>
-          )}
+      <div ref={quickMenuRef} className="sop-ai-chat__quickbar" aria-label="AI 快捷指令">
+        <div className="sop-ai-chat__quickbar-row">
           <button
             type="button"
-            className="sop-ai-chat__quick-add"
-            aria-label="添加自定义快捷指令"
-            onClick={() => setCustomDialogOpen(true)}
+            className="sop-ai-chat__quick-trigger"
+            aria-label={`选择快捷指令，共 ${quickInstructionCount} 条`}
+            aria-expanded={quickMenuOpen}
+            aria-haspopup="dialog"
+            onClick={() => setQuickMenuOpen((current) => !current)}
           >
-            <Plus size={12} />
-            自定义
+            <Sparkles size={13} />
+            <span>快捷指令</span>
+            <span className="sop-ai-chat__quick-count">{quickInstructionCount}</span>
+            <ChevronDown size={14} aria-hidden="true" />
           </button>
+          <span className="sop-ai-chat__quickbar-scope">{getSopQuickInstructionScopeLabel(activeQuickScope)}</span>
+          <div className="sop-ai-chat__quickbar-actions">
+            <IconButton
+              size="sm"
+              aria-label="查看和编辑 SOP 指令"
+              title="管理指令"
+              onClick={() => setInstructionManagerOpen(true)}
+              icon={<Settings2 size={14} />}
+            />
+            <IconButton
+              size="sm"
+              aria-label="添加自定义快捷指令"
+              title="自定义指令"
+              onClick={() => openCustomInstructionDialog()}
+              icon={<Plus size={14} />}
+            />
+          </div>
         </div>
-      )}
+
+        {quickMenuOpen && (
+          <div className="sop-ai-chat__quick-popover" role="dialog" aria-label="选择 AI 快捷指令">
+            <div className="sop-ai-chat__quick-popover-head">
+              <div>
+                <strong>选择快捷指令</strong>
+                <span>点击后填入输入框，不会自动发送</span>
+              </div>
+              <span className="sop-ai-chat__quick-popover-count">{quickInstructionCount} 条</span>
+            </div>
+            <div className="sop-ai-chat__quick-search">
+              <Search size={14} aria-hidden="true" />
+              <input
+                ref={quickSearchInputRef}
+                value={quickSearch}
+                onChange={(event) => setQuickSearch(event.target.value)}
+                placeholder="搜索指令名称或说明"
+                aria-label="搜索快捷指令"
+              />
+            </div>
+            <div className="sop-ai-chat__quick-popover-body">
+              {filteredQuickGroups.map((group) => (
+                <section key={group.key} className="sop-ai-chat__quick-popover-group">
+                  <div className="sop-ai-chat__quick-popover-group-head">
+                    <strong>{group.label}</strong>
+                    <span>{group.items.length}</span>
+                  </div>
+                  <div className="sop-ai-chat__quick-command-list">
+                    {group.items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        disabled={loading}
+                        title={item.description}
+                        onClick={() => selectQuickInstruction(item)}
+                      >
+                        <span>{item.label}</span>
+                        <small>{item.description}</small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))}
+              {filteredQuickGroups.length === 0 && <p className="sop-ai-chat__quick-empty">没有匹配的快捷指令</p>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <Dialog
+        open={instructionManagerOpen}
+        onOpenChange={setInstructionManagerOpen}
+        title="SOP 指令管理"
+        description={`${getSopQuickInstructionScopeLabel(activeQuickScope)} · 可查看并编辑内置指令，也可管理自定义指令。`}
+        size="lg"
+      >
+        <div className="flex max-h-[min(70vh,44rem)] flex-col gap-4 overflow-y-auto">
+          <section>
+            <h3 className="mb-2 text-sm font-semibold text-ds-text dark:text-ds-text-subtle">内置指令</h3>
+            <div className="flex flex-col gap-2">
+              {visibleQuickInstructions.map((item) => (
+                <article
+                  key={item.id}
+                  className="rounded-ds-lg border border-ds-border bg-ds-surface/50 p-3 dark:bg-ds-surface"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <strong className="text-sm text-ds-text dark:text-ds-text-subtle">{item.label}</strong>
+                        <span className="rounded-full bg-ds-primary-subtle px-2 py-0.5 text-xs text-ds-primary dark:bg-ds-primary/10 dark:text-ds-primary">
+                          内置
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-ds-muted">{item.description}</p>
+                    </div>
+                    <IconButton
+                      size="sm"
+                      onClick={() => openQuickInstructionEditor(item)}
+                      aria-label={`查看和编辑内置指令 ${item.label}`}
+                      title="查看和编辑"
+                      icon={<Edit size={13} />}
+                    />
+                  </div>
+                  <pre className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-ds-md bg-ds-subtle p-2 text-xs leading-5 text-ds-muted dark:bg-ds-scrim dark:text-ds-muted">
+                    {getQuickInstructionBody(item)}
+                  </pre>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="border-t border-ds-border pt-3">
+            <h3 className="mb-2 text-sm font-semibold text-ds-text dark:text-ds-text-subtle">自定义指令</h3>
+            {visibleCustomInstructions.length > 0 ? (
+              <div className="sop-ai-chat__custom-list">
+                {visibleCustomInstructions.map((item) => (
+                  <div key={item.id} className="sop-ai-chat__custom-item">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">{item.label}</p>
+                      <p className="sop-center-quiet-text mt-0.5 line-clamp-1 text-xs">
+                        {getSopQuickInstructionScopeLabel(item.scope)} · {item.instruction}
+                      </p>
+                    </div>
+                    <IconButton
+                      size="sm"
+                      onClick={() => {
+                        setInstructionManagerOpen(false)
+                        openCustomInstructionDialog(item)
+                      }}
+                      aria-label={`编辑自定义指令 ${item.label}`}
+                      title="编辑"
+                      icon={<Edit size={13} />}
+                    />
+                    <IconButton
+                      size="sm"
+                      onClick={() => removeCustomInstruction(item.id)}
+                      aria-label={`删除自定义指令 ${item.label}`}
+                      title="删除"
+                      icon={<Trash size={13} />}
+                      className="sop-center-action--danger"
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-ds-muted">暂无自定义指令</p>
+            )}
+          </section>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(quickInstructionEditor)}
+        onOpenChange={(open) => {
+          if (!open) setQuickInstructionEditor(null)
+        }}
+        title={quickInstructionEditor ? `编辑内置指令：${quickInstructionEditor.label}` : '编辑内置指令'}
+        description={
+          quickInstructionEditor?.item.parameters?.length
+            ? '参数化指令支持编辑参数模板；模板占位符使用 [[参数 key]]。'
+            : '修改后只在本机生效，不会改变程序内置默认值。'
+        }
+        size="md"
+      >
+        {quickInstructionEditor && (
+          <div className="flex flex-col gap-4">
+            <TextField
+              label="指令名称"
+              value={quickInstructionEditor.label}
+              maxLength={40}
+              onChange={(event) =>
+                setQuickInstructionEditor((current) => (current ? { ...current, label: event.target.value } : current))
+              }
+            />
+            <TextArea
+              label="说明"
+              value={quickInstructionEditor.description}
+              maxLength={200}
+              onChange={(event) =>
+                setQuickInstructionEditor((current) =>
+                  current ? { ...current, description: event.target.value } : current,
+                )
+              }
+            />
+            <TextArea
+              label={quickInstructionEditor.item.parameters?.length ? '指令模板' : '指令内容'}
+              value={quickInstructionEditor.body}
+              maxLength={8000}
+              containerClassName="sop-ai-chat__custom-draft"
+              className="leading-5"
+              onChange={(event) =>
+                setQuickInstructionEditor((current) => (current ? { ...current, body: event.target.value } : current))
+              }
+            />
+            <div className="flex justify-between gap-2">
+              <Button variant="secondary" onClick={resetQuickInstruction}>
+                恢复默认
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={() => setQuickInstructionEditor(null)}>
+                  取消
+                </Button>
+                <Button variant="primary" onClick={saveQuickInstructionEdit}>
+                  保存修改
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Dialog>
 
       <Dialog
         open={customDialogOpen}
-        onOpenChange={setCustomDialogOpen}
-        title="自定义快捷指令"
-        description="点击胶囊会把指令填入输入框，发送前可编辑；保存在本机。"
+        onOpenChange={(open) => {
+          setCustomDialogOpen(open)
+          if (!open) setCustomEditingId(null)
+        }}
+        title={customEditingId ? '编辑自定义快捷指令' : '自定义快捷指令'}
+        description="点击胶囊会把指令填入输入框，发送前可编辑；指令保存在本机，可按场景隔离。"
         size="md"
       >
         <div className="flex flex-col gap-4">
@@ -755,6 +1315,14 @@ export default function SopAiRevisionPanel({
               value={customLabel}
               onChange={(event) => setCustomLabel(event.target.value)}
               placeholder="例如：检查生图红线"
+              maxLength={40}
+              helperText={`${customLabel.length} / 40`}
+            />
+            <SelectField
+              label="使用场景"
+              value={customScope}
+              onChange={(event) => setCustomScope(event.target.value as SopQuickInstructionScope)}
+              options={QUICK_SCOPE_OPTIONS}
             />
             <TextArea
               label="指令内容"
@@ -763,16 +1331,18 @@ export default function SopAiRevisionPanel({
               placeholder="描述希望 AI 如何修改 SOP；发送前可再调整"
               containerClassName="sop-ai-chat__custom-draft"
               className="leading-5"
+              maxLength={4000}
+              helperText={`${customInstruction.length} / 4000`}
             />
             <Button
               variant="primary"
               size="sm"
               disabled={!customLabel.trim() || !customInstruction.trim()}
-              onClick={addCustomInstruction}
-              leadingIcon={<Plus size={14} />}
+              onClick={submitCustomInstruction}
+              leadingIcon={customEditingId ? <Save size={14} /> : <Plus size={14} />}
               className="self-end"
             >
-              添加
+              {customEditingId ? '保存修改' : '添加'}
             </Button>
           </div>
           {customInstructions.length > 0 && (
@@ -785,8 +1355,17 @@ export default function SopAiRevisionPanel({
                   <div key={item.id} className="sop-ai-chat__custom-item">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold">{item.label}</p>
-                      <p className="sop-center-quiet-text mt-0.5 line-clamp-1 text-xs">{item.instruction}</p>
+                      <p className="sop-center-quiet-text mt-0.5 line-clamp-1 text-xs">
+                        {getSopQuickInstructionScopeLabel(item.scope)} · {item.instruction}
+                      </p>
                     </div>
+                    <IconButton
+                      size="sm"
+                      onClick={() => openCustomInstructionDialog(item)}
+                      aria-label={`编辑自定义指令 ${item.label}`}
+                      title="编辑"
+                      icon={<Edit size={13} />}
+                    />
                     <IconButton
                       size="sm"
                       onClick={() => removeCustomInstruction(item.id)}
@@ -800,6 +1379,131 @@ export default function SopAiRevisionPanel({
               </div>
             </div>
           )}
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(parameterDialog)}
+        onOpenChange={(open) => {
+          if (!open) setParameterDialog(null)
+        }}
+        title={parameterDialog?.instruction.label ?? '填写快捷指令参数'}
+        description={parameterDialog?.instruction.description}
+        size="sm"
+      >
+        {parameterDialog && (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3">
+              {parameterDialog.instruction.parameters?.map((parameter) =>
+                parameter.kind === 'select' ? (
+                  <SelectField
+                    key={parameter.key}
+                    label={parameter.label}
+                    helperText={parameter.description}
+                    value={parameterDialog.values[parameter.key] ?? ''}
+                    options={parameter.options ? [...parameter.options] : []}
+                    onChange={(event) =>
+                      setParameterDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              values: { ...current.values, [parameter.key]: event.target.value },
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                ) : parameter.kind === 'multi-select' ? (
+                  <fieldset key={parameter.key} className="flex flex-col gap-2">
+                    <legend className="text-sm font-medium text-ds-text dark:text-ds-text-subtle">
+                      {parameter.label}
+                    </legend>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {parameter.options?.map((option) => (
+                        <Checkbox
+                          key={option.value}
+                          checked={getMultiSelectValues(parameterDialog.values[parameter.key] ?? '').includes(
+                            option.value,
+                          )}
+                          onChange={() =>
+                            setParameterDialog((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    values: {
+                                      ...current.values,
+                                      [parameter.key]: toggleMultiSelectValue(
+                                        current.values[parameter.key] ?? '',
+                                        option.value,
+                                      ),
+                                    },
+                                  }
+                                : current,
+                            )
+                          }
+                          label={<span className="text-sm">{option.label}</span>}
+                          className="rounded-ds-md border border-ds-border px-2.5 py-2"
+                        />
+                      ))}
+                    </div>
+                    {parameter.description && <p className="text-xs text-ds-muted">{parameter.description}</p>}
+                  </fieldset>
+                ) : (
+                  <TextField
+                    key={parameter.key}
+                    label={parameter.label}
+                    helperText={parameter.description}
+                    placeholder={parameter.placeholder}
+                    type={parameter.kind}
+                    value={parameterDialog.values[parameter.key] ?? ''}
+                    min={parameter.min}
+                    max={parameter.max}
+                    required={parameter.required}
+                    onChange={(event) =>
+                      setParameterDialog((current) =>
+                        current
+                          ? {
+                              ...current,
+                              values: { ...current.values, [parameter.key]: event.target.value },
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                ),
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setParameterDialog(null)}>
+                取消
+              </Button>
+              <Button variant="primary" onClick={submitParameterizedInstruction}>
+                填入输入框
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={Boolean(pendingQuickInstruction)}
+        onOpenChange={(open) => {
+          if (!open) setPendingQuickInstruction(null)
+        }}
+        title="输入框已有草稿"
+        description="快捷指令不会自动覆盖你正在编辑的内容，请选择如何处理当前草稿。"
+        size="sm"
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="secondary" onClick={() => setPendingQuickInstruction(null)}>
+            取消
+          </Button>
+          <Button variant="secondary" onClick={() => resolveQuickConflict('append')}>
+            追加到末尾
+          </Button>
+          <Button variant="primary" onClick={() => resolveQuickConflict('replace')}>
+            替换草稿
+          </Button>
         </div>
       </Dialog>
 

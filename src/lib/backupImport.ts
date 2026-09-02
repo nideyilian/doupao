@@ -31,25 +31,28 @@ function assertFilesExist(
   }
 }
 
-export function reconcileBackupWorkspaceImages(data: ExportData): {
+export function reconcileBackupWorkspaceImages(
+  data: ExportData,
+  availableImageIds?: ReadonlySet<string>,
+): {
   data: ExportData
   omittedImageCount: number
 } {
   if (!data.workspaceState) return { data, omittedImageCount: 0 }
 
-  const availableImageIds = new Set(Object.keys(data.imageFiles ?? {}))
+  const available = availableImageIds ?? new Set(Object.keys(data.imageFiles ?? {}))
   const omittedImageIds = new Set<string>()
   const keepAvailable = (imageIds: string[]) =>
     imageIds.filter((imageId) => {
-      if (availableImageIds.has(imageId)) return true
+      if (available.has(imageId)) return true
       omittedImageIds.add(imageId)
       return false
     })
   const workspaceState = {
     ...data.workspaceState,
     tabs: data.workspaceState.tabs.map((tab) => {
-      const maskTargetAvailable = !tab.maskDraft || availableImageIds.has(tab.maskDraft.targetImageId)
-      const maskEditorImageAvailable = !tab.maskEditorImageId || availableImageIds.has(tab.maskEditorImageId)
+      const maskTargetAvailable = !tab.maskDraft || available.has(tab.maskDraft.targetImageId)
+      const maskEditorImageAvailable = !tab.maskEditorImageId || available.has(tab.maskEditorImageId)
       if (!maskTargetAvailable) omittedImageIds.add(tab.maskDraft!.targetImageId)
       if (!maskEditorImageAvailable) omittedImageIds.add(tab.maskEditorImageId!)
       return {
@@ -75,6 +78,7 @@ export function validateBackupArchive(
   files: Record<string, Uint8Array>,
   selection: BackupImportSelection,
   archivePaths?: ReadonlySet<string>,
+  availableImageIds?: ReadonlySet<string>,
 ): void {
   if (!Number.isInteger(data.version) || data.version < 1) {
     throw new Error('备份版本无效')
@@ -94,6 +98,10 @@ export function validateBackupArchive(
   }
 
   if (data.version >= 5 && data.workspaceState && selection.importConfig && selection.importTasks) {
-    restoreWorkspaceBackupState(data.workspaceState, data.tasks ?? [], new Set(Object.keys(data.imageFiles ?? {})))
+    restoreWorkspaceBackupState(
+      data.workspaceState,
+      data.tasks ?? [],
+      availableImageIds ?? new Set(Object.keys(data.imageFiles ?? {})),
+    )
   }
 }

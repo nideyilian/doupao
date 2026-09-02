@@ -1,4 +1,5 @@
 import { IMAGE_GENERATION_STRATEGY_SKILL_META_INSTRUCTION } from './skillMetaInstructions'
+import { compressSopReferenceImageIfNeeded } from '../../lib/sopReferenceImageCompression'
 
 const GENERAL_SOP_GENERATOR_INSTRUCTION = `你是“标准作业程序（SOP）编译器”和 AI 视觉生产流程专家。你的任务是根据用户提供的自然语言需求和参考图片，编译成一套可直接作为模型核心指令使用的专业 SOP。
 
@@ -259,7 +260,22 @@ export type GenerateSop = (
   options?: SopGenerationOptions,
 ) => Promise<GeneratedSop>
 
-export const MAX_SOP_REFERENCE_IMAGES = 8
+export const MAX_SOP_REFERENCE_IMAGES = 20
+
+export async function prepareSopReferenceImages(referenceImages: SopReferenceImage[]) {
+  const results: Array<{
+    image: SopReferenceImage
+    result: Awaited<ReturnType<typeof compressSopReferenceImageIfNeeded>>
+  }> = []
+  for (const image of referenceImages) {
+    results.push({ image, result: await compressSopReferenceImageIfNeeded(image.dataUrl) })
+  }
+
+  return {
+    images: results.map(({ image, result }) => ({ ...image, dataUrl: result.dataUrl })),
+    compressedCount: results.filter(({ result }) => result.compressed).length,
+  }
+}
 
 export function validateSopGenerationInput(
   description: string,

@@ -126,6 +126,18 @@ export class CatalogClient {
     return this.call('putUsageEvents', [events])
   }
 
+  getAllUsageEvents(): Promise<AssetUsageEvent[]> {
+    return this.call('getAllUsageEvents', [])
+  }
+
+  getUsageEvents(assetId: string): Promise<AssetUsageEvent[]> {
+    return this.call('getUsageEvents', [assetId])
+  }
+
+  clearUsageEvents(): Promise<void> {
+    return this.call('clearUsageEvents', [])
+  }
+
   deleteAssets(assetIds: string[]): Promise<void> {
     return this.call('deleteAssets', [assetIds])
   }
@@ -207,8 +219,12 @@ export class CatalogClient {
     return this.call('setMeta', [key, value])
   }
 
-  purgeAssets(assetIds: string[], now: number): Promise<{ purged: string[]; tombstones: AssetTombstone[] }> {
-    return this.call('purgeAssets', [assetIds, now])
+  purgeAssets(
+    assetIds: string[],
+    now: number,
+    tasksToPatch: Array<{ id: string; value: unknown }> = [],
+  ): Promise<{ purged: string[]; tombstones: AssetTombstone[] }> {
+    return this.call('purgeAssets', [assetIds, now, tasksToPatch])
   }
 
   cleanupReferenceOnlyAssets(): Promise<string[]> {
@@ -234,6 +250,71 @@ export class CatalogClient {
 
   size(): Promise<number> {
     return this.call('size', [])
+  }
+
+  appDataGet(namespace: string, id: string): Promise<unknown> {
+    return this.call('appDataGet', [namespace, id])
+  }
+
+  appDataGetAll(namespace: string): Promise<unknown[]> {
+    return this.call('appDataGetAll', [namespace])
+  }
+
+  appDataGetMany(namespace: string, ids: string[]): Promise<unknown[]> {
+    return this.call('appDataGetMany', [namespace, ids])
+  }
+
+  appDataPut(namespace: string, id: string, value: unknown): Promise<void> {
+    return this.call('appDataPut', [namespace, id, value])
+  }
+
+  appDataPutMany(namespace: string, records: Array<{ id: string; value: unknown }>): Promise<void> {
+    return this.call('appDataPutMany', [namespace, records])
+  }
+
+  appDataReplace(namespace: string, records: Array<{ id: string; value: unknown }>): Promise<void> {
+    return this.call('appDataReplace', [namespace, records])
+  }
+
+  appDataDelete(namespace: string, id: string): Promise<void> {
+    return this.call('appDataDelete', [namespace, id])
+  }
+
+  appDataDeleteMany(namespace: string, ids: string[]): Promise<void> {
+    return this.call('appDataDeleteMany', [namespace, ids])
+  }
+
+  appDataDeleteImageRecords(ids: string[]): Promise<void> {
+    return this.call('appDataDeleteImageRecords', [ids])
+  }
+
+  appDataClearImageRecords(): Promise<void> {
+    return this.call('appDataClearImageRecords', [])
+  }
+
+  appDataClear(namespace: string): Promise<void> {
+    return this.call('appDataClear', [namespace])
+  }
+
+  appDataCounts(namespaces: string[]): Promise<Record<string, number>> {
+    return this.call('appDataCounts', [namespaces])
+  }
+
+  appDataImportStores(stores: Record<string, unknown[]>): Promise<void> {
+    return this.call('appDataImportStores', [stores])
+  }
+
+  appDataCommitImportedRecords(records: {
+    images: unknown[]
+    thumbnails: unknown[]
+    tasks: unknown[]
+    replaceTasks?: boolean
+  }): Promise<void> {
+    return this.call('appDataCommitImportedRecords', [records])
+  }
+
+  appDataUpdateImageLocalPaths(mappings: Array<{ from: string; to: string }>): Promise<void> {
+    return this.call('appDataUpdateImageLocalPaths', [mappings])
   }
 
   /** 正常关闭 worker（worker 内 close DB 后退出）。 */

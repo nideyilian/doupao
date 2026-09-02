@@ -48,6 +48,9 @@ const STORE_ASSET_VERSIONS = 'assetVersions'
 const THUMBNAIL_MAX_SIZE = 1024
 const THUMBNAIL_QUALITY = 0.82
 const THUMBNAIL_VERSION = 5
+const APP_DATA_MIGRATION_ID = 'electron-app-data-migrated-v1'
+const APP_DATA_LEGACY_CLEANUP_ID = 'electron-indexeddb-cleaned-v1'
+const APP_DATA_MIGRATION_BATCH_SIZE = 200
 
 export const CURRENT_THUMBNAIL_VERSION = THUMBNAIL_VERSION
 
@@ -55,6 +58,44 @@ export const CURRENT_THUMBNAIL_VERSION = THUMBNAIL_VERSION
 // 缓存键是 indexedDB 全局引用——测试用 stubGlobal 替换全局时自动失效，
 // 生产环境则保持单连接；版本升级时旧连接收到 onversionchange 自动关闭并重置。
 let cachedDb: { idb: IDBFactory; db: Promise<IDBDatabase> } | null = null
+let electronAppDataMigrationPromise: Promise<void> | null = null
+
+type ElectronAppDataApi = NonNullable<Window['electronAPI']> &
+  Required<
+    Pick<
+      NonNullable<Window['electronAPI']>,
+      | 'appDataGet'
+      | 'appDataGetAll'
+      | 'appDataGetMany'
+      | 'appDataPut'
+      | 'appDataPutMany'
+      | 'appDataReplace'
+      | 'appDataDelete'
+      | 'appDataDeleteMany'
+      | 'appDataClear'
+      | 'appDataImportStores'
+    >
+  >
+
+function getElectronAppDataApi(): ElectronAppDataApi | null {
+  const api = typeof window !== 'undefined' ? window.electronAPI : undefined
+  if (
+    !api?.isElectron ||
+    !api.appDataGet ||
+    !api.appDataImportStores ||
+    !api.appDataPut ||
+    !api.appDataGetAll ||
+    !api.appDataGetMany ||
+    !api.appDataPutMany ||
+    !api.appDataReplace ||
+    !api.appDataDelete ||
+    !api.appDataDeleteMany ||
+    !api.appDataClear
+  ) {
+    return null
+  }
+  return api as ElectronAppDataApi
+}
 
 function openDB(): Promise<IDBDatabase> {
   // 先安全取全局引用：indexedDB 不可用（如部分测试环境）时返回已拒绝的 Promise，
@@ -186,21 +227,230 @@ function dbTransaction<T>(
   )
 }
 
+function readLegacyCursorStore<T>(storeName: string): Promise<T[]> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const request = db.transaction(storeName, 'readonly').objectStore(storeName).openCursor()
+        const values: T[] = []
+        request.onsuccess = () => {
+          const cursor = request.result
+          if (!cursor) {
+            resolve(values)
+            return
+          }
+          try {
+            values.push(cursor.value as T)
+          } catch (error) {
+            console.warn(`[db] 迁移跳过不可读记录：${storeName}`, error)
+          }
+          cursor.continue()
+        }
+        request.onerror = () => reject(request.error)
+      }),
+  )
+}
+
+async function migrateLegacyIndexedDbToSqlite(api: ElectronAppDataApi) {
+  const migrated = await api.appDataGet(STORE_META, APP_DATA_MIGRATION_ID)
+  if (migrated) return
+
+  const stores = {
+    [STORE_TASKS]: await dbTransaction<TaskRecord[]>(STORE_TASKS, 'readonly', (store) => store.getAll()),
+    [STORE_IMAGES]: await readLegacyCursorStore<StoredImage>(STORE_IMAGES),
+    [STORE_THUMBNAILS]: await readLegacyCursorStore<StoredImageThumbnail>(STORE_THUMBNAILS),
+    [STORE_AGENT_CONVERSATIONS]: await dbTransaction<AgentConversation[]>(
+      STORE_AGENT_CONVERSATIONS,
+      'readonly',
+      (store) => store.getAll(),
+    ),
+    [STORE_WORD_LIBRARY]: await dbTransaction<StoredWordLibraryState[]>(STORE_WORD_LIBRARY, 'readonly', (store) =>
+      store.getAll(),
+    ),
+    [STORE_COMPOSITE_ASSETS]: await dbTransaction<StoredCompositeAsset[]>(STORE_COMPOSITE_ASSETS, 'readonly', (store) =>
+      store.getAll(),
+    ),
+    [STORE_META]: await dbTransaction<MigrationJournal[]>(STORE_META, 'readonly', (store) => store.getAll()),
+    [STORE_SOP_BATCH_SNAPSHOTS]: await dbTransaction<SopBatchSnapshot[]>(
+      STORE_SOP_BATCH_SNAPSHOTS,
+      'readonly',
+      (store) => store.getAll(),
+    ),
+    [STORE_SOP_GENERATION_RECORDS]: await dbTransaction<SopGenerationRecord[]>(
+      STORE_SOP_GENERATION_RECORDS,
+      'readonly',
+      (store) => store.getAll(),
+    ),
+  } satisfies Record<string, unknown[]>
+
+  for (const [namespace, values] of Object.entries(stores)) {
+    for (let offset = 0; offset < values.length; offset += APP_DATA_MIGRATION_BATCH_SIZE) {
+      await api.appDataImportStores({
+        [namespace]: values.slice(offset, offset + APP_DATA_MIGRATION_BATCH_SIZE),
+      })
+    }
+  }
+
+  await api.appDataPut(STORE_META, APP_DATA_MIGRATION_ID, {
+    id: APP_DATA_MIGRATION_ID,
+    status: 'completed',
+    updatedAt: Date.now(),
+  })
+}
+
+function ensureElectronAppDataMigrated(): Promise<void> {
+  const api = getElectronAppDataApi()
+  if (!api) return Promise.resolve()
+  electronAppDataMigrationPromise ??= migrateLegacyIndexedDbToSqlite(api).catch((error) => {
+    electronAppDataMigrationPromise = null
+    throw error
+  })
+  return electronAppDataMigrationPromise
+}
+
+export async function cleanupElectronLegacyIndexedDb(): Promise<boolean> {
+  const api = getElectronAppDataApi()
+  if (!api) return false
+  if (await api.appDataGet(STORE_META, APP_DATA_LEGACY_CLEANUP_ID)) return true
+  const idb = typeof indexedDB !== 'undefined' ? indexedDB : null
+  if (!idb) return false
+  if (cachedDb) {
+    const db = await cachedDb.db.catch(() => null)
+    db?.close()
+    cachedDb = null
+  }
+  const removed = await new Promise<boolean>((resolve) => {
+    const request = idb.deleteDatabase(DB_NAME)
+    request.onsuccess = () => resolve(true)
+    request.onerror = () => resolve(false)
+    request.onblocked = () => resolve(false)
+  })
+  if (!removed) return false
+  await api.appDataPut(STORE_META, APP_DATA_LEGACY_CLEANUP_ID, {
+    id: APP_DATA_LEGACY_CLEANUP_ID,
+    status: 'completed',
+    updatedAt: Date.now(),
+  })
+  return true
+}
+
+function readElectronRecord<T>(namespace: string, id: string): Promise<T | undefined> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  return ensureElectronAppDataMigrated().then(() => api.appDataGet(namespace, id) as Promise<T | undefined>)
+}
+
+function readAllElectronRecords<T>(namespace: string): Promise<T[]> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  return ensureElectronAppDataMigrated().then(() => api.appDataGetAll(namespace) as Promise<T[]>)
+}
+
+function readManyElectronRecords<T>(namespace: string, ids: string[]): Promise<Map<string, T>> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  return ensureElectronAppDataMigrated().then(async () => {
+    const values = await api.appDataGetMany(namespace, ids)
+    const result = new Map<string, T>()
+    for (const value of values) {
+      if (!value || typeof value !== 'object') continue
+      const id = (value as { id?: unknown }).id
+      if (typeof id === 'string') result.set(id, value as T)
+    }
+    return result
+  })
+}
+
+function writeElectronRecord(namespace: string, id: string, value: unknown): Promise<string> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  return ensureElectronAppDataMigrated()
+    .then(() => api.appDataPut(namespace, id, value))
+    .then(() => id)
+}
+
+function writeManyElectronRecords(namespace: string, values: unknown[]): Promise<void> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  const records = values
+    .filter((value): value is { id: string } =>
+      Boolean(value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string'),
+    )
+    .map((value) => ({ id: value.id, value }))
+  return ensureElectronAppDataMigrated()
+    .then(() => api.appDataPutMany(namespace, records))
+    .then(() => undefined)
+}
+
+function replaceElectronRecords(namespace: string, values: unknown[]): Promise<void> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  const records = values
+    .filter((value): value is { id: string } =>
+      Boolean(value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string'),
+    )
+    .map((value) => ({ id: value.id, value }))
+  return ensureElectronAppDataMigrated()
+    .then(() => api.appDataReplace(namespace, records))
+    .then(() => undefined)
+}
+
+function deleteElectronRecord(namespace: string, id: string): Promise<void> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  return ensureElectronAppDataMigrated()
+    .then(() => api.appDataDelete(namespace, id))
+    .then(() => undefined)
+}
+
+function deleteManyElectronRecords(namespace: string, ids: string[]): Promise<void> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  return ensureElectronAppDataMigrated()
+    .then(() => api.appDataDeleteMany(namespace, ids))
+    .then(() => undefined)
+}
+
+function clearElectronRecords(namespace: string): Promise<void> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  return ensureElectronAppDataMigrated()
+    .then(() => api.appDataClear(namespace))
+    .then(() => undefined)
+}
+
 export function getMigrationJournal(id: string): Promise<MigrationJournal | undefined> {
+  const electron = readElectronRecord<MigrationJournal>(STORE_META, id)
+  if (electron) return electron
   return dbTransaction(STORE_META, 'readonly', (store) => store.get(id))
 }
 
 export async function putMigrationJournal(record: MigrationJournal): Promise<void> {
+  const electron = writeElectronRecord(STORE_META, record.id, record)
+  if (electron) {
+    await electron
+    return
+  }
   await dbTransaction(STORE_META, 'readwrite', (store) => store.put(record))
 }
 
 // ===== Tasks =====
 
 export function getAllTasks(): Promise<TaskRecord[]> {
+  const electron = readAllElectronRecords<TaskRecord>(STORE_TASKS)
+  if (electron) return electron
   return dbTransaction(STORE_TASKS, 'readonly', (s) => s.getAll())
 }
 
-export function loadTasksIncrementally(migrate: (task: TaskRecord) => TaskRecord): Promise<TaskRecord[]> {
+export async function loadTasksIncrementally(migrate: (task: TaskRecord) => TaskRecord): Promise<TaskRecord[]> {
+  const electron = readAllElectronRecords<TaskRecord>(STORE_TASKS)
+  if (electron) {
+    const stored = await electron
+    const tasks = stored.map(migrate)
+    const changed = tasks.filter((task, index) => task !== stored[index])
+    if (changed.length > 0) await writeManyElectronRecords(STORE_TASKS, changed)
+    return tasks
+  }
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -225,68 +475,98 @@ export function loadTasksIncrementally(migrate: (task: TaskRecord) => TaskRecord
 }
 
 export function putTask(task: TaskRecord): Promise<IDBValidKey> {
+  const electron = writeElectronRecord(STORE_TASKS, task.id, task)
+  if (electron) return electron
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.put(task))
 }
 
 export function deleteTask(id: string): Promise<undefined> {
+  const electron = deleteElectronRecord(STORE_TASKS, id)
+  if (electron) return electron.then(() => undefined)
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.delete(id))
 }
 
 export function clearTasks(): Promise<undefined> {
+  const electron = clearElectronRecords(STORE_TASKS)
+  if (electron) return electron.then(() => undefined)
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.clear())
 }
 
 // ===== SOP batch snapshots =====
 
 export function getSopBatchSnapshot(id: string): Promise<SopBatchSnapshot | undefined> {
+  const electron = readElectronRecord<SopBatchSnapshot>(STORE_SOP_BATCH_SNAPSHOTS, id)
+  if (electron) return electron
   return dbTransaction(STORE_SOP_BATCH_SNAPSHOTS, 'readonly', (store) => store.get(id))
 }
 
 export function getAllSopBatchSnapshots(): Promise<SopBatchSnapshot[]> {
+  const electron = readAllElectronRecords<SopBatchSnapshot>(STORE_SOP_BATCH_SNAPSHOTS)
+  if (electron) return electron
   return dbTransaction(STORE_SOP_BATCH_SNAPSHOTS, 'readonly', (store) => store.getAll())
 }
 
 export function putSopBatchSnapshot(snapshot: SopBatchSnapshot): Promise<IDBValidKey> {
+  const electron = writeElectronRecord(STORE_SOP_BATCH_SNAPSHOTS, snapshot.id, snapshot)
+  if (electron) return electron
   return dbTransaction(STORE_SOP_BATCH_SNAPSHOTS, 'readwrite', (store) => store.put(snapshot))
 }
 
 export function deleteSopBatchSnapshot(id: string): Promise<undefined> {
+  const electron = deleteElectronRecord(STORE_SOP_BATCH_SNAPSHOTS, id)
+  if (electron) return electron.then(() => undefined)
   return dbTransaction(STORE_SOP_BATCH_SNAPSHOTS, 'readwrite', (store) => store.delete(id))
 }
 
 export function clearSopBatchSnapshots(): Promise<undefined> {
+  const electron = clearElectronRecords(STORE_SOP_BATCH_SNAPSHOTS)
+  if (electron) return electron.then(() => undefined)
   return dbTransaction(STORE_SOP_BATCH_SNAPSHOTS, 'readwrite', (store) => store.clear())
 }
 
 // ===== SOP generation records =====
 
 export function getAllSopGenerationRecords(): Promise<SopGenerationRecord[]> {
+  const electron = readAllElectronRecords<SopGenerationRecord>(STORE_SOP_GENERATION_RECORDS)
+  if (electron) return electron
   return dbTransaction(STORE_SOP_GENERATION_RECORDS, 'readonly', (store) => store.getAll())
 }
 
 export function putSopGenerationRecord(record: SopGenerationRecord): Promise<IDBValidKey> {
+  const electron = writeElectronRecord(STORE_SOP_GENERATION_RECORDS, record.id, record)
+  if (electron) return electron
   return dbTransaction(STORE_SOP_GENERATION_RECORDS, 'readwrite', (store) => store.put(record))
 }
 
 // ===== Agent conversations =====
 
 export function getAllAgentConversations(): Promise<AgentConversation[]> {
+  const electron = readAllElectronRecords<AgentConversation>(STORE_AGENT_CONVERSATIONS)
+  if (electron) return electron
   return dbTransaction(STORE_AGENT_CONVERSATIONS, 'readonly', (s) => s.getAll())
 }
 
 export function putAgentConversation(conversation: AgentConversation): Promise<IDBValidKey> {
+  const electron = writeElectronRecord(STORE_AGENT_CONVERSATIONS, conversation.id, conversation)
+  if (electron) return electron
   return dbTransaction(STORE_AGENT_CONVERSATIONS, 'readwrite', (s) => s.put(conversation))
 }
 
 export function deleteAgentConversation(id: string): Promise<undefined> {
+  const electron = deleteElectronRecord(STORE_AGENT_CONVERSATIONS, id)
+  if (electron) return electron.then(() => undefined)
   return dbTransaction(STORE_AGENT_CONVERSATIONS, 'readwrite', (s) => s.delete(id))
 }
 
 export function clearAgentConversations(): Promise<undefined> {
+  const electron = clearElectronRecords(STORE_AGENT_CONVERSATIONS)
+  if (electron) return electron.then(() => undefined)
   return dbTransaction(STORE_AGENT_CONVERSATIONS, 'readwrite', (s) => s.clear())
 }
 
 export function replaceAgentConversations(conversations: AgentConversation[]): Promise<undefined> {
+  const electron = replaceElectronRecords(STORE_AGENT_CONVERSATIONS, conversations)
+  if (electron) return electron.then(() => undefined)
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -312,37 +592,48 @@ export type StoredWordLibraryState = {
 }
 
 export function getWordLibraryState(): Promise<StoredWordLibraryState | undefined> {
+  const electron = readElectronRecord<StoredWordLibraryState>(STORE_WORD_LIBRARY, 'word-library')
+  if (electron) return electron
   return dbTransaction(STORE_WORD_LIBRARY, 'readonly', (s) => s.get('word-library'))
 }
 
 export function putWordLibraryState(state: Omit<StoredWordLibraryState, 'id' | 'updatedAt'>): Promise<IDBValidKey> {
-  return dbTransaction(STORE_WORD_LIBRARY, 'readwrite', (s) =>
-    s.put({
-      id: 'word-library',
-      groups: state.groups,
-      entries: state.entries,
-      batches: state.batches ?? [],
-      updatedAt: Date.now(),
-    }),
-  )
+  const record = {
+    id: 'word-library' as const,
+    groups: state.groups,
+    entries: state.entries,
+    batches: state.batches ?? [],
+    updatedAt: Date.now(),
+  }
+  const electron = writeElectronRecord(STORE_WORD_LIBRARY, record.id, record)
+  if (electron) return electron
+  return dbTransaction(STORE_WORD_LIBRARY, 'readwrite', (s) => s.put(record))
 }
 
 // ===== Composite assets =====
 
 export function getCompositeAsset(id: string): Promise<StoredCompositeAsset | undefined> {
+  const electron = readElectronRecord<StoredCompositeAsset>(STORE_COMPOSITE_ASSETS, id)
+  if (electron) return electron
   return dbTransaction(STORE_COMPOSITE_ASSETS, 'readonly', (s) => s.get(id))
 }
 
 export function putCompositeAsset(asset: StoredCompositeAsset): Promise<IDBValidKey> {
+  const electron = writeElectronRecord(STORE_COMPOSITE_ASSETS, asset.id, asset)
+  if (electron) return electron
   return dbTransaction(STORE_COMPOSITE_ASSETS, 'readwrite', (s) => s.put(asset))
 }
 
 export function deleteCompositeAsset(id: string): Promise<undefined> {
+  const electron = deleteElectronRecord(STORE_COMPOSITE_ASSETS, id)
+  if (electron) return electron.then(() => undefined)
   return dbTransaction(STORE_COMPOSITE_ASSETS, 'readwrite', (s) => s.delete(id))
 }
 
 export function batchGetCompositeAssets(ids: string[]): Promise<Map<string, StoredCompositeAsset>> {
   if (ids.length === 0) return Promise.resolve(new Map())
+  const electron = readManyElectronRecords<StoredCompositeAsset>(STORE_COMPOSITE_ASSETS, ids)
+  if (electron) return electron
   const uniqueIds = Array.from(new Set(ids))
   return openDB().then(
     (db) =>
@@ -364,6 +655,8 @@ export function batchGetCompositeAssets(ids: string[]): Promise<Map<string, Stor
 
 export function putCompositeAssets(assets: StoredCompositeAsset[]): Promise<void> {
   if (assets.length === 0) return Promise.resolve()
+  const electron = writeManyElectronRecords(STORE_COMPOSITE_ASSETS, assets)
+  if (electron) return electron
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -392,6 +685,8 @@ function isIrrecoverableBlobError(error: unknown): boolean {
 }
 
 export function getImage(id: string): Promise<StoredImage | undefined> {
+  const electron = readElectronRecord<StoredImage>(STORE_IMAGES, id)
+  if (electron) return electron
   return dbTransaction(STORE_IMAGES, 'readonly', (s) => s.get(id)).catch((error) => {
     if (isIrrecoverableBlobError(error)) {
       console.warn('[db] 图片记录不可读（视为缺失）:', id, error.message)
@@ -402,6 +697,8 @@ export function getImage(id: string): Promise<StoredImage | undefined> {
 }
 
 export function getStoredImageThumbnail(id: string): Promise<StoredImageThumbnail | undefined> {
+  const electron = readElectronRecord<StoredImageThumbnail>(STORE_THUMBNAILS, id)
+  if (electron) return electron
   return dbTransaction(STORE_THUMBNAILS, 'readonly', (s) => s.get(id)).catch((error) => {
     if (isIrrecoverableBlobError(error)) {
       console.warn('[db] 缩略图记录不可读（视为缺失）:', id, error.message)
@@ -417,6 +714,8 @@ export async function getStoredFreshImageThumbnail(id: string): Promise<StoredIm
 }
 
 export function putImageThumbnail(thumbnail: StoredImageThumbnail): Promise<IDBValidKey> {
+  const electron = writeElectronRecord(STORE_THUMBNAILS, thumbnail.id, thumbnail)
+  if (electron) return electron
   return dbTransaction(STORE_THUMBNAILS, 'readwrite', (s) => s.put(thumbnail))
 }
 
@@ -559,15 +858,22 @@ export async function getImageThumbnail(id: string): Promise<StoredImageThumbnai
 }
 
 export function getAllImages(): Promise<StoredImage[]> {
+  const electron = readAllElectronRecords<StoredImage>(STORE_IMAGES)
+  if (electron) return electron
   return dbTransaction(STORE_IMAGES, 'readonly', (s) => s.getAll())
 }
 
 export function getAllImageIds(): Promise<string[]> {
+  const electron = readAllElectronRecords<StoredImage>(STORE_IMAGES)
+  if (electron) return electron.then((images) => images.map((image) => image.id))
   return dbTransaction(STORE_IMAGES, 'readonly', (s) => s.getAllKeys()).then((keys) => keys.map(String))
 }
 
 export function getLegacyImageBatch(limit: number): Promise<StoredImage[]> {
   if (limit <= 0) return Promise.resolve([])
+  const electron = readAllElectronRecords<StoredImage>(STORE_IMAGES)
+  if (electron)
+    return electron.then((images) => images.filter((image) => image.dataUrl && !image.localPath).slice(0, limit))
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -596,11 +902,20 @@ export function getLegacyImageBatch(limit: number): Promise<StoredImage[]> {
 }
 
 export function putImage(image: StoredImage): Promise<IDBValidKey> {
+  const electron = writeElectronRecord(STORE_IMAGES, image.id, image)
+  if (electron) return electron
   return dbTransaction(STORE_IMAGES, 'readwrite', (s) => s.put(image))
 }
 
 export async function deleteImage(id: string): Promise<undefined> {
   const image = await getImage(id)
+  const api = getElectronAppDataApi()
+  if (api) {
+    await ensureElectronAppDataMigrated()
+    await api.appDataDeleteImageRecords?.([id])
+    if (image?.localPath) await deleteRawCacheImages([image.localPath])
+    return undefined
+  }
   await openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -617,6 +932,13 @@ export async function deleteImage(id: string): Promise<undefined> {
 
 export async function clearImages(): Promise<undefined> {
   const localPaths = await getAllLocalImagePaths()
+  const api = getElectronAppDataApi()
+  if (api) {
+    await ensureElectronAppDataMigrated()
+    await api.appDataClearImageRecords?.()
+    await deleteRawCacheImages(localPaths)
+    return undefined
+  }
   await openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -632,6 +954,12 @@ export async function clearImages(): Promise<undefined> {
 }
 
 export function getAllLocalImagePaths(): Promise<string[]> {
+  const electron = readAllElectronRecords<StoredImage>(STORE_IMAGES)
+  if (electron) {
+    return electron.then((images) =>
+      images.map((image) => image.localPath).filter((value): value is string => Boolean(value)),
+    )
+  }
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -742,21 +1070,27 @@ export async function batchDeleteImages(
   const CHUNK_SIZE = 200
   for (let start = 0; start < uniqueIds.length; start += CHUNK_SIZE) {
     const chunk = uniqueIds.slice(start, start + CHUNK_SIZE)
-    await openDB().then(
-      (db) =>
-        new Promise<void>((resolve, reject) => {
-          const tx = db.transaction([STORE_IMAGES, STORE_THUMBNAILS], 'readwrite')
-          const imageStore = tx.objectStore(STORE_IMAGES)
-          const thumbStore = tx.objectStore(STORE_THUMBNAILS)
-          for (const id of chunk) {
-            imageStore.delete(id)
-            thumbStore.delete(id)
-          }
-          tx.oncomplete = () => resolve()
-          tx.onerror = () => reject(tx.error)
-          tx.onabort = () => reject(tx.error)
-        }),
-    )
+    const api = getElectronAppDataApi()
+    if (api) {
+      await ensureElectronAppDataMigrated()
+      await api.appDataDeleteImageRecords?.(chunk)
+    } else {
+      await openDB().then(
+        (db) =>
+          new Promise<void>((resolve, reject) => {
+            const tx = db.transaction([STORE_IMAGES, STORE_THUMBNAILS], 'readwrite')
+            const imageStore = tx.objectStore(STORE_IMAGES)
+            const thumbStore = tx.objectStore(STORE_THUMBNAILS)
+            for (const id of chunk) {
+              imageStore.delete(id)
+              thumbStore.delete(id)
+            }
+            tx.oncomplete = () => resolve()
+            tx.onerror = () => reject(tx.error)
+            tx.onabort = () => reject(tx.error)
+          }),
+      )
+    }
     const chunkPaths = chunk.map((id) => images.get(id)?.localPath).filter((path): path is string => Boolean(path))
     if (chunkPaths.length > 0) await deleteRawCacheImages(chunkPaths)
     onProgress?.(Math.min(start + chunk.length, uniqueIds.length), uniqueIds.length)
@@ -765,6 +1099,8 @@ export async function batchDeleteImages(
 
 export function batchGetImages(ids: string[]): Promise<Map<string, StoredImage>> {
   if (ids.length === 0) return Promise.resolve(new Map())
+  const electron = readManyElectronRecords<StoredImage>(STORE_IMAGES, ids)
+  if (electron) return electron
   const uniqueIds = Array.from(new Set(ids))
   return openDB().then(
     (db) =>
@@ -802,6 +1138,8 @@ export function batchGetImages(ids: string[]): Promise<Map<string, StoredImage>>
 
 export function batchGetImageThumbnails(ids: string[]): Promise<Map<string, StoredImageThumbnail>> {
   if (ids.length === 0) return Promise.resolve(new Map())
+  const electron = readManyElectronRecords<StoredImageThumbnail>(STORE_THUMBNAILS, ids)
+  if (electron) return electron
   const uniqueIds = Array.from(new Set(ids))
   return openDB().then(
     (db) =>
@@ -839,6 +1177,8 @@ export function batchGetImageThumbnails(ids: string[]): Promise<Map<string, Stor
 
 export function batchPutTasks(tasks: TaskRecord[]): Promise<void> {
   if (tasks.length === 0) return Promise.resolve()
+  const electron = writeManyElectronRecords(STORE_TASKS, tasks)
+  if (electron) return electron
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -853,6 +1193,36 @@ export function batchPutTasks(tasks: TaskRecord[]): Promise<void> {
 }
 
 export async function getStorageRecordCounts() {
+  const api = getElectronAppDataApi()
+  if (api) {
+    await ensureElectronAppDataMigrated()
+    const counts = api.appDataCounts
+      ? await api.appDataCounts([
+          STORE_TASKS,
+          STORE_IMAGES,
+          STORE_THUMBNAILS,
+          STORE_AGENT_CONVERSATIONS,
+          STORE_COMPOSITE_ASSETS,
+        ])
+      : {}
+    const [catalogStatus, collections, tags, tombstones] = await Promise.all([
+      api.assetCatalogStatus?.(),
+      api.assetCatalogGetCollections?.(),
+      api.assetCatalogGetTags?.(),
+      api.assetCatalogGetAllTombstones?.(),
+    ])
+    return {
+      tasks: counts[STORE_TASKS] ?? 0,
+      images: counts[STORE_IMAGES] ?? 0,
+      thumbnails: counts[STORE_THUMBNAILS] ?? 0,
+      conversations: counts[STORE_AGENT_CONVERSATIONS] ?? 0,
+      compositeAssets: counts[STORE_COMPOSITE_ASSETS] ?? 0,
+      generatedAssets: catalogStatus?.assetCount ?? 0,
+      assetCollections: collections?.length ?? 0,
+      assetTags: tags?.length ?? 0,
+      assetTombstones: tombstones?.length ?? 0,
+    }
+  }
   const [
     tasks,
     images,
@@ -893,6 +1263,12 @@ export function commitImportedRecords(records: {
   tasks: TaskRecord[]
   replaceTasks?: boolean
 }): Promise<void> {
+  const api = getElectronAppDataApi()
+  if (api) {
+    return ensureElectronAppDataMigrated()
+      .then(() => api.appDataCommitImportedRecords?.(records))
+      .then(() => undefined)
+  }
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -913,6 +1289,12 @@ export function commitImportedRecords(records: {
 
 export function updateImageLocalPaths(mappings: Array<{ from: string; to: string }>): Promise<void> {
   if (mappings.length === 0) return Promise.resolve()
+  const api = getElectronAppDataApi()
+  if (api) {
+    return ensureElectronAppDataMigrated()
+      .then(() => api.appDataUpdateImageLocalPaths?.(mappings))
+      .then(() => undefined)
+  }
   const bySource = new Map(mappings.map((mapping) => [mapping.from, mapping.to]))
   return openDB().then(
     (db) =>
@@ -1098,24 +1480,37 @@ export function deleteGeneratedAsset(id: string): Promise<undefined> {
 }
 
 export function clearGeneratedAssets(): Promise<undefined> {
+  if (getElectronAppDataApi()) return Promise.resolve(undefined)
   return clearStore(STORE_GENERATED_ASSETS)
 }
 
 // ----- assetUsageEvents -----
 
 export function putAssetUsageEvent(event: AssetUsageEvent): Promise<IDBValidKey> {
+  const api = getElectronAppDataApi()
+  if (api?.assetCatalogRecordUsage) {
+    return api.assetCatalogRecordUsage([event]).then(() => event.id)
+  }
   return dbTransaction(STORE_ASSET_USAGE_EVENTS, 'readwrite', (store) => store.put(event))
 }
 
 export function putAssetUsageEvents(events: AssetUsageEvent[]): Promise<void> {
+  const api = getElectronAppDataApi()
+  if (api?.assetCatalogRecordUsage) {
+    return api.assetCatalogRecordUsage(events).then(() => undefined)
+  }
   return putMany(STORE_ASSET_USAGE_EVENTS, events)
 }
 
 export function getAllAssetUsageEvents(): Promise<AssetUsageEvent[]> {
+  const api = getElectronAppDataApi()
+  if (api?.assetCatalogExportUsage) return api.assetCatalogExportUsage()
   return dbTransaction(STORE_ASSET_USAGE_EVENTS, 'readonly', (store) => store.getAll())
 }
 
 export function getAssetUsageEvents(assetId: string): Promise<AssetUsageEvent[]> {
+  const api = getElectronAppDataApi()
+  if (api?.assetCatalogGetUsageByAsset) return api.assetCatalogGetUsageByAsset(assetId)
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -1129,36 +1524,45 @@ export function getAssetUsageEvents(assetId: string): Promise<AssetUsageEvent[]>
 }
 
 export function clearAssetUsageEvents(): Promise<undefined> {
+  const api = getElectronAppDataApi()
+  if (api?.assetCatalogClearUsage) return api.assetCatalogClearUsage().then(() => undefined)
   return clearStore(STORE_ASSET_USAGE_EVENTS)
 }
 
 // ----- asset identity records -----
 
 export function putAssetBlobs(blobs: AssetBlob[]): Promise<void> {
+  if (getElectronAppDataApi()) return Promise.resolve()
   return putMany(STORE_ASSET_BLOBS, blobs)
 }
 
 export function getAllAssetBlobs(): Promise<AssetBlob[]> {
+  if (getElectronAppDataApi()) return Promise.resolve([])
   return dbTransaction(STORE_ASSET_BLOBS, 'readonly', (store) => store.getAll())
 }
 
 export function clearAssetBlobs(): Promise<undefined> {
+  if (getElectronAppDataApi()) return Promise.resolve(undefined)
   return clearStore(STORE_ASSET_BLOBS)
 }
 
 export function putAssetVersions(versions: AssetVersion[]): Promise<void> {
+  if (getElectronAppDataApi()) return Promise.resolve()
   return putMany(STORE_ASSET_VERSIONS, versions)
 }
 
 export function getAllAssetVersions(): Promise<AssetVersion[]> {
+  if (getElectronAppDataApi()) return Promise.resolve([])
   return dbTransaction(STORE_ASSET_VERSIONS, 'readonly', (store) => store.getAll())
 }
 
 export function clearAssetVersions(): Promise<undefined> {
+  if (getElectronAppDataApi()) return Promise.resolve(undefined)
   return clearStore(STORE_ASSET_VERSIONS)
 }
 
 export function deleteAssetVersionsForAsset(assetId: string): Promise<void> {
+  if (getElectronAppDataApi()) return Promise.resolve()
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
@@ -1178,6 +1582,7 @@ export function deleteAssetVersionsForAsset(assetId: string): Promise<void> {
 }
 
 export function deleteAssetBlob(id: string): Promise<undefined> {
+  if (getElectronAppDataApi()) return Promise.resolve(undefined)
   return deleteById(STORE_ASSET_BLOBS, id)
 }
 
@@ -1232,6 +1637,7 @@ export function deleteAssetCollection(id: string): Promise<undefined> {
 }
 
 export function clearAssetCollections(): Promise<undefined> {
+  if (getElectronAppDataApi()) return Promise.resolve(undefined)
   return clearStore(STORE_ASSET_COLLECTIONS)
 }
 
@@ -1258,6 +1664,7 @@ export function deleteAssetTag(id: string): Promise<undefined> {
 }
 
 export function clearAssetTags(): Promise<undefined> {
+  if (getElectronAppDataApi()) return Promise.resolve(undefined)
   return clearStore(STORE_ASSET_TAGS)
 }
 
@@ -1315,6 +1722,7 @@ export function deleteAssetTombstone(id: string): Promise<undefined> {
 }
 
 export function clearAssetTombstones(): Promise<undefined> {
+  if (getElectronAppDataApi()) return Promise.resolve(undefined)
   return clearStore(STORE_ASSET_TOMBSTONES)
 }
 

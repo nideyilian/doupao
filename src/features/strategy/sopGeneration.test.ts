@@ -64,6 +64,18 @@ describe('SOP natural-language generator', () => {
     )
   })
 
+  it('allows up to twenty reference images and rejects the twenty-first image', () => {
+    const images = Array.from({ length: 20 }, (_, index) => ({
+      name: `参考图 ${index + 1}.png`,
+      dataUrl: 'data:image/png;base64,AAA',
+    }))
+
+    expect(() => validateSopGenerationInput('生成画风 SOP', images, 'image-prompt')).not.toThrow()
+    expect(() => validateSopGenerationInput('生成画风 SOP', [...images, images[0]], 'image-prompt')).toThrow(
+      'SOP 分析最多支持 20 张图片',
+    )
+  })
+
   it('parses name, description and SOP body from a fenced model response', () => {
     const result = parseGeneratedSop(
       '```json\n{"name":"视觉逆向 SOP","description":"拆解参考图并输出结构化变量池","sop":"### Role & Goal\\n严格执行视觉逆向分析"}\n```',

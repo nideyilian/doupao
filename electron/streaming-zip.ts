@@ -15,7 +15,7 @@ export type StreamingZipRequest = {
 
 function validArchivePath(value: string) {
   return (
-    (value.startsWith('images/') || value.startsWith('composite-assets/')) &&
+    (value.startsWith('images/') || value.startsWith('thumbnails/') || value.startsWith('composite-assets/')) &&
     !value.includes('\\') &&
     !value.split('/').includes('..')
   )

@@ -15,18 +15,22 @@ const storeMocks = vi.hoisted(() => ({
   retryTask: vi.fn(),
   rerunSopBatchTasks: vi.fn(),
   showToast: vi.fn(),
-  useStore: (
-    selector: (state: {
-      lightboxImageId: string | null
-      showToast: (message: string, tone: string) => void
-      workspaceTabs: Array<{ id: string; name: string; tasks: TaskRecord[] }>
-    }) => unknown,
-  ) =>
-    selector({
-      lightboxImageId: null,
-      showToast: storeMocks.showToast,
-      workspaceTabs: [],
-    }),
+  useStore: vi.fn(
+    (
+      selector: (state: {
+        tasks: TaskRecord[]
+        lightboxImageId: string | null
+        showToast: (message: string, tone: string) => void
+        workspaceTabs: Array<{ id: string; name: string; tasks: TaskRecord[] }>
+      }) => unknown,
+    ) =>
+      selector({
+        tasks: [],
+        lightboxImageId: null,
+        showToast: storeMocks.showToast,
+        workspaceTabs: [],
+      }),
+  ),
 }))
 const localSaveMocks = vi.hoisted(() => ({
   getExplicitImageSaveDirectory: vi.fn(),
@@ -61,6 +65,14 @@ afterEach(() => {
   while (mountedRenderers.length) mountedRenderers.pop()?.unmount()
   window.localStorage.clear()
   vi.clearAllMocks()
+  storeMocks.useStore.mockImplementation((selector) =>
+    selector({
+      tasks: [],
+      lightboxImageId: null,
+      showToast: storeMocks.showToast,
+      workspaceTabs: [],
+    }),
+  )
 })
 
 function createTask(outputImages = ['image-1']): TaskRecord {
@@ -197,6 +209,48 @@ describe('SopBatchDetailModal hover preview', () => {
 
     act(() => imageButton!.props.onPointerLeave())
     expect(renderer!.root.findAllByType(HoverImagePreview)).toHaveLength(0)
+  })
+
+  it('switches the prompt card to the latest retry attempt without reopening the modal', async () => {
+    const originalTask = createTask([])
+    const retriedTask = {
+      ...createTask(['image-2']),
+      id: 'sop-task-1-retry',
+      createdAt: 3,
+    }
+    let currentTasks = [originalTask]
+    storeMocks.useStore.mockImplementation((selector) =>
+      selector({
+        tasks: currentTasks,
+        lightboxImageId: null,
+        showToast: storeMocks.showToast,
+        workspaceTabs: [],
+      }),
+    )
+    storeMocks.ensureImageThumbnailCached.mockResolvedValue(undefined)
+
+    let renderer: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <SopBatchDetailModal sopName="天体图" tasks={[originalTask]} onClose={vi.fn()} onOpenImage={vi.fn()} />,
+      )
+    })
+    mountedRenderers.push(renderer!)
+
+    const regenerateButton = renderer!.root.findByProps({ 'aria-label': '再次生成第 1 条提示词' })
+    act(() => regenerateButton.props.onClick())
+    expect(storeMocks.retryTask).toHaveBeenCalledWith(originalTask)
+
+    currentTasks = [retriedTask]
+    await act(async () => {
+      renderer!.update(
+        <SopBatchDetailModal sopName="天体图" tasks={[originalTask]} onClose={vi.fn()} onOpenImage={vi.fn()} />,
+      )
+      await Promise.resolve()
+    })
+
+    expect(storeMocks.ensureImageThumbnailCached).toHaveBeenCalledWith('image-2')
+    expect(renderer!.root.findByProps({ 'aria-label': '再次生成第 1 条提示词' }).props.disabled).toBeFalsy()
   })
 
   it('shows the complete prompt on hover or focus and copies it with feedback', async () => {

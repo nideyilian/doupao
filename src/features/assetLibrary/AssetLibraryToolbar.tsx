@@ -134,6 +134,7 @@ function AssetLibraryToolbar({
   const sortKey = useAssetLibraryStore((s) => s.sortKey)
   const sortOrder = useAssetLibraryStore((s) => s.sortOrder)
   const setSort = useAssetLibraryStore((s) => s.setSort)
+  const selectedAssetCount = useAssetLibraryStore((s) => s.selectedAssetIds.length)
 
   const [filterOpen, setFilterOpen] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
@@ -170,6 +171,16 @@ function AssetLibraryToolbar({
     >
       <span className="text-sm font-medium text-ds-foreground">{scopeLabel}</span>
       <span className="text-xs tabular-nums text-ds-muted">{totalCount} 张</span>
+      {selectedAssetCount > 0 && (
+        <span
+          role="status"
+          aria-live="polite"
+          data-testid="asset-selection-count"
+          className="text-xs font-semibold tabular-nums text-ds-primary"
+        >
+          已选择 {selectedAssetCount} 张
+        </span>
+      )}
 
       {isCollectionScope && <IncludeSubcollectionsSwitch />}
 

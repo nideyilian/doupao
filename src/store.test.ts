@@ -521,7 +521,7 @@ describe('data export', () => {
       await clearTasks()
       const { useCompositeV2Store } = await import('./features/composite/storeV2')
       const assetId = 'exported-composite-asset'
-      const exportedTaskA = task({ id: 'task-a' })
+      const exportedTaskA = task({ id: 'task-a', inputImageIds: ['input-a'] })
       const exportedTaskB = task({ id: 'task-b' })
       const exportedGroup = {
         id: 'group-a',
@@ -576,6 +576,9 @@ describe('data export', () => {
       const fullArchive = unzipSync(new Uint8Array(await exportedBlob!.arrayBuffer()))
       const fullManifest = JSON.parse(new TextDecoder().decode(fullArchive['manifest.json'])) as ExportData
       expect(fullManifest.version).toBe(7)
+      expect(fullManifest.includesOriginalImages).toBe(false)
+      expect(fullManifest.imageFiles).toBeUndefined()
+      expect(fullManifest.imageRefs?.['input-a']).toMatchObject({ available: false })
       expect(fullManifest.workspaceState).toMatchObject({
         activeTabId: 'tab-b',
         groups: [exportedGroup],

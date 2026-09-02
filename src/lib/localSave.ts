@@ -77,6 +77,7 @@ type ElectronAPI = {
   }) => Promise<{ success: boolean }>
   readFileBuffer: (filePath: string) => Promise<{ data: ArrayBuffer; name: string } | null>
   getDefaultPath: () => Promise<string>
+  getStateFilePath?: () => Promise<string>
   /** 在资源管理器中显示文件/打开目录；目标缺失时主进程回退到最近的已存在父目录。 */
   openInExplorer: (filePath: string) => Promise<{ ok: boolean; error?: string }>
   getLocalSavePath: () => Promise<string | null>
@@ -104,6 +105,9 @@ type ElectronAPI = {
   setCloseToTray?: (enabled: boolean) => Promise<boolean>
   assetCatalogUpsert?: (records: Array<{ asset: GeneratedAsset; localPath?: string }>) => Promise<{ success: boolean }>
   assetCatalogRecordUsage?: (events: AssetUsageEvent[]) => Promise<{ success: boolean }>
+  assetCatalogExportUsage?: () => Promise<AssetUsageEvent[]>
+  assetCatalogGetUsageByAsset?: (assetId: string) => Promise<AssetUsageEvent[]>
+  assetCatalogClearUsage?: () => Promise<{ success: boolean }>
   assetCatalogDelete?: (assetIds: string[]) => Promise<{ success: boolean }>
   assetCatalogClear?: () => Promise<{ success: boolean }>
   assetCatalogQuery?: (query: AssetCatalogQuery) => Promise<AssetCatalogCursorPage>
@@ -132,6 +136,7 @@ type ElectronAPI = {
   assetCatalogPurge?: (
     assetIds: string[],
     now: number,
+    tasksToPatch?: Array<{ id: string; value: unknown }>,
   ) => Promise<{
     purged: string[]
     tombstones: AssetTombstone[]
@@ -152,6 +157,26 @@ type ElectronAPI = {
     limit?: number
   }) => Promise<Array<{ asset: GeneratedAsset; score: number }>>
   assetCatalogStatus?: () => Promise<{ ready: boolean; assetCount: number; backend: 'sqlite-fts5' }>
+  appDataGet?: (namespace: string, id: string) => Promise<unknown>
+  appDataGetAll?: (namespace: string) => Promise<unknown[]>
+  appDataGetMany?: (namespace: string, ids: string[]) => Promise<unknown[]>
+  appDataPut?: (namespace: string, id: string, value: unknown) => Promise<{ success: boolean }>
+  appDataPutMany?: (namespace: string, records: Array<{ id: string; value: unknown }>) => Promise<{ success: boolean }>
+  appDataReplace?: (namespace: string, records: Array<{ id: string; value: unknown }>) => Promise<{ success: boolean }>
+  appDataDelete?: (namespace: string, id: string) => Promise<{ success: boolean }>
+  appDataDeleteMany?: (namespace: string, ids: string[]) => Promise<{ success: boolean }>
+  appDataDeleteImageRecords?: (ids: string[]) => Promise<{ success: boolean }>
+  appDataClearImageRecords?: () => Promise<{ success: boolean }>
+  appDataClear?: (namespace: string) => Promise<{ success: boolean }>
+  appDataCounts?: (namespaces: string[]) => Promise<Record<string, number>>
+  appDataImportStores?: (stores: Record<string, unknown[]>) => Promise<{ success: boolean }>
+  appDataCommitImportedRecords?: (records: {
+    images: unknown[]
+    thumbnails: unknown[]
+    tasks: unknown[]
+    replaceTasks?: boolean
+  }) => Promise<{ success: boolean }>
+  appDataUpdateImageLocalPaths?: (mappings: Array<{ from: string; to: string }>) => Promise<{ success: boolean }>
   getAssetApiStatus?: () => Promise<{
     enabled: boolean
     host: '127.0.0.1'

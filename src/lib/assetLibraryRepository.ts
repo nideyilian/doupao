@@ -125,13 +125,13 @@ async function syncLegacyAssetMetadataToCatalog(api: CatalogBackendApi): Promise
   if (legacySyncDone) return
   try {
     const backfilled = await api.assetCatalogMetaGet(CATALOG_META_LEGACY_BACKFILL)
-    const [collections, tags, tombstones] = await Promise.all([
-      getAllAssetCollections(),
-      getAllAssetTags(),
-      getAllAssetTombstones(),
-    ])
     if (backfilled === null) {
-      const legacyAssets = await getAllGeneratedAssets()
+      const [collections, tags, tombstones, legacyAssets] = await Promise.all([
+        getAllAssetCollections(),
+        getAllAssetTags(),
+        getAllAssetTombstones(),
+        getAllGeneratedAssets(),
+      ])
       if (legacyAssets.length > 0) {
         const images = await batchGetImages(legacyAssets.map((asset) => asset.imageId))
         await api.assetCatalogUpsert(
@@ -142,19 +142,19 @@ async function syncLegacyAssetMetadataToCatalog(api: CatalogBackendApi): Promise
         )
       }
       await api.assetCatalogMetaSet(CATALOG_META_LEGACY_BACKFILL, String(Date.now()))
-    }
-    if (collections.length > 0) {
-      await api.assetCatalogPutCollections(
-        collections.map(normalizeCollection).filter((c): c is AssetCollection => c !== null),
-      )
-    }
-    if (tags.length > 0) {
-      await api.assetCatalogPutTags(tags.map(normalizeTag).filter((t): t is AssetTag => t !== null))
-    }
-    if (tombstones.length > 0) {
-      await api.assetCatalogPutTombstones(
-        tombstones.map(normalizeTombstone).filter((t): t is AssetTombstone => t !== null),
-      )
+      if (collections.length > 0) {
+        await api.assetCatalogPutCollections(
+          collections.map(normalizeCollection).filter((c): c is AssetCollection => c !== null),
+        )
+      }
+      if (tags.length > 0) {
+        await api.assetCatalogPutTags(tags.map(normalizeTag).filter((t): t is AssetTag => t !== null))
+      }
+      if (tombstones.length > 0) {
+        await api.assetCatalogPutTombstones(
+          tombstones.map(normalizeTombstone).filter((t): t is AssetTombstone => t !== null),
+        )
+      }
     }
     legacySyncDone = true
   } catch (error) {
@@ -598,6 +598,11 @@ export async function deleteGeneratedAsset(id: string): Promise<undefined> {
   // 与 persistIdentityAndMirror 串行：孤儿 blob 清理（按引用计数推断）不再与
   // 并发写入竞态误删共享 blob。
   return withAssetWriteLock(async () => {
+    const api = catalogApi()
+    if (api?.assetCatalogDelete) {
+      await api.assetCatalogDelete([id])
+      return undefined
+    }
     const asset = await getAsset(id)
     if (!asset) return undefined
     await deleteGeneratedAssetRecord(asset.id)
@@ -605,18 +610,6 @@ export async function deleteGeneratedAsset(id: string): Promise<undefined> {
     const [versions, blobs] = await Promise.all([getAllAssetVersions(), getAllAssetBlobs()])
     const referencedBlobIds = new Set(versions.map((version) => version.blobId))
     await Promise.all(blobs.filter((blob) => !referencedBlobIds.has(blob.id)).map((blob) => deleteAssetBlob(blob.id)))
-    if (typeof window !== 'undefined') {
-      const api = window.electronAPI
-      if (api?.assetCatalogDelete) {
-        try {
-          await api.assetCatalogDelete([asset.id])
-        } catch (error) {
-          // 镜像删除失败进入重试队列，避免 SQLite 侧残留幽灵素材
-          console.warn('[asset-mirror] 素材镜像删除失败，进入重试队列', error)
-          enqueueMirrorRetry('delete', [asset.id])
-        }
-      }
-    }
     return undefined
   })
 }

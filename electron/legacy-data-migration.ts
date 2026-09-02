@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs'
 import path from 'path'
 
 /**
@@ -120,7 +120,7 @@ function copyFileIfMissing(source: string, target: string): boolean {
   if (!existsSync(source) || existsSync(target)) return false
   mkdirSync(path.dirname(target), { recursive: true })
   try {
-    cpSync(source, target)
+    copyFileSync(source, target)
     return true
   } catch (error) {
     console.error('[legacy-data-migration] 复制失败:', source, error)
@@ -133,11 +133,24 @@ function copyDirIfMissing(source: string, target: string): boolean {
   if (!existsSync(source) || existsSync(target)) return false
   mkdirSync(path.dirname(target), { recursive: true })
   try {
-    cpSync(source, target, { recursive: true })
+    copyDirectoryContents(source, target)
     return true
   } catch (error) {
     console.error('[legacy-data-migration] 复制目录失败:', source, error)
     return false
+  }
+}
+
+function copyDirectoryContents(source: string, target: string): void {
+  mkdirSync(target, { recursive: true })
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const sourcePath = path.join(source, entry.name)
+    const targetPath = path.join(target, entry.name)
+    if (entry.isDirectory()) {
+      copyDirectoryContents(sourcePath, targetPath)
+    } else {
+      copyFileSync(sourcePath, targetPath)
+    }
   }
 }
 
@@ -245,9 +258,23 @@ export function migrateLegacyAppDataIfNeeded(
 export function ensureStateFileReadable(userDataDir = app.getPath('userData')): boolean {
   const statePath = path.join(userDataDir, STATE_FILE)
   if (isReadableJsonFile(statePath)) return true
-  if (existsSync(path.join(userDataDir, STATE_FILE + '.bak'))) {
-    // readJsonText 已有 .bak 回退；这里不重复处理，仅确认 .bak 可读
-    return isReadableJsonFile(path.join(userDataDir, STATE_FILE + '.bak'))
+  const bakPath = path.join(userDataDir, STATE_FILE + '.bak')
+  if (isReadableJsonFile(bakPath)) {
+    try {
+      mkdirSync(userDataDir, { recursive: true })
+      if (existsSync(statePath)) {
+        try {
+          renameSync(statePath, statePath + '.corrupt-' + Date.now())
+        } catch {
+          // 改名失败不阻塞恢复
+        }
+      }
+      copyFileSync(bakPath, statePath)
+      return isReadableJsonFile(statePath)
+    } catch (error) {
+      console.error('[legacy-data-migration] 从 .bak 恢复状态文件失败:', error)
+      return false
+    }
   }
   const backupsDir = path.join(userDataDir, 'backups')
   let newest: { file: string; mtime: number } | null = null
@@ -276,7 +303,7 @@ export function ensureStateFileReadable(userDataDir = app.getPath('userData')): 
         // 改名失败不阻塞恢复
       }
     }
-    cpSync(newest.file, statePath)
+    copyFileSync(newest.file, statePath)
     console.log(`[legacy-data-migration] 状态文件不可读，已从备份快照恢复：${newest.file}`)
     return true
   } catch (error) {

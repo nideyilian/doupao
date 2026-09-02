@@ -10,6 +10,7 @@ import type {
   AssetVersion,
   GeneratedAsset,
 } from '../src/types'
+import { AppDataStore, type AppDataStoreMap } from './app-data-store'
 import { materializeAssetRecords } from '../src/lib/assetIdentity'
 import { createTextVector, rankAssetCandidates } from '../src/lib/assetSemanticSearch'
 
@@ -90,12 +91,14 @@ function ftsQuery(value: string): string {
 
 export class AssetCatalog {
   private readonly db: DatabaseSync
+  private readonly appData: AppDataStore
   /** getCounts 结果缓存（5s TTL）：避免每次 query/recommend 都做全表 SUM + json_each 分组 */
   private countsCache: { at: number; value: AssetCatalogCursorPage['counts'] } | null = null
 
   constructor(filePath: string) {
     this.db = new DatabaseSync(filePath)
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;')
+    this.appData = new AppDataStore(this.db)
     this.migrate()
   }
 
@@ -335,6 +338,33 @@ export class AssetCatalog {
         )
         if (result.changes) bump.run(event.action === 'export' ? 3 : event.action === 'derived' ? 2 : 1, event.assetId)
       }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  getAllUsageEvents(): AssetUsageEvent[] {
+    const rows = this.db
+      .prepare('SELECT json FROM asset_usage_events ORDER BY occurred_at ASC, id ASC')
+      .all() as Array<{
+      json: string
+    }>
+    return rows.map((row) => JSON.parse(row.json) as AssetUsageEvent)
+  }
+
+  getUsageEvents(assetId: string): AssetUsageEvent[] {
+    const rows = this.db
+      .prepare('SELECT json FROM asset_usage_events WHERE asset_id = ? ORDER BY occurred_at DESC, id DESC')
+      .all(assetId) as Array<{ json: string }>
+    return rows.map((row) => JSON.parse(row.json) as AssetUsageEvent)
+  }
+
+  clearUsageEvents(): void {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.exec('DELETE FROM asset_usage_events')
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -668,6 +698,9 @@ export class AssetCatalog {
       DELETE FROM versions;
       DELETE FROM assets;
       DELETE FROM blobs;
+      DELETE FROM collections;
+      DELETE FROM tags;
+      DELETE FROM tombstones;
       COMMIT;
     `)
     this.invalidateCountsCache()
@@ -978,7 +1011,11 @@ export class AssetCatalog {
    * 永久删除：素材删除 + 墓碑写入在单个 SQLite 事务内完成（权威存储），
    * 返回已删除素材及其墓碑；调用方再补任务输出补丁（IndexedDB）并删除图片字节。
    */
-  purgeAssets(assetIds: string[], now: number): { purged: string[]; tombstones: AssetTombstone[] } {
+  purgeAssets(
+    assetIds: string[],
+    now: number,
+    tasksToPatch: Array<{ id: string; value: unknown }> = [],
+  ): { purged: string[]; tombstones: AssetTombstone[] } {
     const unique = [...new Set(assetIds)].filter((id) => Boolean(id))
     if (unique.length === 0) return { purged: [], tombstones: [] }
     const purged: string[] = []
@@ -1026,6 +1063,7 @@ export class AssetCatalog {
         putTombstone.run(tombstone.id, tombstone.imageId, tombstone.purgedAt, tombstone.lastOriginOccurredAt)
         tombstones.push(tombstone)
       }
+      this.appData.putManyInTransaction('tasks', tasksToPatch)
       this.db.exec('DELETE FROM blobs WHERE id NOT IN (SELECT blob_id FROM versions)')
       this.db.exec('COMMIT')
     } catch (error) {
@@ -1147,6 +1185,77 @@ export class AssetCatalog {
       .filter((candidate) => candidate.id !== assetId && candidate.parentAssetIds.includes(assetId))
       .sort((a, b) => b.createdAt - a.createdAt)
     return { parents, children }
+  }
+
+  // ===== 应用记录（与素材目录共用同一个 SQLite 文件）=====
+
+  appDataGet(namespace: string, id: string): unknown {
+    return this.appData.get(namespace, id)
+  }
+
+  appDataGetAll(namespace: string): unknown[] {
+    return this.appData.getAll(namespace)
+  }
+
+  appDataGetMany(namespace: string, ids: string[]): unknown[] {
+    return [...this.appData.getMany(namespace, ids).values()]
+  }
+
+  appDataPut(namespace: string, id: string, value: unknown): void {
+    this.appData.put(namespace, { id, value })
+  }
+
+  appDataPutMany(namespace: string, records: Array<{ id: string; value: unknown }>): void {
+    this.appData.putMany(namespace, records)
+  }
+
+  appDataReplace(namespace: string, records: Array<{ id: string; value: unknown }>): void {
+    this.appData.replace(namespace, records)
+  }
+
+  appDataDelete(namespace: string, id: string): void {
+    this.appData.delete(namespace, id)
+  }
+
+  appDataDeleteMany(namespace: string, ids: string[]): void {
+    this.appData.deleteMany(namespace, ids)
+  }
+
+  appDataDeleteImageRecords(ids: string[]): void {
+    this.appData.deleteImageRecords(ids)
+  }
+
+  appDataClearImageRecords(): void {
+    this.appData.clearImageRecords()
+  }
+
+  appDataClear(namespace: string): void {
+    this.appData.clear(namespace)
+  }
+
+  appDataCount(namespace: string): number {
+    return this.appData.count(namespace)
+  }
+
+  appDataCounts(namespaces: string[]): Record<string, number> {
+    return this.appData.counts(namespaces)
+  }
+
+  appDataImportStores(stores: AppDataStoreMap): void {
+    this.appData.importStores(stores)
+  }
+
+  appDataCommitImportedRecords(records: {
+    images: unknown[]
+    thumbnails: unknown[]
+    tasks: unknown[]
+    replaceTasks?: boolean
+  }): void {
+    this.appData.commitImportedRecords(records)
+  }
+
+  appDataUpdateImageLocalPaths(mappings: Array<{ from: string; to: string }>): void {
+    this.appData.updateImageLocalPaths(mappings)
   }
 
   close(): void {

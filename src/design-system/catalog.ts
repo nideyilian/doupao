@@ -1105,6 +1105,12 @@ export const legacyComponentCoverage: LegacyComponentCoverage[] = [
     targets: ['Thumbnail', 'EmptyState'],
   },
   {
+    module: 'src/features/strategy/SopImageStack.tsx',
+    responsibility: 'SOP 列表生成结果叠层缩略图与 hover 大图预览',
+    decision: 'compose',
+    targets: ['Thumbnail', 'Popover'],
+  },
+  {
     module: 'src/features/strategy/SopCoverPickerDialog.tsx',
     responsibility: 'SOP 封面选择浮层',
     decision: 'compose',

@@ -129,4 +129,39 @@ describe('validateBackupArchive', () => {
       ),
     ).not.toThrow()
   })
+
+  it('keeps workspace images already present locally when the backup omits originals', () => {
+    const data = manifest({
+      version: 7,
+      imageRefs: {
+        'local-image': { available: true },
+      },
+      workspaceState: {
+        groups: [],
+        activeTabId: 'tab-a',
+        tabs: [
+          {
+            id: 'tab-a',
+            name: '标签 A',
+            groupId: null,
+            prompt: '',
+            inputImageIds: ['local-image'],
+            inputImageFolder: null,
+            params: { ...DEFAULT_PARAMS },
+            maskDraft: null,
+            maskEditorImageId: null,
+            customOutputPath: '',
+            taskIds: [],
+            createdAt: 1,
+            updatedAt: 1,
+            order: 0,
+          },
+        ],
+      },
+    })
+
+    const result = reconcileBackupWorkspaceImages(data, new Set(['local-image']))
+    expect(result.omittedImageCount).toBe(0)
+    expect(result.data.workspaceState?.tabs[0]?.inputImageIds).toEqual(['local-image'])
+  })
 })

@@ -1,4 +1,4 @@
-import type { GeneratedAsset, StoredImage } from '../types'
+import type { ExportData, GeneratedAsset, StoredImage } from '../types'
 import { isElectron } from './localSave'
 
 type ExportTaskRefs = {
@@ -8,7 +8,10 @@ type ExportTaskRefs = {
   streamPartialImageIds?: string[]
 }
 
-type ExportConversationRefs = { rounds?: Array<{ inputImageIds?: string[] }> }
+type ExportConversationRefs = {
+  rounds?: Array<{ inputImageIds?: string[]; maskTargetImageId?: string | null; maskImageId?: string | null }>
+  messages?: Array<{ inputImageIds?: string[]; maskTargetImageId?: string | null; maskImageId?: string | null }>
+}
 
 type ExportWorkspaceRefs = {
   inputImages?: Array<{ id: string }>
@@ -32,7 +35,16 @@ export function collectReferencedExportImageIds(
     add(task.streamPartialImageIds)
   }
   for (const conversation of conversations) {
-    for (const round of conversation.rounds ?? []) add(round.inputImageIds)
+    for (const round of conversation.rounds ?? []) {
+      add(round.inputImageIds)
+      if (round.maskTargetImageId) ids.add(round.maskTargetImageId)
+      if (round.maskImageId) ids.add(round.maskImageId)
+    }
+    for (const message of conversation.messages ?? []) {
+      add(message.inputImageIds)
+      if (message.maskTargetImageId) ids.add(message.maskTargetImageId)
+      if (message.maskImageId) ids.add(message.maskImageId)
+    }
   }
   for (const tab of workspaceTabs) {
     add(tab.inputImages?.map((image) => image.id))
@@ -60,15 +72,14 @@ export type ElectronImageExportEntry = {
 
 export type ElectronImageExportPlan = {
   entries: ElectronImageExportEntry[]
-  /** 因记录缺失 / 无本地文件且无法保存 / 格式不受支持而被跳过的图片数。 */
+  /** 因记录缺失 / 无本地文件且无法保存 / 格式不受支持而无法导出的图片。 */
   omittedCount: number
+  omittedImageIds: string[]
 }
 
 /**
  * 为备份导出准备图片条目。
- * 单张图片缺失（IndexedDB 无记录 / 无本地文件且 dataUrl 不可用 / 格式异常）时**跳过**而不是中断整批导出——
- * 备份必须尽量完整可用；个别丢失的图片不应让用户无法导出任何数据。
- * 跳过数量通过 omittedCount 返回，由调用方在结果提示中告知用户。
+ * 单张图片缺失时记录 imageId，由调用方决定是否中止整个原图备份。
  */
 export async function buildElectronImageExportEntries(
   ids: string[],
@@ -76,13 +87,14 @@ export async function buildElectronImageExportEntries(
 ): Promise<ElectronImageExportPlan> {
   const entries: ElectronImageExportEntry[] = []
   let omittedCount = 0
+  const omittedImageIds: string[] = []
   // 动态导入避免循环依赖
   const { saveRawCacheImageToLocal } = await import('./localSave')
   for (const id of ids) {
     const image = await getImage(id)
     if (!image) {
-      // 记录已不存在（历史数据丢失/清理）：跳过并计数，不阻塞整批导出
       omittedCount++
+      omittedImageIds.push(id)
       continue
     }
     let localPath = image.localPath
@@ -91,15 +103,15 @@ export async function buildElectronImageExportEntries(
       localPath = (await saveRawCacheImageToLocal(id, image.dataUrl)) || undefined
     }
     if (!localPath) {
-      // 既没有本地文件也没有 dataUrl，跳过该图片（继续导出其余内容）
       omittedCount++
+      omittedImageIds.push(id)
       continue
     }
     const match = localPath.match(/\.([a-zA-Z0-9]+)$/)
     const ext = match?.[1].toLowerCase()
     if (!ext || !['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
-      // 个别文件格式异常不阻塞整批导出
       omittedCount++
+      omittedImageIds.push(id)
       continue
     }
     entries.push({
@@ -109,5 +121,25 @@ export async function buildElectronImageExportEntries(
       createdAt: image.createdAt,
     })
   }
-  return { entries, omittedCount }
+  return { entries, omittedCount, omittedImageIds }
+}
+
+export async function buildExportImageRefs(
+  ids: string[],
+  getImage: (id: string) => Promise<StoredImage | undefined>,
+): Promise<NonNullable<ExportData['imageRefs']>> {
+  const refs: NonNullable<ExportData['imageRefs']> = {}
+  for (const id of ids) {
+    const image = await getImage(id)
+    refs[id] = {
+      available: Boolean(image),
+      createdAt: image?.createdAt,
+      source: image?.source,
+      width: image?.width,
+      height: image?.height,
+      mimeType: image?.mimeType,
+      byteSize: image?.byteSize,
+    }
+  }
+  return refs
 }

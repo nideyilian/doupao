@@ -18,16 +18,15 @@ describe('migrateLegacyImages', () => {
     expect(writes).toEqual([{ ...legacy, localPath: '/cache/legacy-a.png', dataUrl: undefined }])
   })
 
-  it('preserves IndexedDB data when the local write fails', async () => {
+  it('fails promptly and preserves IndexedDB data when the local write fails', async () => {
     const replaceImage = vi.fn()
-    let calls = 0
-    // readBatch 只返回一批数据：保存失败应跳过该图并正常结束（不再重复读取形成死循环）
-    const migrated = await migrateLegacyImages({
-      readBatch: async () => (calls++ === 0 ? [legacy] : []),
-      saveImage: async () => null,
-      replaceImage,
-    })
-    expect(migrated).toBe(0)
+    await expect(
+      migrateLegacyImages({
+        readBatch: async () => [legacy],
+        saveImage: async () => null,
+        replaceImage,
+      }),
+    ).rejects.toThrow('legacy-a')
     expect(replaceImage).not.toHaveBeenCalled()
   })
 })

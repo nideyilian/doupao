@@ -215,7 +215,7 @@ app.on('web-contents-created', (_event, contents) => {
   hardenWebContents(contents)
 })
 
-const iconPath = path.join(__dirname, '../dist/app-icon.png')
+const iconPath = path.join(__dirname, '../dist/icon.ico')
 const appIcon = existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined
 
 autoUpdater.autoDownload = true

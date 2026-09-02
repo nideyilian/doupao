@@ -13,30 +13,28 @@ export async function migrateLegacyImages(deps: ImageStorageMigrationDeps): Prom
   const batchSize = deps.batchSize ?? 4
   const yieldToEventLoop = deps.yieldToEventLoop ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
   let migrated = 0
-  let failed = 0
   while (true) {
     const images = await deps.readBatch(batchSize)
-    if (images.length === 0) {
-      if (failed > 0) console.warn(`[image-migration] ${failed} 张图片迁移失败，已跳过`)
-      return migrated
-    }
+    if (images.length === 0) return migrated
+    let batchError: Error | null = null
     for (const image of images) {
       if (!image.dataUrl) continue
       try {
         const localPath = await deps.saveImage(image)
         if (!localPath) {
-          failed++
-          console.warn(`[image-migration] 图片 ${image.id} 保存失败，跳过`)
+          batchError ??= new Error(`图片 ${image.id} 保存失败`)
+          console.warn(`[image-migration] 图片 ${image.id} 保存失败`)
           continue
         }
         await deps.replaceImage({ ...image, localPath, dataUrl: undefined })
         migrated++
         await deps.onProgress?.(migrated)
       } catch (error) {
-        failed++
-        console.warn(`[image-migration] 图片 ${image.id} 迁移异常，跳过`, error)
+        batchError ??= error instanceof Error ? error : new Error(String(error))
+        console.warn(`[image-migration] 图片 ${image.id} 迁移异常`, error)
       }
     }
+    if (batchError) throw batchError
     await yieldToEventLoop()
   }
 }

@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { act, create, type ReactTestInstance } from 'react-test-renderer'
+import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import SopTextEditor, { findSopTextMatches, scrollSopTextToMatch } from './SopTextEditor'
 
@@ -33,6 +34,30 @@ const storeMocks = vi.hoisted(() => ({
 
 vi.mock('../../store', () => storeMocks)
 vi.mock('../../lib/agentApi', () => agentApiMocks)
+vi.mock('../../design-system', async () => {
+  const actual = await vi.importActual<typeof import('../../design-system')>('../../design-system')
+  return {
+    ...actual,
+    Dialog: ({
+      open,
+      title,
+      description,
+      children,
+    }: {
+      open: boolean
+      title: ReactNode
+      description?: ReactNode
+      children: ReactNode
+    }) =>
+      open ? (
+        <div role="dialog">
+          <h2>{title}</h2>
+          {description && <p>{description}</p>}
+          {children}
+        </div>
+      ) : null,
+  }
+})
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -42,6 +67,14 @@ function textContent(node: ReactTestInstance): string {
 
 function findButton(root: ReactTestInstance, label: string) {
   return root.findAllByType('button').find((button) => textContent(button).includes(label))
+}
+
+function openQuickMenu(root: ReactTestInstance) {
+  const trigger = root.findAllByType('button').find((button) => {
+    return String(button.props['aria-label']).startsWith('选择快捷指令')
+  })
+  if (!trigger) throw new Error('快捷指令入口未渲染')
+  act(() => trigger.props.onClick())
 }
 
 describe('findSopTextMatches', () => {
@@ -105,6 +138,55 @@ describe('SopTextEditor chat and fullscreen', () => {
     expect(findButton(renderer.root, '全屏编辑')).toBeUndefined()
     renderer.unmount()
   })
+
+  it('replaces the current match or all matches without changing unrelated text', () => {
+    const replaceCurrent = vi.fn()
+    let renderer!: ReturnType<typeof create>
+    act(() => {
+      renderer = create(
+        <SopTextEditor documentId="sop-current" value={'步骤一\n步骤二\n步骤一'} onChange={replaceCurrent} />,
+      )
+    })
+
+    const searchInput = renderer.root.findByProps({ 'aria-label': '查找正文' })
+    act(() => renderer.root.findByProps({ 'aria-label': '替换操作' }).props.onClick())
+    const replaceInput = renderer.root.findByProps({ 'aria-label': '替换为' })
+    act(() => searchInput.props.onChange({ target: { value: '步骤' } }))
+    act(() => replaceInput.props.onChange({ target: { value: '阶段' } }))
+    act(() => renderer.root.findByProps({ 'aria-label': '替换当前匹配' }).props.onClick())
+
+    expect(replaceCurrent).toHaveBeenLastCalledWith('阶段一\n步骤二\n步骤一')
+    renderer.unmount()
+
+    const replaceAll = vi.fn()
+    act(() => {
+      renderer = create(<SopTextEditor documentId="sop-all" value={'步骤一\n步骤二\n步骤一'} onChange={replaceAll} />)
+    })
+    const allSearchInput = renderer.root.findByProps({ 'aria-label': '查找正文' })
+    act(() => renderer.root.findByProps({ 'aria-label': '替换操作' }).props.onClick())
+    const allReplaceInput = renderer.root.findByProps({ 'aria-label': '替换为' })
+    act(() => allSearchInput.props.onChange({ target: { value: '步骤' } }))
+    act(() => allReplaceInput.props.onChange({ target: { value: '阶段' } }))
+    act(() => renderer.root.findByProps({ 'aria-label': '替换全部匹配' }).props.onClick())
+
+    expect(replaceAll).toHaveBeenLastCalledWith('阶段一\n阶段二\n阶段一')
+    renderer.unmount()
+  })
+
+  it('keeps non-SOP formatting actions out of the primary toolbar', () => {
+    let renderer!: ReturnType<typeof create>
+    act(() => {
+      renderer = create(<SopTextEditor documentId="sop-tools" value="# 普通 SOP" onChange={vi.fn()} />)
+    })
+
+    expect(findButton(renderer.root, '引用')).toBeUndefined()
+    expect(findButton(renderer.root, '代码块')).toBeUndefined()
+    expect(renderer.root.findByProps({ 'aria-label': '自动分段' })).toBeTruthy()
+    expect(renderer.root.findByProps({ 'aria-label': '清理粘贴' })).toBeTruthy()
+    expect(renderer.root.findByProps({ 'aria-label': '关闭自动换行' })).toBeTruthy()
+    expect(renderer.root.findByProps({ 'aria-label': '复制正文' })).toBeTruthy()
+    renderer.unmount()
+  })
 })
 
 describe('SopTextEditor AI instructions', () => {
@@ -123,9 +205,14 @@ describe('SopTextEditor AI instructions', () => {
     })
 
     // 指令模板注入右侧 AI 对话输入框，正文未被直接改写
+    openQuickMenu(renderer.root)
     act(() => findButton(renderer.root, '将具体词泛化')!.props.onClick())
     const chatInput = renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
     expect(chatInput.props.value).toContain('具体描述词')
+    expect(chatInput.props.value).toContain('降低大批量生图时的重复度')
+    expect(chatInput.props.value).toContain('不得把具体词转换成变量')
+    expect(chatInput.props.value).not.toContain('转为 {{变量}}')
+    expect(chatInput.props.value).not.toContain('在文末「可变项：」区块给出')
     expect(agentApiMocks.reviseSopDocument).not.toHaveBeenCalled()
     expect(renderer.root.findByProps({ 'aria-label': 'SOP 正文' }).props.value).toBe('# 普通 SOP\n\n1. 执行\n2. 验收')
     expect(onChange).not.toHaveBeenCalled()
@@ -146,6 +233,7 @@ describe('SopTextEditor AI instructions', () => {
 
     expect(findButton(renderer.root, 'AI 检查')).toBeTruthy()
     expect(findButton(renderer.root, 'AI 对话')).toBeUndefined()
+    openQuickMenu(renderer.root)
     expect(findButton(renderer.root, '将具体词泛化')).toBeTruthy()
 
     await act(async () => {
@@ -175,6 +263,7 @@ describe('SopTextEditor AI instructions', () => {
         renderer = create(<SopTextEditor documentId="sop-1" value={'# 普通 SOP\n\n1. 执行'} onChange={vi.fn()} />)
       })
 
+      openQuickMenu(renderer.root)
       expect(findButton(renderer.root, buttonLabel)).toBeTruthy()
       act(() => findButton(renderer.root, buttonLabel)!.props.onClick())
       expect(renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' }).props.value.length).toBeGreaterThan(
@@ -200,15 +289,19 @@ describe('SopTextEditor element pool instructions', () => {
       renderer = create(<SopTextEditor documentId="sop-1" value={ELEMENT_POOL_SOP} onChange={vi.fn()} />)
     })
 
-    expect(findButton(renderer.root, '选项泛化')).toBeTruthy()
+    openQuickMenu(renderer.root)
+    expect(findButton(renderer.root, '将具体词泛化')).toBeTruthy()
+    expect(findButton(renderer.root, '选项泛化')).toBeUndefined()
     expect(findButton(renderer.root, '衍生选项')).toBeTruthy()
     expect(findButton(renderer.root, '改写选项')).toBeTruthy()
     expect(findButton(renderer.root, '池子诊断')).toBeTruthy()
     expect(findButton(renderer.root, '试跑验证')).toBeTruthy()
-    expect(findButton(renderer.root, '精简压缩')).toBeUndefined()
+    expect(findButton(renderer.root, '精简压缩')).toBeTruthy()
 
-    // 点击「选项泛化」→ 可编辑模板注入右侧 AI 对话输入框
-    act(() => findButton(renderer.root, '选项泛化')!.props.onClick())
+    // 点击「将具体词泛化」→ 先填写参数，再把生成后的指令注入右侧 AI 对话输入框
+    act(() => findButton(renderer.root, '将具体词泛化')!.props.onClick())
+    expect(findButton(renderer.root, '填入输入框')).toBeTruthy()
+    act(() => findButton(renderer.root, '填入输入框')!.props.onClick())
     const chatInput = renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
     expect(chatInput.props.value).toContain('上钻泛化')
     expect(chatInput.props.value).toContain('全部层')
@@ -244,6 +337,7 @@ describe('SopTextEditor element pool instructions', () => {
       renderer = create(<SopTextEditor documentId="sop-1" value="# 普通 SOP\n\n1. 执行" onChange={vi.fn()} />)
     })
 
+    openQuickMenu(renderer.root)
     expect(findButton(renderer.root, '将具体词泛化')).toBeTruthy()
     expect(findButton(renderer.root, '选项泛化')).toBeUndefined()
     renderer.unmount()

@@ -1,3 +1,5 @@
+import { createPortal } from 'react-dom'
+
 export interface HoverPreviewState {
   imageId: string
   src: string
@@ -11,10 +13,11 @@ interface Props {
   preview: HoverPreviewState
   sizeText?: string
   zIndex?: number
+  portal?: boolean
 }
 
-export default function HoverImagePreview({ preview, sizeText, zIndex = 70 }: Props) {
-  return (
+export default function HoverImagePreview({ preview, sizeText, zIndex = 110, portal = false }: Props) {
+  const content = (
     <div
       className="pointer-events-none fixed hidden overflow-hidden rounded-ds-lg border border-white/15 bg-black/85 p-2 shadow-2xl backdrop-blur-md md:block"
       style={{
@@ -36,4 +39,7 @@ export default function HoverImagePreview({ preview, sizeText, zIndex = 70 }: Pr
       )}
     </div>
   )
+
+  if (!portal || import.meta.env.MODE === 'test' || typeof document === 'undefined' || !document.body) return content
+  return createPortal(content, document.body)
 }

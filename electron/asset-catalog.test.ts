@@ -197,6 +197,19 @@ describe('SQLite asset catalog', () => {
     expect(catalog.size()).toBe(1)
   })
 
+  it('persists task cleanup in the same SQLite transaction as asset purge', () => {
+    const catalog = new AssetCatalog(':memory:')
+    catalogs.push(catalog)
+    catalog.upsertAssets([{ asset: makeAsset('a', '橘猫', 30) }])
+
+    const task = { id: 'task-a', outputImages: [] }
+    const result = catalog.purgeAssets(['a'], 500, [{ id: task.id, value: task }])
+
+    expect(result.purged).toEqual(['a'])
+    expect(catalog.appDataGet('tasks', task.id)).toEqual(task)
+    expect(catalog.getTombstonesByImageIds(['hash-a']).has('hash-a')).toBe(true)
+  })
+
   it('purges duplicate-imageId assets with one tombstone and tolerates existing tombstones', () => {
     const catalog = new AssetCatalog(':memory:')
     catalogs.push(catalog)
@@ -292,6 +305,28 @@ describe('SQLite asset catalog', () => {
     expect(catalog.getMeta('flag')).toBeNull()
     catalog.setMeta('flag', '1')
     expect(catalog.getMeta('flag')).toBe('1')
+  })
+
+  it('clears catalog records, organization tables and usage events together', () => {
+    const catalog = new AssetCatalog(':memory:')
+    catalogs.push(catalog)
+    catalog.upsertAssets([{ asset: makeAsset('a', 'one', 30) }])
+    catalog.putCollections([
+      { id: 'c1', name: '项目', normalizedName: '项目', parentId: null, order: 0, createdAt: 1, updatedAt: 1 },
+    ])
+    catalog.putTags([
+      { id: 't1', name: '标签', normalizedName: '标签', parentId: null, order: 0, createdAt: 1, updatedAt: 1 },
+    ])
+    catalog.putTombstones([{ id: 'img-old', imageId: 'img-old', purgedAt: 1, lastOriginOccurredAt: 1 }])
+    catalog.putUsageEvents([{ id: 'usage-1', assetId: 'a', action: 'view', target: 'gallery', occurredAt: 1 }])
+
+    catalog.clear()
+
+    expect(catalog.size()).toBe(0)
+    expect(catalog.getAllCollections()).toEqual([])
+    expect(catalog.getAllTags()).toEqual([])
+    expect(catalog.getAllTombstones()).toEqual([])
+    expect(catalog.getAllUsageEvents()).toEqual([])
   })
 
   it('detects near duplicates by perceptual hash Hamming distance', () => {

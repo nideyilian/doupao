@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { createDesktopJsonStorage } from './lib/desktopJsonStorage'
 
 export type WatermarkAnchor =
   | 'top-left'
@@ -159,6 +160,9 @@ export const usePostprocessStore = create<PostprocessState>()(
     {
       name: 'doupao-postprocess-storage',
       version: 1,
+      storage: createDesktopJsonStorage('postprocess', {
+        read: async () => localStorage.getItem('doupao-postprocess-storage'),
+      }),
     },
   ),
 )

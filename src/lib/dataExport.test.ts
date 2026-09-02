@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildElectronImageExportEntries, collectReferencedExportImageIds } from './dataExport'
+import { buildElectronImageExportEntries, buildExportImageRefs, collectReferencedExportImageIds } from './dataExport'
 
 describe('data export planning', () => {
   it('collects referenced IDs once in first-seen order', () => {
@@ -45,6 +45,45 @@ describe('data export planning', () => {
     ])
   })
 
+  it('builds metadata-only image references without including file paths', async () => {
+    const refs = await buildExportImageRefs(['image-a', 'missing-image'], async (id) =>
+      id === 'image-a'
+        ? {
+            id,
+            localPath: 'C:\\cache\\image-a.png',
+            createdAt: 10,
+            source: 'generated',
+            width: 100,
+            height: 80,
+            mimeType: 'image/png',
+            byteSize: 1234,
+          }
+        : undefined,
+    )
+
+    expect(refs).toEqual({
+      'image-a': {
+        available: true,
+        createdAt: 10,
+        source: 'generated',
+        width: 100,
+        height: 80,
+        mimeType: 'image/png',
+        byteSize: 1234,
+      },
+      'missing-image': {
+        available: false,
+        createdAt: undefined,
+        source: undefined,
+        width: undefined,
+        height: undefined,
+        mimeType: undefined,
+        byteSize: undefined,
+      },
+    })
+    expect(JSON.stringify(refs)).not.toContain('localPath')
+  })
+
   it('builds entries sequentially from local metadata', async () => {
     const plan = await buildElectronImageExportEntries(['output-a'], async () => ({
       id: 'output-a',
@@ -61,6 +100,7 @@ describe('data export planning', () => {
         },
       ],
       omittedCount: 0,
+      omittedImageIds: [],
     })
   })
 
@@ -72,6 +112,7 @@ describe('data export planning', () => {
     }))
     expect(plan.entries).toEqual([])
     expect(plan.omittedCount).toBe(1)
+    expect(plan.omittedImageIds).toEqual(['output-a'])
   })
 
   it('skips missing image records instead of aborting the whole export', async () => {
@@ -89,6 +130,7 @@ describe('data export planning', () => {
       },
     ])
     expect(plan.omittedCount).toBe(1)
+    expect(plan.omittedImageIds).toEqual(['missing-a'])
   })
 
   it('skips records with unsupported file formats instead of aborting the whole export', async () => {
@@ -99,5 +141,6 @@ describe('data export planning', () => {
     }))
     expect(plan.entries).toEqual([])
     expect(plan.omittedCount).toBe(1)
+    expect(plan.omittedImageIds).toEqual(['odd-file'])
   })
 })

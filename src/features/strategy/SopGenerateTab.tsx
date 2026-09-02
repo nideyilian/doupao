@@ -265,7 +265,9 @@ export default function SopGenerateTab({
                           ? '已达上限'
                           : '添加图片'}
                     </span>
-                    <span className="sop-center-quiet-text mt-0.5 block text-xs">支持 Ctrl+V 粘贴 · 单张 ≤ 10 MiB</span>
+                    <span className="sop-center-quiet-text mt-0.5 block text-xs">
+                      支持 Ctrl+V 粘贴 · 原图单张 ≤ 10 MiB · 发送前自动压缩大图
+                    </span>
                   </span>
                 </label>
                 {referenceImages.map((image, index) => (

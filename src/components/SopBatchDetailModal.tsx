@@ -30,6 +30,7 @@ import HoverImagePreview, { type HoverPreviewState } from './HoverImagePreview'
 import ViewportTooltip from './ViewportTooltip'
 import { isModalBackdropEvent } from '../lib/modalBackdrop'
 import TaskParamSummary from './TaskParamSummary'
+import { groupSopBatchTasks } from '../lib/sopBatchTaskGrouping'
 import { useTooltip } from '../hooks/useTooltip'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { isElectron, openInExplorer } from '../lib/localSave'
@@ -203,6 +204,7 @@ export default function SopBatchDetailModal({
   onOpenImage: (imageId: string) => void
 }) {
   const modalRef = useRef<HTMLDivElement>(null)
+  const allTasks = useStore((state) => state.tasks)
   const lightboxImageId = useStore((state) => state.lightboxImageId)
   const showToast = useStore((state) => state.showToast)
   const workspaceTabs = useStore((state) => state.workspaceTabs)
@@ -219,8 +221,18 @@ export default function SopBatchDetailModal({
   const [imageViewSize, setImageViewSize] = useState(getStoredSopBatchImageViewSize)
   const [copiedPromptId, setCopiedPromptId] = useState<string | null>(null)
   const copyFeedbackTimerRef = useRef<number | null>(null)
-  const allResults = useMemo(() => tasks.flatMap(getTaskResultItems), [tasks])
-  const isRunning = tasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable)
+  const batchGroupId = tasks[0]?.sopBatch?.snapshotId || tasks[0]?.sopBatch?.batchId
+  const currentTasks = useMemo(() => {
+    if (!batchGroupId) return tasks
+    const batch = groupSopBatchTasks(allTasks).find(
+      (item) => item.kind === 'sop-batch' && item.groupId === batchGroupId,
+    )
+    return batch?.kind === 'sop-batch' ? batch.tasks : tasks
+  }, [allTasks, batchGroupId, tasks])
+  const allResults = useMemo(() => currentTasks.flatMap(getTaskResultItems), [currentTasks])
+  const isRunning = currentTasks.some(
+    (task) => task.status === 'running' || task.falRecoverable || task.customRecoverable,
+  )
   const modalSizeStyle = largeView
     ? LARGE_MODAL_SIZE_STYLE
     : {
@@ -268,7 +280,7 @@ export default function SopBatchDetailModal({
     try {
       // 优先定位本批次首张输出图在树状工作区目录中的落盘副本（images/分组/标签页/...，硬链接），
       // 让用户直接看到按工作区树组织的文件夹结构；无落盘记录（如旧库素材）时回退到素材库原图（cache-images）。
-      const firstImageId = tasks.flatMap((task) => task.outputImages ?? [])[0]
+      const firstImageId = currentTasks.flatMap((task) => task.outputImages ?? [])[0]
       if (!firstImageId) {
         showToast('该批次没有图片', 'error')
         return
@@ -276,7 +288,7 @@ export default function SopBatchDetailModal({
       const { getImage, resolveImageFromCatalog } = await import('../lib/db')
       // IndexedDB 缺图（如从备份/素材库恢复后）时回退到主进程 SQLite 素材目录
       const image = (await getImage(firstImageId)) ?? (await resolveImageFromCatalog(firstImageId))
-      const targetPath = findTaskSavedImagePath(tasks, firstImageId)?.path ?? image?.localPath
+      const targetPath = findTaskSavedImagePath(currentTasks, firstImageId)?.path ?? image?.localPath
       if (!targetPath) {
         showToast('未找到本地原图', 'error')
         return
@@ -293,7 +305,7 @@ export default function SopBatchDetailModal({
 
   useEffect(() => {
     let active = true
-    const snapshotId = tasks[0]?.sopBatch?.snapshotId
+    const snapshotId = currentTasks[0]?.sopBatch?.snapshotId
     if (!snapshotId) {
       setSnapshot(null)
       return
@@ -304,7 +316,7 @@ export default function SopBatchDetailModal({
     return () => {
       active = false
     }
-  }, [tasks])
+  }, [currentTasks])
 
   const updateHoverPreview = (
     image: PreviewImage,
@@ -389,7 +401,7 @@ export default function SopBatchDetailModal({
                 {sopName}
               </h2>
               <p className="mt-1 text-xs text-ds-muted">
-                {tasks.length} 条提示词 · {allResults.length} 张结果
+                {currentTasks.length} 条提示词 · {allResults.length} 张结果
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 sm:justify-end">
@@ -404,7 +416,7 @@ export default function SopBatchDetailModal({
               </button>
               <button
                 type="button"
-                onClick={() => void rerunSopBatchTasks(tasks)}
+                onClick={() => void rerunSopBatchTasks(currentTasks)}
                 disabled={isRunning}
                 className="flex h-ds-control-lg items-center gap-1.5 rounded-lg px-3 text-xs font-medium text-ds-primary transition hover:bg-ds-primary-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-focus disabled:cursor-not-allowed disabled:opacity-40 dark:text-ds-primary dark:hover:bg-ds-primary/30"
               >
@@ -500,7 +512,7 @@ export default function SopBatchDetailModal({
                 </div>
               </details>
             )}
-            {tasks[0] && (
+            {currentTasks[0] && (
               <section
                 className="mb-4 rounded-ds-lg border border-ds-border bg-ds-surface px-3 py-2.5 dark:border-ds-border dark:bg-ds-surface"
                 aria-label="SOP 批量任务参数"
@@ -509,12 +521,12 @@ export default function SopBatchDetailModal({
                   <SlidersHorizontal size={14} className="text-ds-muted" />
                   <h3 className="text-xs font-medium text-ds-text dark:text-ds-text-subtle">批次参数</h3>
                 </div>
-                <TaskParamSummary task={tasks[0]} className="hide-scrollbar mask-edge-r pr-2" />
+                <TaskParamSummary task={currentTasks[0]} className="hide-scrollbar mask-edge-r pr-2" />
               </section>
             )}
             {viewMode === 'grouped' ? (
               <div data-testid="sop-batch-results-grid" style={imageGridStyle} className="grid items-start gap-3">
-                {tasks.map((task) => {
+                {currentTasks.map((task) => {
                   const results = getTaskResultItems(task)
                   const promptIndex = task.sopBatch?.promptIndex ?? 1
                   const promptCopied = copiedPromptId === task.id
@@ -578,7 +590,7 @@ export default function SopBatchDetailModal({
           </div>
         </div>
       </div>
-      {hoverPreview && <HoverImagePreview preview={hoverPreview} sizeText={hoverPreviewSizeText} zIndex={90} />}
+      {hoverPreview && <HoverImagePreview preview={hoverPreview} sizeText={hoverPreviewSizeText} portal zIndex={90} />}
     </>
   )
 }
