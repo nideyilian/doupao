@@ -1,4 +1,4 @@
-import { getAgentTextApiProfile } from '../../lib/apiProfiles'
+import { getAgentTextApiProfile, getAgentTextProtocol } from '../../lib/apiProfiles'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from '../../lib/devProxy'
 import { useStore } from '../../store'
 import type { KnowledgeInsight } from './types'
@@ -21,6 +21,17 @@ function extractResponseText(payload: unknown) {
     }
   }
   return parts.join('\n')
+}
+
+function extractChatCompletionText(payload: unknown) {
+  if (!payload || typeof payload !== 'object') return ''
+  const choices = (payload as { choices?: unknown[] }).choices
+  const firstChoice = Array.isArray(choices) ? choices[0] : null
+  if (!firstChoice || typeof firstChoice !== 'object') return ''
+  const message = (firstChoice as { message?: unknown }).message
+  if (!message || typeof message !== 'object') return ''
+  const content = (message as { content?: unknown }).content
+  return typeof content === 'string' ? content : ''
 }
 
 function parseInsights(text: string): InsightInput[] {
@@ -55,10 +66,11 @@ async function analyzeChunk(images: string[], context: { product: string; channe
   const settings = useStore.getState().settings
   const profile = getAgentTextApiProfile(settings)
   if (!profile.apiKey.trim()) throw new Error('管理员尚未配置视觉分析 API 密钥')
-  if (profile.provider !== 'openai' || profile.apiMode !== 'responses') {
-    throw new Error('视觉分析需要管理员配置 OpenAI Responses 兼容模型')
+  if (profile.provider !== 'openai') {
+    throw new Error('视觉分析需要管理员配置 OpenAI 兼容模型')
   }
   const proxy = readClientDevProxyConfig()
+  const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
   const content: Array<Record<string, string>> = [
     {
       type: 'input_text',
@@ -76,7 +88,12 @@ async function analyzeChunk(images: string[], context: { product: string; channe
   for (const image of images) content.push({ type: 'input_image', image_url: image })
 
   const response = await fetch(
-    buildApiUrl(profile.baseUrl, 'responses', proxy, shouldUseApiProxy(profile.apiProxy, proxy)),
+    buildApiUrl(
+      profile.baseUrl,
+      useChatCompletions ? 'chat/completions' : 'responses',
+      proxy,
+      shouldUseApiProxy(profile.apiProxy, proxy),
+    ),
     {
       method: 'POST',
       headers: {
@@ -84,19 +101,38 @@ async function analyzeChunk(images: string[], context: { product: string; channe
         'Content-Type': 'application/json',
       },
       cache: 'no-store',
-      body: JSON.stringify({
-        model: profile.model || settings.model,
-        instructions: '只执行广告图片分析与结构化知识提炼，不生成图片，不调用工具。',
-        input: [{ role: 'user', content }],
-        max_output_tokens: 2000,
-      }),
+      body: JSON.stringify(
+        useChatCompletions
+          ? {
+              model: profile.model || settings.model,
+              messages: [
+                { role: 'system', content: '只执行广告图片分析与结构化知识提炼，不生成图片，不调用工具。' },
+                {
+                  role: 'user',
+                  content: content.map((part) =>
+                    part.type === 'input_image'
+                      ? { type: 'image_url', image_url: { url: part.image_url } }
+                      : { type: 'text', text: part.text },
+                  ),
+                },
+              ],
+              max_tokens: 2000,
+            }
+          : {
+              model: profile.model || settings.model,
+              instructions: '只执行广告图片分析与结构化知识提炼，不生成图片，不调用工具。',
+              input: [{ role: 'user', content }],
+              max_output_tokens: 2000,
+            },
+      ),
     },
   )
   if (!response.ok) {
     const body = await response.text()
     throw new Error(`视觉分析失败（${response.status}）：${body.slice(0, 180)}`)
   }
-  return parseInsights(extractResponseText(await response.json()))
+  const payload = await response.json()
+  return parseInsights(useChatCompletions ? extractChatCompletionText(payload) : extractResponseText(payload))
 }
 
 export async function analyzeKnowledgeFolder(

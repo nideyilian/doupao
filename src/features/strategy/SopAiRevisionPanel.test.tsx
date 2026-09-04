@@ -22,6 +22,8 @@ const agentApiMocks = vi.hoisted(() => ({
 }))
 const storeMocks = vi.hoisted(() => ({
   showToast: vi.fn(),
+  createInputImageFromFile: vi.fn(),
+  ensureImageCached: vi.fn(),
   useStore: vi.fn((selector: (state: unknown) => unknown) =>
     selector({
       settings: { agentTextProtocol: 'responses' },
@@ -272,6 +274,82 @@ describe('SopAiRevisionPanel variable workspace', () => {
 })
 
 describe('SopAiRevisionPanel custom quick instructions', () => {
+  it('adds pasted images to the pending attachments and sends them with the revision request', async () => {
+    const file = new File(['image'], '参考图.png', { type: 'image/png' })
+    storeMocks.createInputImageFromFile.mockResolvedValue({
+      id: 'pasted-image',
+      dataUrl: 'data:image/png;base64,pasted',
+    })
+    storeMocks.ensureImageCached.mockResolvedValue('data:image/png;base64,pasted')
+    agentApiMocks.reviseSopDocument.mockResolvedValue({
+      reply: '已参考图片优化。',
+      content: '# 普通 SOP\n\n1. 执行',
+      changeSummary: ['参考附件'],
+    })
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({ value: '# 普通 SOP\n\n1. 执行' })
+    })
+
+    const chatInput = result.renderer.root.findByProps({ 'aria-label': '向 AI 描述 SOP 修改要求' })
+    await act(async () => {
+      chatInput.props.onPaste({
+        clipboardData: {
+          items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+        },
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(result.renderer.root.findByProps({ alt: '待发送图片 1：参考图.png' })).toBeTruthy()
+    act(() => chatInput.props.onChange({ target: { value: '根据图片调整风格' } }))
+    await act(async () => {
+      result.renderer.root.findByProps({ 'aria-label': '发送 SOP 修改要求' }).props.onClick()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(agentApiMocks.reviseSopDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: expect.arrayContaining([
+          expect.objectContaining({
+            text: '根据图片调整风格',
+            imageDataUrls: ['data:image/png;base64,pasted'],
+          }),
+        ]),
+      }),
+    )
+    expect(result.renderer.root.findByProps({ className: 'sop-ai-chat__message-attachments' })).toBeTruthy()
+    result.renderer.unmount()
+  })
+
+  it('adds an image dragged from the app into the pending attachments', async () => {
+    storeMocks.ensureImageCached.mockResolvedValue('data:image/png;base64,dragged')
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({ value: '# 普通 SOP\n\n1. 执行' })
+    })
+    const composer = result.renderer.root.findByProps({ className: 'sop-ai-chat__composer' })
+
+    await act(async () => {
+      composer.props.onDrop({
+        dataTransfer: {
+          types: ['text/plain'],
+          files: [],
+          getData: (type: string) => (type === 'text/plain' ? 'agent-image:dragged-image' : ''),
+        },
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(storeMocks.ensureImageCached).toHaveBeenCalledWith('dragged-image')
+    expect(result.renderer.root.findByProps({ alt: '待发送图片 1：拖入图片 1' })).toBeTruthy()
+    result.renderer.unmount()
+  })
+
   it('restores custom instructions from localStorage and fills the composer when clicked', () => {
     window.localStorage.setItem(
       'doupao.sop-custom-quick-instructions',

@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
+} from 'react'
 import { Button, Checkbox, Dialog, IconButton, SelectField, TextArea, TextField } from '../../design-system'
 import {
   CheckCircleIcon as CheckCircle,
@@ -6,6 +13,7 @@ import {
   CopyIcon as Copy,
   EditIcon as Edit,
   HistoryIcon as History,
+  ImagePlusIcon as ImagePlus,
   LoaderCircleIcon as Loader,
   PlayIcon as Play,
   PlusIcon as Plus,
@@ -17,6 +25,7 @@ import {
   SparklesIcon as Sparkles,
   TagsIcon as Tags,
   TrashIcon as Trash,
+  XIcon as X,
 } from '../../design-system/icons'
 import {
   reviseSopDocument,
@@ -28,7 +37,9 @@ import {
 import { getAgentTextApiProfile, validateApiProfile } from '../../lib/apiProfiles'
 import { useAppDialog } from '../../hooks/useAppDialog'
 import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
-import { useStore } from '../../store'
+import { createInputImageFromFile, ensureImageCached, useStore } from '../../store'
+import { getImageThumbnail } from '../../lib/db'
+import { compressSopReferenceImageIfNeeded } from '../../lib/sopReferenceImageCompression'
 import { parseVariablePrompt } from '../../lib/variablePrompt'
 import {
   DEFAULT_VARIABLE_TYPE,
@@ -48,6 +59,7 @@ import {
   saveSopAiRevisionThread,
   startSopAiRevisionJob,
   subscribeSopAiRevisionJob,
+  type SopAiRevisionAttachment,
   type SopAiRevisionMessage,
 } from './sopAiRevision'
 import {
@@ -92,12 +104,72 @@ const STARTER_REQUESTS = {
   ],
 } as const
 
-function toConversationMessages(messages: SopAiRevisionMessage[]): SopRevisionConversationMessage[] {
-  return messages.map((message) => ({
-    role: message.role,
-    text: message.text,
-    revisionContent: message.revision?.content,
-  }))
+const MAX_AI_CHAT_ATTACHMENTS = 6
+const MAX_AI_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+}
+
+type PendingSopAiAttachment = SopAiRevisionAttachment & { dataUrl: string }
+
+function normalizeImageFile(file: File): File | null {
+  if (file.type.startsWith('image/')) return file
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+  const mimeType = IMAGE_MIME_BY_EXTENSION[extension]
+  if (!mimeType) return null
+  return new File([file], file.name, { type: mimeType, lastModified: file.lastModified })
+}
+
+function getImageFiles(items: DataTransferItemList | null | undefined): File[] {
+  if (!items) return []
+  return Array.from(items).flatMap((item) => {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) return []
+    const file = item.getAsFile()
+    return file ? [file] : []
+  })
+}
+
+function getDraggedImageIds(dataTransfer: DataTransfer): string[] {
+  const text = dataTransfer.getData('text/plain')
+  if (text.startsWith('agent-images:')) return text.slice('agent-images:'.length).split(',').filter(Boolean)
+  if (text.startsWith('agent-image:')) return [text.slice('agent-image:'.length)].filter(Boolean)
+  if (text.startsWith('asset-image:')) return [text.slice('asset-image:'.length)].filter(Boolean)
+  return []
+}
+
+function toConversationMessages(
+  messages: SopAiRevisionMessage[],
+): SopRevisionConversationMessage[] | Promise<SopRevisionConversationMessage[]> {
+  if (!messages.some((message) => message.attachments?.length)) {
+    return messages.map((message) => ({
+      role: message.role,
+      text: message.text,
+      revisionContent: message.revision?.content,
+    }))
+  }
+  return Promise.all(
+    messages.map(async (message) => {
+      const imageDataUrls = await Promise.all(
+        (message.attachments ?? []).map(async (attachment) => {
+          const dataUrl = await ensureImageCached(attachment.id)
+          if (!dataUrl) throw new Error(`对话图片「${attachment.name}」已不存在，请重新添加`)
+          return (await compressSopReferenceImageIfNeeded(dataUrl)).dataUrl
+        }),
+      )
+      return {
+        role: message.role,
+        text: message.text,
+        revisionContent: message.revision?.content,
+        ...(imageDataUrls.length > 0 ? { imageDataUrls } : {}),
+      }
+    }),
+  )
 }
 
 function introducesVariablePromptSyntax(source: string, revised: string) {
@@ -293,6 +365,9 @@ export default function SopAiRevisionPanel({
   const profile = useMemo(() => getAgentTextApiProfile(settings), [settings])
   const [messages, setMessages] = useState<SopAiRevisionMessage[]>([])
   const [input, setInput] = useState('')
+  const [pendingAttachments, setPendingAttachments] = useState<PendingSopAiAttachment[]>([])
+  const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({})
+  const [attachmentDragActive, setAttachmentDragActive] = useState(false)
   const [jobState, setJobState] = useState(() => getSopAiRevisionJobState(documentId))
   const [localError, setLocalError] = useState('')
   const [testingMessageId, setTestingMessageId] = useState('')
@@ -309,6 +384,7 @@ export default function SopAiRevisionPanel({
   const [quickSearch, setQuickSearch] = useState('')
   const quickMenuRef = useRef<HTMLDivElement>(null)
   const quickSearchInputRef = useRef<HTMLInputElement>(null)
+  const attachmentDragDepthRef = useRef(0)
   const [quickInstructionEditor, setQuickInstructionEditor] = useState<{
     item: SopQuickInstruction
     base: SopQuickInstruction
@@ -457,6 +533,10 @@ export default function SopAiRevisionPanel({
   useEffect(() => {
     setMessages(loadSopAiRevisionThread(documentId).messages)
     setInput('')
+    setPendingAttachments([])
+    setAttachmentPreviewUrls({})
+    setAttachmentDragActive(false)
+    attachmentDragDepthRef.current = 0
     setJobState(getSopAiRevisionJobState(documentId))
     setLocalError('')
     setTestingMessageId('')
@@ -499,6 +579,26 @@ export default function SopAiRevisionPanel({
     endRef.current?.scrollIntoView?.({ block: 'nearest' })
   }, [loading, messages])
 
+  useEffect(() => {
+    let active = true
+    const attachments = messages.flatMap((message) => message.attachments ?? [])
+    void Promise.all(
+      attachments.map(async (attachment) => {
+        const thumbnail = await getImageThumbnail(attachment.id).catch(() => undefined)
+        return thumbnail?.thumbnailDataUrl ? ([attachment.id, thumbnail.thumbnailDataUrl] as const) : null
+      }),
+    ).then((entries) => {
+      if (!active) return
+      setAttachmentPreviewUrls((current) => ({
+        ...current,
+        ...Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => entry !== null)),
+      }))
+    })
+    return () => {
+      active = false
+    }
+  }, [messages])
+
   function commitMessages(nextMessages: SopAiRevisionMessage[]) {
     setMessages(nextMessages)
     saveSopAiRevisionThread(documentId, nextMessages)
@@ -524,14 +624,25 @@ export default function SopAiRevisionPanel({
 
     setLocalError('')
     const revise = isMetaInstruction ? reviseSopMetaInstruction : reviseSopDocument
-    const result = await startSopAiRevisionJob(documentId, () =>
-      revise({
+    const conversation = toConversationMessages(requestMessages)
+    const result = await startSopAiRevisionJob(documentId, () => {
+      if (conversation instanceof Promise) {
+        return conversation.then((resolvedConversation) =>
+          revise({
+            settings,
+            profile,
+            content: value,
+            conversation: resolvedConversation,
+          }),
+        )
+      }
+      return revise({
         settings,
         profile,
         content: value,
-        conversation: toConversationMessages(requestMessages),
-      }),
-    )
+        conversation,
+      })
+    })
     if (result.ok) {
       showToast(
         isMetaInstruction
@@ -546,12 +657,155 @@ export default function SopAiRevisionPanel({
     }
   }
 
+  async function addAttachmentFiles(files: File[]) {
+    if (loading) return
+    const available = MAX_AI_CHAT_ATTACHMENTS - pendingAttachments.length
+    const normalizedFiles = files.map(normalizeImageFile).filter((file): file is File => file !== null)
+    const selectedFiles = normalizedFiles
+      .filter((file) => file.size <= MAX_AI_CHAT_ATTACHMENT_BYTES)
+      .slice(0, available)
+    const skippedCount = files.length - selectedFiles.length
+    if (selectedFiles.length === 0) {
+      if (files.length > 0) showToast('没有可添加的图片，请使用常见图片格式且单张不超过 10 MiB', 'error')
+      return
+    }
+
+    const settled = await Promise.allSettled(
+      selectedFiles.map(async (file) => {
+        const image = await createInputImageFromFile(file)
+        if (!image) throw new Error('图片格式无法读取')
+        return {
+          id: image.id,
+          name: file.name || `图片-${image.id.slice(0, 8)}`,
+          dataUrl: image.dataUrl,
+        }
+      }),
+    )
+    const loaded = settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+    if (loaded.length === 0) {
+      showToast('图片读取失败，请重新添加', 'error')
+      return
+    }
+    setPendingAttachments((current) => {
+      const existing = new Set(current.map((attachment) => attachment.id))
+      return [...current, ...loaded.filter((attachment) => !existing.has(attachment.id))].slice(
+        0,
+        MAX_AI_CHAT_ATTACHMENTS,
+      )
+    })
+    setAttachmentPreviewUrls((current) => ({
+      ...current,
+      ...Object.fromEntries(loaded.map((attachment) => [attachment.id, attachment.dataUrl])),
+    }))
+    const failedCount = settled.length - loaded.length
+    const omittedCount = skippedCount + failedCount
+    showToast(
+      omittedCount > 0
+        ? `已添加 ${loaded.length} 张图片，另有 ${omittedCount} 张因格式、大小或数量限制被跳过`
+        : `已添加 ${loaded.length} 张图片`,
+      omittedCount > 0 ? 'info' : 'success',
+    )
+  }
+
+  async function addAttachmentImageIds(imageIds: string[]) {
+    if (loading) return
+    const available = MAX_AI_CHAT_ATTACHMENTS - pendingAttachments.length
+    const ids = Array.from(new Set(imageIds.filter(Boolean))).slice(0, Math.max(0, available))
+    if (ids.length === 0) return
+    const settled = await Promise.allSettled(
+      ids.map(async (id, index) => {
+        const dataUrl = await ensureImageCached(id)
+        if (!dataUrl) throw new Error('图片已不存在')
+        return { id, name: `拖入图片 ${index + 1}`, dataUrl }
+      }),
+    )
+    const loaded = settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+    if (loaded.length === 0) {
+      showToast('拖入的图片已不存在，请重新选择', 'error')
+      return
+    }
+    setPendingAttachments((current) => {
+      const existing = new Set(current.map((attachment) => attachment.id))
+      return [...current, ...loaded.filter((attachment) => !existing.has(attachment.id))].slice(
+        0,
+        MAX_AI_CHAT_ATTACHMENTS,
+      )
+    })
+    setAttachmentPreviewUrls((current) => ({
+      ...current,
+      ...Object.fromEntries(loaded.map((attachment) => [attachment.id, attachment.dataUrl])),
+    }))
+    if (loaded.length < ids.length) showToast('部分拖入图片已不存在', 'info')
+    else showToast(`已添加 ${loaded.length} 张图片`, 'success')
+  }
+
+  function removePendingAttachment(id: string) {
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id))
+  }
+
+  function acceptsAttachmentDrag(event: ReactDragEvent<HTMLDivElement>) {
+    const types = Array.from(event.dataTransfer.types)
+    return (
+      types.includes('Files') ||
+      types.includes('text/plain') ||
+      types.includes('application/x-doupao-asset-ids') ||
+      getDraggedImageIds(event.dataTransfer).length > 0
+    )
+  }
+
+  function handleAttachmentDragEnter(event: ReactDragEvent<HTMLDivElement>) {
+    if (!acceptsAttachmentDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    attachmentDragDepthRef.current += 1
+    if (!loading && pendingAttachments.length < MAX_AI_CHAT_ATTACHMENTS) setAttachmentDragActive(true)
+  }
+
+  function handleAttachmentDragOver(event: ReactDragEvent<HTMLDivElement>) {
+    if (!acceptsAttachmentDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = loading || pendingAttachments.length >= MAX_AI_CHAT_ATTACHMENTS ? 'none' : 'copy'
+  }
+
+  function handleAttachmentDragLeave(event: ReactDragEvent<HTMLDivElement>) {
+    if (!acceptsAttachmentDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    attachmentDragDepthRef.current = Math.max(0, attachmentDragDepthRef.current - 1)
+    if (attachmentDragDepthRef.current === 0) setAttachmentDragActive(false)
+  }
+
+  function handleAttachmentDrop(event: ReactDragEvent<HTMLDivElement>) {
+    if (!acceptsAttachmentDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    attachmentDragDepthRef.current = 0
+    setAttachmentDragActive(false)
+    const files = Array.from(event.dataTransfer.files ?? [])
+    if (files.length > 0) {
+      void addAttachmentFiles(files)
+      return
+    }
+    void addAttachmentImageIds(getDraggedImageIds(event.dataTransfer))
+  }
+
+  function handleAttachmentPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const files = getImageFiles(event.clipboardData?.items)
+    if (files.length === 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    void addAttachmentFiles(files)
+  }
+
   async function sendMessage() {
-    const request = input.trim()
+    const attachments = pendingAttachments.map(({ id, name }) => ({ id, name }))
+    const request = input.trim() || (attachments.length > 0 ? '请结合附件图片分析当前内容。' : '')
     if (!request || loading) return
-    const nextMessages = [...messages, createSopAiRevisionMessage('user', request)]
+    const nextMessages = [...messages, createSopAiRevisionMessage('user', request, undefined, attachments)]
     commitMessages(nextMessages)
     setInput('')
+    setPendingAttachments([])
     await requestRevision(nextMessages)
   }
 
@@ -991,6 +1245,23 @@ export default function SopAiRevisionPanel({
               <time dateTime={new Date(message.createdAt).toISOString()}>{formatMessageTime(message.createdAt)}</time>
             </div>
             <p className="sop-ai-chat__message-text">{message.text}</p>
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="sop-ai-chat__message-attachments" aria-label="消息图片附件">
+                {message.attachments.map((attachment, index) => {
+                  const preview = attachmentPreviewUrls[attachment.id]
+                  return (
+                    <div key={`${message.id}-${attachment.id}`} className="sop-ai-chat__message-attachment">
+                      {preview ? (
+                        <img src={preview} alt={`消息图片 ${index + 1}：${attachment.name}`} />
+                      ) : (
+                        <ImagePlus size={16} aria-hidden="true" />
+                      )}
+                      <span title={attachment.name}>{attachment.name}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
             {message.revision && (
               <div className="sop-ai-chat__revision">
                 <ul>
@@ -1507,30 +1778,65 @@ export default function SopAiRevisionPanel({
         </div>
       </Dialog>
 
-      <div className="sop-ai-chat__composer">
-        <textarea
-          ref={composerRef}
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              void sendMessage()
-            }
-          }}
-          maxLength={4000}
-          placeholder={ui.placeholder}
-          aria-label={ui.inputLabel}
-          disabled={loading}
-        />
-        <button
-          type="button"
-          onClick={() => void sendMessage()}
-          disabled={!input.trim() || loading}
-          aria-label={ui.sendLabel}
-        >
-          {loading ? <Loader size={15} className="animate-spin" /> : <Send size={15} />}
-        </button>
+      <div
+        className="sop-ai-chat__composer"
+        data-drag-active={attachmentDragActive || undefined}
+        onDragEnter={handleAttachmentDragEnter}
+        onDragOver={handleAttachmentDragOver}
+        onDragLeave={handleAttachmentDragLeave}
+        onDrop={handleAttachmentDrop}
+      >
+        {pendingAttachments.length > 0 && (
+          <div className="sop-ai-chat__pending-attachments" aria-label="待发送图片">
+            {pendingAttachments.map((attachment, index) => (
+              <div key={attachment.id} className="sop-ai-chat__pending-attachment">
+                <img src={attachment.dataUrl} alt={`待发送图片 ${index + 1}：${attachment.name}`} />
+                <button
+                  type="button"
+                  onClick={() => removePendingAttachment(attachment.id)}
+                  disabled={loading}
+                  aria-label={`移除待发送图片 ${attachment.name}`}
+                  title="移除图片"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="sop-ai-chat__composer-hint">
+          <ImagePlus size={13} aria-hidden="true" />
+          <span>{attachmentDragActive ? '松开添加图片' : '拖入图片或 Ctrl/Cmd+V 粘贴图片'}</span>
+          <span className="sop-ai-chat__composer-count">
+            {pendingAttachments.length}/{MAX_AI_CHAT_ATTACHMENTS}
+          </span>
+        </div>
+        <div className="sop-ai-chat__composer-row">
+          <textarea
+            ref={composerRef}
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onPaste={handleAttachmentPaste}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void sendMessage()
+              }
+            }}
+            maxLength={4000}
+            placeholder={ui.placeholder}
+            aria-label={ui.inputLabel}
+            disabled={loading}
+          />
+          <button
+            type="button"
+            onClick={() => void sendMessage()}
+            disabled={(!input.trim() && pendingAttachments.length === 0) || loading}
+            aria-label={ui.sendLabel}
+          >
+            {loading ? <Loader size={15} className="animate-spin" /> : <Send size={15} />}
+          </button>
+        </div>
       </div>
     </aside>
   )

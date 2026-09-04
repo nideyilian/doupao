@@ -187,7 +187,7 @@ function SourceThumb({ source, fit = 'cover' }: { source: SopPromptSource; fit?:
     return () => {
       active = false
     }
-  }, [source.dataUrl, source.imageId])
+  }, [source.dataUrl, source.imageId, source.kind])
 
   if (source.kind === 'text') {
     return (
@@ -491,6 +491,9 @@ export default function GallerySopBatchModal({
   const generationAbortRef = useRef<AbortController | null>(null)
   const generationPausedRef = useRef(false)
   const pauseWaitersRef = useRef<Array<() => void>>([])
+  const generateForSourcesRef = useRef<
+    (retrySourceId?: string, freshRun?: boolean, generateImagesForNewPrompts?: boolean) => Promise<void>
+  >(async () => {})
   const componentActiveRef = useRef(true)
   const modalRef = useRef<HTMLDivElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
@@ -912,6 +915,7 @@ export default function GallerySopBatchModal({
 
   useEffect(() => {
     let active = true
+    const pauseWaiters = pauseWaitersRef.current
     setRestoreComplete(false)
     autoStartRef.current = false
 
@@ -1017,18 +1021,26 @@ export default function GallerySopBatchModal({
     return () => {
       active = false
       generationPausedRef.current = false
-      const waiters = pauseWaitersRef.current.splice(0)
+      const waiters = pauseWaiters.splice(0)
       for (const resolve of waiters) resolve()
       generationAbortRef.current?.abort(new DOMException('SOP 已切换或工作台已关闭', 'AbortError'))
       generationAbortRef.current = null
     }
+    // 初始化只按作用域与 SOP 切换触发；其余值由该作用域创建时的快照和独立同步 effect 管理。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [promptRunStorageKey, initialSopId])
 
   useEffect(() => {
     if (!syncInitialGenerationCounts || !restoreComplete) return
     setPromptCount(normalizedInitialCounts.promptCount)
     setImagesPerPrompt(normalizedInitialCounts.imagesPerPrompt)
-  }, [autoStart, initialImagesPerPrompt, initialPromptCount, restoreComplete, syncInitialGenerationCounts])
+  }, [
+    autoStart,
+    normalizedInitialCounts.imagesPerPrompt,
+    normalizedInitialCounts.promptCount,
+    restoreComplete,
+    syncInitialGenerationCounts,
+  ])
 
   // 批次参数单一数据源：弹窗内任何调整（含恢复历史运行）都上报宿主同步，输入栏胶囊只作状态展示。
   useEffect(() => {
@@ -1435,7 +1447,7 @@ export default function GallerySopBatchModal({
     const batchId = `sop-batch-${Date.now().toString(36)}`
     const snapshotId = activeRunIdRef.current
     let promptInputImages: InputImage[]
-    let submittingSnapshot: SopBatchSnapshot | null = null
+    let submittingSnapshot: SopBatchSnapshot | null
     try {
       promptInputImages = secondReferenceRef.current ? await loadPromptInputImages(usablePrompts) : []
       await flushPromptRunSnapshot()
@@ -1914,6 +1926,7 @@ export default function GallerySopBatchModal({
       setError(failed || missing ? '请选择“补充缺口”保留已有提示词，或“重新生成全部”创建一份新的完整列表。' : '')
     }
   }
+  generateForSourcesRef.current = generateForSources
 
   const generatePromptList = async (replaceConfirmed = false) => {
     if (running || !selectedSop) return
@@ -2079,7 +2092,7 @@ export default function GallerySopBatchModal({
     }
     autoStartRef.current = true
     onAutoStartConsumed?.()
-    void generateForSources()
+    void generateForSourcesRef.current()
   }, [
     autoStart,
     initialGenerationCountsPending,

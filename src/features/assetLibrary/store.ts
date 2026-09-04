@@ -945,6 +945,10 @@ export const useAssetLibraryStore = create<AssetLibraryStoreState>()(
             assetOrder: state.assetOrder.filter((assetId) => assetId !== id),
             selectedAssetIds: state.selectedAssetIds.filter((assetId) => assetId !== id),
             activeAssetId: state.activeAssetId === id ? null : state.activeAssetId,
+            viewerAssetId: state.viewerAssetId === id ? null : state.viewerAssetId,
+            viewerAssetIds: state.viewerAssetIds.filter((assetId) => assetId !== id),
+            quickPreviewAssetId: state.quickPreviewAssetId === id ? null : state.quickPreviewAssetId,
+            hoveredAssetId: state.hoveredAssetId === id ? null : state.hoveredAssetId,
             mutationVersion: state.mutationVersion + 1,
           }
         }),

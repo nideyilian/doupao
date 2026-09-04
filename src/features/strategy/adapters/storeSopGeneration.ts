@@ -1,4 +1,4 @@
-import { getAgentTextApiProfile, validateApiProfile } from '../../../lib/apiProfiles'
+import { getAgentTextApiProfile, getAgentTextProtocol, validateApiProfile } from '../../../lib/apiProfiles'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from '../../../lib/devProxy'
 import { submitTaskWithData, useStore } from '../../../store'
 import {
@@ -150,7 +150,7 @@ export const generateSopFromStore: GenerateSop = async (
     })
   }
   const content = buildSopRequestContent(brief, context, preparedReferences.images, kind, excludeText)
-  const useChatCompletions = settings.agentTextProtocol === 'chat-completions'
+  const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
   const url = buildApiUrl(
     profile.baseUrl,
     useChatCompletions ? 'chat/completions' : 'responses',
@@ -297,7 +297,7 @@ export async function generatePromptsFromSopStore(
   }
 
   const proxy = readClientDevProxyConfig()
-  const useChatCompletions = settings.agentTextProtocol === 'chat-completions'
+  const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
   const url = buildApiUrl(
     profile.baseUrl,
     useChatCompletions ? 'chat/completions' : 'responses',
@@ -548,7 +548,7 @@ async function expandSopVariablePromptOptions(
 ): Promise<string> {
   const { settings, profile, brief, referenceImages } = context
   const proxy = readClientDevProxyConfig()
-  const useChatCompletions = settings.agentTextProtocol === 'chat-completions'
+  const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
   const url = buildApiUrl(
     profile.baseUrl,
     useChatCompletions ? 'chat/completions' : 'responses',
@@ -717,7 +717,7 @@ async function requestModelJson(options: {
 }): Promise<string> {
   const { settings, profile, instructions, userContent, responseFormat, signal } = options
   const proxy = readClientDevProxyConfig()
-  const useChatCompletions = settings.agentTextProtocol === 'chat-completions'
+  const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
   const url = buildApiUrl(
     profile.baseUrl,
     useChatCompletions ? 'chat/completions' : 'responses',

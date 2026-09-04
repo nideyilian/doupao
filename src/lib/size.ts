@@ -20,6 +20,7 @@ const RECOMMENDED_SIZE_SET = new Set([
   '3840x2160',
   '2160x3840',
   '1280x720',
+  '720x1280',
   '1136x640',
   '1080x1920',
   '368x256',
@@ -187,7 +188,7 @@ const COMMON_SIZE_PRESETS: Record<SizeTier, Record<PresetRatio, string>> = {
     '3:2': '1536x1024',
     '2:3': '1024x1536',
     '16:9': '1280x720',
-    '9:16': '1080x1920',
+    '9:16': '720x1280',
     '4:3': '1024x768',
     '3:4': '768x1024',
     '21:9': '1280x544',
@@ -216,6 +217,8 @@ const COMMON_SIZE_PRESETS: Record<SizeTier, Record<PresetRatio, string>> = {
 
 export function inferSizeTier(size: string): SizeTier {
   const normalized = normalizeImageSize(size)
+  // 兼容旧版 1K 9:16 设置；新请求预设已改为 720x1280。
+  if (normalized === '1080x1920') return '1K'
   const tiers: SizeTier[] = ['1K', '2K', '4K']
   const presetTier = tiers.find((tier) => Object.values(COMMON_SIZE_PRESETS[tier]).includes(normalized))
   if (presetTier) return presetTier
@@ -292,7 +295,11 @@ export function calculatePostprocessImageSize(tier: SizeTier, ratio: string) {
   if (!parsed) return null
 
   const presetRatioKey = getPresetRatioKey(parsed.width, parsed.height)
-  if (presetRatioKey) return COMMON_SIZE_PRESETS[tier][presetRatioKey]
+  if (presetRatioKey) {
+    // 720x1280 仅作为中转请求白名单尺寸；显式开启后期缩放时仍使用原有 1K 9:16 输出目标。
+    if (tier === '1K' && presetRatioKey === '9:16') return '1080x1920'
+    return COMMON_SIZE_PRESETS[tier][presetRatioKey]
+  }
 
   return calculateImageSize(tier, ratio)
 }

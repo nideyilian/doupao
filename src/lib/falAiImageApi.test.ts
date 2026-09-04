@@ -103,4 +103,40 @@ describe('callFalAiImageApi', () => {
 
     expect(order).toEqual(['persist', 'poll'])
   })
+
+  it('keeps the returned image dimensions separate from the relay request size', async () => {
+    falMock.queue.submit.mockResolvedValue({ request_id: 'req-size' })
+    falMock.queue.result.mockResolvedValue({
+      data: {
+        images: [
+          {
+            b64_json: 'aW1hZ2U=',
+            width: 1024,
+            height: 1536,
+          },
+        ],
+      },
+    })
+
+    const result = await callFalAiImageApi(
+      {
+        settings: DEFAULT_SETTINGS,
+        prompt: 'prompt',
+        params: { ...DEFAULT_PARAMS, size: '720x1280' },
+        inputImageDataUrls: [],
+      },
+      createDefaultFalProfile({ apiKey: 'fal-key' }),
+    )
+
+    expect(falMock.queue.submit).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        input: expect.objectContaining({
+          image_size: { width: 720, height: 1280 },
+        }),
+      }),
+    )
+    expect(result.actualParams?.size).toBe('1024x1536')
+    expect(result.actualParamsList?.[0]?.size).toBe('1024x1536')
+  })
 })

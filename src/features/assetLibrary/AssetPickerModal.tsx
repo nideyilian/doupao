@@ -147,7 +147,6 @@ function AssetPickerModalInner({
         sortKey: 'updatedAt',
         sortOrder: 'desc',
         limit: 120,
-        semantic: { enabled: Boolean(deferredQuery.trim()), context: deferredQuery },
       })
       .then((page) => {
         if (active) {

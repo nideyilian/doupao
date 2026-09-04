@@ -14,7 +14,7 @@ export interface TaskProgressDisplay {
 const NO_REASON_TEXT = '服务商没有返回具体原因。'
 
 function getRequestedCount(task: TaskRecord): number {
-  return task.batchItemStatuses?.length || task.params.n || 1
+  return task.batchItemStatuses?.length || task.params?.n || 1
 }
 
 function getSuccessCount(task: TaskRecord): number {
@@ -22,6 +22,12 @@ function getSuccessCount(task: TaskRecord): number {
     return task.batchItemStatuses.filter((status) => status === 'done').length
   }
   return task.outputImages?.length ?? 0
+}
+
+/** 已保存的输出数量达到请求数量时，生成结果本身应视为成功，不能被后续加载错误覆盖。 */
+export function hasCompletedTaskOutputs(task: TaskRecord): boolean {
+  const outputCount = task.outputImages?.length ?? 0
+  return outputCount > 0 && outputCount >= getRequestedCount(task)
 }
 
 function getTaskSourceLabel(task: TaskRecord): string {
@@ -168,6 +174,15 @@ function errorDisplay(task: TaskRecord, liveProgress?: LiveTaskProgress): TaskPr
 
 export function getTaskProgressDisplay(task: TaskRecord, liveProgress?: LiveTaskProgress): TaskProgressDisplay {
   if (task.status === 'running') return runningDisplay(task, liveProgress)
+  if (hasCompletedTaskOutputs(task)) {
+    return {
+      cardLabel: '已完成',
+      detailTitle: '已完成',
+      detailDescription: `生成完成，共 ${task.outputImages.length} 张图片。`,
+      tone: 'success',
+      reasons: [],
+    }
+  }
   if (task.status === 'error' && (task.falRecoverable || task.customRecoverable)) return recoverableDisplay(task)
   if (hasPartialFailure(task)) return partialFailureDisplay(task)
   if (task.status === 'error') return errorDisplay(task, liveProgress)

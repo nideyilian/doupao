@@ -141,7 +141,6 @@ async function syncLegacyAssetMetadataToCatalog(api: CatalogBackendApi): Promise
           })),
         )
       }
-      await api.assetCatalogMetaSet(CATALOG_META_LEGACY_BACKFILL, String(Date.now()))
       if (collections.length > 0) {
         await api.assetCatalogPutCollections(
           collections.map(normalizeCollection).filter((c): c is AssetCollection => c !== null),
@@ -155,6 +154,7 @@ async function syncLegacyAssetMetadataToCatalog(api: CatalogBackendApi): Promise
           tombstones.map(normalizeTombstone).filter((t): t is AssetTombstone => t !== null),
         )
       }
+      await api.assetCatalogMetaSet(CATALOG_META_LEGACY_BACKFILL, String(Date.now()))
     }
     legacySyncDone = true
   } catch (error) {

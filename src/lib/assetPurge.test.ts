@@ -164,7 +164,7 @@ describe('patchTaskForPurgedSlots', () => {
       ],
       actualParamsByImage: { 'img-b': { seed: 1 }, 'img-c': { seed: 2 } },
       revisedPromptByImage: { 'img-b': 'x', 'img-c': 'y' },
-      localSavedOutputImagePaths: { 'img-b': '/a.png', 'img-c': '/c.png' },
+      localSavedOutputImagePaths: { '1:img-b': '/a.png', '2:img-c': '/c.png' },
       rawImageUrls: ['https://x', 'https://y'],
     })
     const patched = patchTaskForPurgedSlots(task, [1])
@@ -174,7 +174,7 @@ describe('patchTaskForPurgedSlots', () => {
     expect(patched.generationSlots).toHaveLength(1)
     expect(patched.actualParamsByImage).toEqual({ 'img-c': { seed: 2 } })
     expect(patched.revisedPromptByImage).toEqual({ 'img-c': 'y' })
-    expect(patched.localSavedOutputImagePaths).toEqual({ 'img-c': '/c.png' })
+    expect(patched.localSavedOutputImagePaths).toEqual({ '2:img-c': '/c.png' })
     expect(patched.purgedOutputSlots).toEqual([1])
   })
 

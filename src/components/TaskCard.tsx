@@ -15,7 +15,7 @@ import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
-import { getTaskProgressDisplay } from '../lib/taskProgressDisplay'
+import { getTaskProgressDisplay, hasCompletedTaskOutputs } from '../lib/taskProgressDisplay'
 import { CodeIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 import PromptVariableEditor from './PromptVariableEditor'
@@ -95,6 +95,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
   const swipeOffsetRef = useRef(0)
   const pendingSwipeOffsetRef = useRef(0)
   const swipeFrameRef = useRef<number | null>(null)
+  const displayTaskStatus = task.status === 'error' && hasCompletedTaskOutputs(task) ? 'done' : task.status
 
   const updateSwipeDirection = (nextDirection: -1 | 0 | 1) => {
     if (swipeDirectionRef.current === nextDirection) return
@@ -248,12 +249,15 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
 
   // 定时更新运行中任务的计时
   useEffect(() => {
-    if (task.status !== 'running' && !(task.status === 'error' && (task.falRecoverable || task.customRecoverable)))
+    if (
+      displayTaskStatus !== 'running' &&
+      !(displayTaskStatus === 'error' && (task.falRecoverable || task.customRecoverable))
+    )
       return
     const id = setInterval(() => setNow(Date.now()), 1000)
     setNow(Date.now())
     return () => clearInterval(id)
-  }, [task.customRecoverable, task.falRecoverable, task.status])
+  }, [displayTaskStatus, task.customRecoverable, task.falRecoverable])
 
   // 加载缩略图
   useEffect(() => {
@@ -339,7 +343,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
 
   const duration = (() => {
     let seconds: number
-    if (task.status === 'running' || task.falRecoverable || task.customRecoverable) {
+    if (displayTaskStatus === 'running' || task.falRecoverable || task.customRecoverable) {
       seconds = Math.floor((now - task.createdAt) / 1000)
     } else if (task.elapsed != null) {
       seconds = Math.floor(task.elapsed / 1000)
@@ -351,17 +355,17 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
     return `${mm}:${ss}`
   })()
   const showSwipeAction = swipeActionActive
-  const isFalReconnecting = task.status === 'error' && task.falRecoverable
-  const isCustomReconnecting = task.status === 'error' && task.customRecoverable
+  const isFalReconnecting = displayTaskStatus === 'error' && task.falRecoverable
+  const isCustomReconnecting = displayTaskStatus === 'error' && task.customRecoverable
   const hasPartialSuccess =
-    task.status === 'error' && (task.outputImages?.length ?? 0) > 0 && !isFalReconnecting && !isCustomReconnecting
+    displayTaskStatus === 'error' && (task.outputImages?.length ?? 0) > 0 && !isFalReconnecting && !isCustomReconnecting
   // 实时进度来自 runtimeStore（高频更新不重建 tasks 数组）；任务对象字段仅作兼容回退。
   const liveTaskProgress = useRuntimeStore((s) =>
-    task.status === 'running' || isFalReconnecting || isCustomReconnecting ? s.taskProgress[task.id] : undefined,
+    displayTaskStatus === 'running' || isFalReconnecting || isCustomReconnecting ? s.taskProgress[task.id] : undefined,
   )
   const progressDisplay = getTaskProgressDisplay(task, liveTaskProgress)
   const hasPartialFailure = progressDisplay.cardLabel === '数量不够'
-  const showRunningTimer = task.status === 'running' || isFalReconnecting || isCustomReconnecting
+  const showRunningTimer = displayTaskStatus === 'running' || isFalReconnecting || isCustomReconnecting
   const swipeBgClass = showSwipeAction
     ? swipeStartedSelected
       ? 'gallery-swipe-bg--neutral'
@@ -450,7 +454,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchCancel}
         data-selected={isSelected || undefined}
-        data-status={task.status}
+        data-status={displayTaskStatus}
         data-sop-card={Boolean(task.sopBatch) || undefined}
       >
         {/* 选中时的角标 */}
@@ -466,9 +470,9 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
               卡片其余区域不 draggable，mousedown 拖拽交给框选（useDragSelect）。 */}
           <div
             className="gallery-task-media w-40 min-w-[10rem] h-full relative flex items-center justify-center overflow-hidden flex-shrink-0"
-            draggable={task.status === 'done' && task.outputImages?.length > 0}
+            draggable={displayTaskStatus === 'done' && task.outputImages?.length > 0}
             onDragStart={(e) => {
-              if (task.status !== 'done' || !task.outputImages?.length) return
+              if (displayTaskStatus !== 'done' || !task.outputImages?.length) return
               const imageIds = task.outputImages
               e.dataTransfer.setData('text/plain', `agent-images:${imageIds.join(',')}`)
               e.dataTransfer.effectAllowed = 'copy'
@@ -487,7 +491,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
               }
             }}
           >
-            {task.status === 'running' && streamPreviewSrc && (
+            {displayTaskStatus === 'running' && streamPreviewSrc && (
               <>
                 <img
                   src={streamPreviewSrc}
@@ -501,53 +505,62 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                 )}
               </>
             )}
-            {task.status === 'running' && !streamPreviewSrc && (task.outputImages?.length ?? 0) > 0 && thumbSrc && (
-              <>
-                <img
-                  src={thumbSrc}
-                  data-image-id={task.outputImages[0]}
-                  data-output-image-ids={task.outputImages.join(',')}
-                  className="saveable-image w-full h-full object-cover"
-                  loading="lazy"
-                  alt=""
-                />
-                {(task.outputImages?.length ?? 0) > 1 && (
-                  <span className="absolute bottom-1 right-1 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">
-                    {task.batchItemStatuses
-                      ? `${task.batchItemStatuses.filter((s) => s === 'done').length}/${task.batchItemStatuses.length}`
-                      : (task.outputImages?.length ?? 0)}
-                  </span>
-                )}
-                {task.batchItemStatuses &&
-                  task.batchItemStatuses.some((s) => s === 'error') &&
-                  (task.outputImages?.length ?? 0) <= 1 && (
-                    <span className="absolute bottom-1 right-1 bg-black/60 text-ds-warning text-xs px-1.5 py-0.5 rounded">
-                      {task.batchItemStatuses.filter((s) => s === 'done').length}/{task.batchItemStatuses.length}
+            {displayTaskStatus === 'running' &&
+              !streamPreviewSrc &&
+              (task.outputImages?.length ?? 0) > 0 &&
+              thumbSrc && (
+                <>
+                  <img
+                    src={thumbSrc}
+                    data-image-id={task.outputImages[0]}
+                    data-output-image-ids={task.outputImages.join(',')}
+                    className="saveable-image w-full h-full object-cover"
+                    loading="lazy"
+                    alt=""
+                  />
+                  {(task.outputImages?.length ?? 0) > 1 && (
+                    <span className="absolute bottom-1 right-1 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">
+                      {task.batchItemStatuses
+                        ? `${task.batchItemStatuses.filter((s) => s === 'done').length}/${task.batchItemStatuses.length}`
+                        : (task.outputImages?.length ?? 0)}
                     </span>
                   )}
-                <span className="gallery-image-badge gallery-image-badge--info absolute top-1.5 right-1.5">
-                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                  {task.batchItemStatuses &&
+                    task.batchItemStatuses.some((s) => s === 'error') &&
+                    (task.outputImages?.length ?? 0) <= 1 && (
+                      <span className="absolute bottom-1 right-1 bg-black/60 text-ds-warning text-xs px-1.5 py-0.5 rounded">
+                        {task.batchItemStatuses.filter((s) => s === 'done').length}/{task.batchItemStatuses.length}
+                      </span>
+                    )}
+                  <span className="gallery-image-badge gallery-image-badge--info absolute top-1.5 right-1.5">
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                      />
+                    </svg>
+                    {progressDisplay.cardLabel}
+                  </span>
+                </>
+              )}
+            {displayTaskStatus === 'running' &&
+              !streamPreviewSrc &&
+              !((task.outputImages?.length ?? 0) > 0 && thumbSrc) && (
+                <div className="flex flex-col items-center gap-2">
+                  <svg
+                    className="gallery-state-icon gallery-state-icon--info w-ds-control-sm h-ds-control-sm animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  {progressDisplay.cardLabel}
-                </span>
-              </>
-            )}
-            {task.status === 'running' && !streamPreviewSrc && !((task.outputImages?.length ?? 0) > 0 && thumbSrc) && (
-              <div className="flex flex-col items-center gap-2">
-                <svg
-                  className="gallery-state-icon gallery-state-icon--info w-ds-control-sm h-ds-control-sm animate-spin"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                <span className="gallery-task-meta text-xs">{progressDisplay.cardLabel}</span>
-              </div>
-            )}
-            {task.status === 'error' && (isFalReconnecting || isCustomReconnecting) && (
+                  <span className="gallery-task-meta text-xs">{progressDisplay.cardLabel}</span>
+                </div>
+              )}
+            {displayTaskStatus === 'error' && (isFalReconnecting || isCustomReconnecting) && (
               <div className="flex flex-col items-center gap-1 px-2">
                 <svg
                   className="gallery-state-icon gallery-state-icon--warning w-ds-control-sm h-ds-control-sm"
@@ -567,7 +580,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                 </span>
               </div>
             )}
-            {task.status === 'error' && !isFalReconnecting && !isCustomReconnecting && !hasPartialSuccess && (
+            {displayTaskStatus === 'error' && !isFalReconnecting && !isCustomReconnecting && !hasPartialSuccess && (
               <div className="flex flex-col items-center gap-1 px-2">
                 <svg
                   className={`gallery-state-icon w-ds-control-sm h-ds-control-sm ${isInterrupted ? 'gallery-state-icon--warning' : 'gallery-state-icon--danger'}`}
@@ -646,7 +659,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                 <span className="gallery-task-meta text-xs">图片已丢失</span>
               </span>
             )}
-            {task.status === 'done' && thumbSrc && (
+            {displayTaskStatus === 'done' && thumbSrc && (
               <>
                 <img
                   src={thumbSrc}
@@ -668,7 +681,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                 )}
               </>
             )}
-            {task.status === 'done' && !thumbSrc && !thumbLost && (
+            {displayTaskStatus === 'done' && !thumbSrc && !thumbLost && (
               <svg
                 className="gallery-placeholder-icon w-ds-control-sm h-ds-control-sm"
                 fill="none"
@@ -683,7 +696,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                 />
               </svg>
             )}
-            {task.status === 'done' && !thumbSrc && thumbLost && (
+            {displayTaskStatus === 'done' && !thumbSrc && thumbLost && (
               <span className="flex flex-col items-center gap-1 px-2 text-center">
                 <svg
                   className="gallery-placeholder-icon w-ds-control-sm h-ds-control-sm"
@@ -704,7 +717,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
             {/* 运行中显示耗时，完成后显示封面图比例与分辨率标签 */}
             {!task.isFavorite && (
               <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
-                {showRunningTimer || task.status !== 'done' || !coverRatio || !coverSize ? (
+                {showRunningTimer || displayTaskStatus !== 'done' || !coverRatio || !coverSize ? (
                   <span className="flex items-center gap-1 bg-black/50 text-white text-xs sm:text-xs px-1.5 py-0.5 rounded backdrop-blur-sm font-mono">
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path
@@ -903,7 +916,7 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                 onTouchEnd={(e) => e.stopPropagation()}
                 onTouchCancel={(e) => e.stopPropagation()}
               >
-                {((task.status === 'error' && !isFalReconnecting) || alwaysShowRetryButton) && (
+                {((displayTaskStatus === 'error' && !isFalReconnecting) || alwaysShowRetryButton) && (
                   <TaskActionButton
                     tooltip="重试任务"
                     onClick={() => retryTask(task)}

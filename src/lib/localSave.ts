@@ -1,5 +1,6 @@
 import type { AgentConversation, AgentRound, TaskRecord } from '../types'
 import type { UpdateStatus } from '../hooks/useAutoUpdate'
+import type { ApiSecretBundle } from './apiSecrets'
 import type {
   AssetCatalogCursorPage,
   AssetCatalogQuery,
@@ -100,6 +101,8 @@ type ElectronAPI = {
   downloadUpdate: () => Promise<{ success: boolean; error?: string }>
   installUpdate: () => Promise<{ success: boolean }>
   getAppVersion: () => Promise<string>
+  loadApiSecrets?: () => Promise<{ available: boolean; secrets: ApiSecretBundle; error?: string }>
+  saveApiSecrets?: (secrets: ApiSecretBundle) => Promise<{ success: boolean; error?: string }>
   getStartupMode?: () => Promise<{ safeMode: boolean }>
   getCloseToTray?: () => Promise<boolean>
   setCloseToTray?: (enabled: boolean) => Promise<boolean>
@@ -211,6 +214,8 @@ type ElectronAPI = {
         | { kind: 'collection'; collectionId: string },
     ) => void,
   ) => () => void
+  /** 应用管理的原图或工作区图片文件被外部删除。 */
+  onLibraryImageFileRemoved?: (callback: (payload: { path: string; imageId?: string }) => void) => () => void
   completeExternalAssetCommand?: (payload: { id: string; result?: unknown; error?: string }) => void
   /** 扫描旧版本 userData 目录（豆泡 / doupao / gpt-image-playground 等），返回可导入内容概况 */
   scanLegacySources?: () => Promise<LegacySourceInfo[]>

@@ -57,11 +57,19 @@ export function useAssetLibraryShortcuts({ onFocusSearch, onOpenViewer }: AssetL
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return
+      const shortcutState = useAssetLibraryStore.getState()
+      // 长按空格打开快速预览后，预览层本身是 dialog。后续 key repeat 若先被
+      // “模态层让位”分支放过，浏览器会执行原生 Space 滚屏，导致预览时界面滑动。
+      if (event.key === ' ' && shortcutState.quickPreviewAssetId) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       // 模态弹窗/遮罩层打开时让位（后期处理、设置、确认框、遮罩编辑器等），
       // 避免快捷键穿透到下层素材库造成误操作（如画布 Delete 删图层时误删文件夹）
       if (document.querySelector('[role="dialog"], .ds-modal-layer')) return
       const key = event.key
-      const state = useAssetLibraryStore.getState()
+      const state = shortcutState
 
       // Ctrl/Cmd+F：聚焦搜索框
       if ((event.ctrlKey || event.metaKey) && key.toLocaleLowerCase() === 'f') {

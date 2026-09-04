@@ -1,4 +1,5 @@
 import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { isTrustedRendererUrl } from './trusted-renderer'
 
 /**
  * IPC 发送方校验：只接受主窗口主 frame（即我们自己的渲染进程）发来的调用。
@@ -10,9 +11,7 @@ export function assertTrustedSender(event: IpcMainEvent | IpcMainInvokeEvent): v
     throw new Error('IPC 调用来源不受信任')
   }
   const frameUrl = frame.url
-  const devServerUrl = process.env.VITE_DEV_SERVER_URL
-  const allowedOrigin = devServerUrl ? frameUrl.startsWith(devServerUrl) : frameUrl.startsWith('file://')
-  if (!allowedOrigin) {
+  if (!isTrustedRendererUrl(frameUrl)) {
     throw new Error('IPC 调用来源不受信任')
   }
 }

@@ -19,6 +19,7 @@ import {
 } from './imageApiShared'
 import { getAdNegativeRule } from './adNegativeRules'
 import { apiFetch as fetch } from './desktopApiFetch'
+import { getAgentTextProtocol, isGeminiModel, normalizeSettings } from './apiProfiles'
 
 export interface AgentApiMessage {
   role: 'user' | 'assistant'
@@ -885,6 +886,16 @@ function createChatCompletionTools(params: TaskParams, profile: ApiProfile, sett
     }))
 }
 
+function getEffectiveAgentSettings(settings: AppSettings, profile: ApiProfile): AppSettings {
+  const normalized = normalizeSettings(settings)
+  if (!isGeminiModel(profile.model)) return normalized
+  return {
+    ...normalized,
+    agentApiConfigMode: 'hybrid',
+    agentTextProtocol: 'chat-completions',
+  }
+}
+
 function toChatContent(content: unknown): unknown {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -995,7 +1006,8 @@ function parseChatToolCalls(value: unknown): ChatToolCall[] {
 }
 
 export async function callAgentChatCompletionsApi(opts: AgentApiCallOptions): Promise<AgentApiResult> {
-  const { settings, profile, params, input, signal, onTextDelta, onOutputItems } = opts
+  const { profile, params, input, signal, onTextDelta, onOutputItems } = opts
+  const settings = getEffectiveAgentSettings(opts.settings, profile)
   if (settings.agentApiConfigMode !== 'hybrid') {
     throw new Error('Chat Completions Agent 仅支持 Hybrid 图像调用方式')
   }
@@ -1097,9 +1109,11 @@ export async function callAgentChatCompletionsApi(opts: AgentApiCallOptions): Pr
 }
 
 export function callAgentApi(opts: AgentApiCallOptions): Promise<AgentApiResult> {
-  return opts.settings.agentTextProtocol === 'chat-completions'
-    ? callAgentChatCompletionsApi(opts)
-    : callAgentResponsesApi(opts)
+  const settings = getEffectiveAgentSettings(opts.settings, opts.profile)
+  const request = { ...opts, settings }
+  return getAgentTextProtocol(settings, opts.profile) === 'chat-completions'
+    ? callAgentChatCompletionsApi(request)
+    : callAgentResponsesApi(request)
 }
 
 export async function callAgentConversationTitleApi(opts: {
@@ -1129,7 +1143,7 @@ export async function callAgentConversationTitleApi(opts: {
       content.push({ type: 'input_image', image_url: dataUrl })
     }
 
-    if (settings.agentTextProtocol === 'chat-completions') {
+    if (getAgentTextProtocol(settings, profile) === 'chat-completions') {
       const chatContent = content.map((part) =>
         part.type === 'input_image'
           ? { type: 'image_url', image_url: { url: part.image_url } }
@@ -1188,6 +1202,7 @@ export interface SopRevisionConversationMessage {
   role: 'user' | 'assistant'
   text: string
   revisionContent?: string
+  imageDataUrls?: string[]
 }
 
 export interface SopRevisionResult {
@@ -1373,10 +1388,17 @@ function buildSopRevisionConversation(
   const proposedTag = isMetaInstruction ? 'proposed_meta_instruction' : 'proposed_sop'
   const recentMessages = conversation.slice(-12).map((message) => ({
     role: message.role,
-    content:
-      message.role === 'assistant' && message.revisionContent
-        ? `${message.text}\n\n<${proposedTag}>\n${message.revisionContent}\n</${proposedTag}>`
-        : message.text,
+    content: (() => {
+      const text =
+        message.role === 'assistant' && message.revisionContent
+          ? `${message.text}\n\n<${proposedTag}>\n${message.revisionContent}\n</${proposedTag}>`
+          : message.text
+      if (message.role !== 'user' || !message.imageDataUrls?.length) return text
+      return [
+        ...(text ? [{ type: 'input_text', text }] : []),
+        ...message.imageDataUrls.map((imageUrl) => ({ type: 'input_image', image_url: imageUrl })),
+      ]
+    })(),
   }))
   return [
     {
@@ -1407,7 +1429,11 @@ async function reviseDocumentWithConversation(
   const isMetaInstruction = documentKind === 'meta-instruction'
   const documentLabel = isMetaInstruction ? '生成元指令' : 'SOP'
   if (!content.trim()) throw new Error(`请先输入${documentLabel}正文`)
-  if (!conversation.some((message) => message.role === 'user' && message.text.trim())) {
+  if (
+    !conversation.some(
+      (message) => message.role === 'user' && (message.text.trim() || (message.imageDataUrls?.length ?? 0) > 0),
+    )
+  ) {
     throw new Error('请输入本轮希望 AI 完成的修改')
   }
 
@@ -1426,7 +1452,7 @@ async function reviseDocumentWithConversation(
   const maxOutputTokens = Math.min(16_384, Math.max(1_600, Math.ceil(content.length * 1.8)))
 
   try {
-    const useChatCompletions = settings.agentTextProtocol === 'chat-completions'
+    const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
     const url = buildApiUrl(
       profile.baseUrl,
       useChatCompletions ? 'chat/completions' : 'responses',
@@ -1442,7 +1468,7 @@ async function reviseDocumentWithConversation(
           useChatCompletions
             ? {
                 model: profile.model || settings.model,
-                messages: [{ role: 'system', content: revisionInstructions }, ...input],
+                messages: [{ role: 'system', content: revisionInstructions }, ...toChatCompletionMessages(input)],
                 max_tokens: maxOutputTokens,
                 ...(structured
                   ? {
@@ -1666,7 +1692,7 @@ export async function reviseVariablePromptOptions(opts: {
   const maxOutputTokens = Math.min(16_384, Math.max(1_200, targetCount * 64 + 400))
 
   try {
-    const useChatCompletions = settings.agentTextProtocol === 'chat-completions'
+    const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
     const url = buildApiUrl(
       profile.baseUrl,
       useChatCompletions ? 'chat/completions' : 'responses',
@@ -1759,7 +1785,7 @@ export async function transformSopDocument(opts: {
 
   try {
     let result = ''
-    if (settings.agentTextProtocol === 'chat-completions') {
+    if (getAgentTextProtocol(settings, profile) === 'chat-completions') {
       const response = await fetch(buildApiUrl(profile.baseUrl, 'chat/completions', proxyConfig, useApiProxy), {
         method: 'POST',
         headers: createHeaders(profile),
@@ -1911,20 +1937,35 @@ export async function generateDerivedWordEntries(opts: {
 
     const prompt = promptLines.join('\n')
 
+    const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
     let response: Response
     try {
-      response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
-        method: 'POST',
-        headers: createHeaders(profile),
-        cache: 'no-store',
-        body: JSON.stringify({
-          model: profile.model || settings.model,
-          instructions: WORD_DERIVATIVE_INSTRUCTIONS,
-          input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
-          max_output_tokens: Math.max(128, normalizedCount * 24),
-        }),
-        signal: controller.signal,
-      })
+      response = await fetch(
+        buildApiUrl(profile.baseUrl, useChatCompletions ? 'chat/completions' : 'responses', proxyConfig, useApiProxy),
+        {
+          method: 'POST',
+          headers: createHeaders(profile),
+          cache: 'no-store',
+          body: JSON.stringify(
+            useChatCompletions
+              ? {
+                  model: profile.model || settings.model,
+                  messages: [
+                    { role: 'system', content: WORD_DERIVATIVE_INSTRUCTIONS },
+                    { role: 'user', content: prompt },
+                  ],
+                  max_tokens: Math.max(128, normalizedCount * 24),
+                }
+              : {
+                  model: profile.model || settings.model,
+                  instructions: WORD_DERIVATIVE_INSTRUCTIONS,
+                  input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+                  max_output_tokens: Math.max(128, normalizedCount * 24),
+                },
+          ),
+          signal: controller.signal,
+        },
+      )
     } catch (err) {
       if (controller.signal.aborted && !signal?.aborted) {
         throw new Error(`词条生成超时：超过 ${profile.timeout} 秒仍未完成，请稍后重试或提高 Agent 配置中的超时时间。`, {
@@ -1938,9 +1979,16 @@ export async function generateDerivedWordEntries(opts: {
       throw new Error(await getApiErrorMessage(response))
     }
 
-    const payload = (await response.json()) as ResponsesApiResponse
+    const payload = (await response.json()) as ResponsesApiResponse & {
+      choices?: Array<{ message?: { content?: unknown } }>
+    }
     throwIfAborted(controller.signal, signal)
-    return parseWordEntryList(extractText(payload), normalizedCount)
+    const responseText = useChatCompletions
+      ? typeof payload.choices?.[0]?.message?.content === 'string'
+        ? payload.choices[0].message.content
+        : ''
+      : extractText(payload)
+    return parseWordEntryList(responseText, normalizedCount)
   } finally {
     clearTimeout(timeoutId)
     signal?.removeEventListener('abort', abortFromCaller)

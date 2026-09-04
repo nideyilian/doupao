@@ -24,6 +24,7 @@ import type {
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
 import { formatGeneratedImageDate } from './lib/generatedImageFilename'
 import { useRuntimeStore } from './stores/runtimeStore'
+import { useAssetLibraryStore } from './features/assetLibrary/store'
 
 // 供 db mock 与测试共享的素材种子/删除记录（task 删除级联测试用）
 const dbMockState = vi.hoisted(() => ({
@@ -31,6 +32,7 @@ const dbMockState = vi.hoisted(() => ({
   purgedAssetIds: [] as string[],
   // 模拟 Electron：storeImage 同时落盘 cache-images（StoredImage.localPath）
   emitLocalPath: false,
+  putTaskFailuresRemaining: 0,
 }))
 
 vi.mock('./lib/db', () => {
@@ -56,6 +58,10 @@ vi.mock('./lib/db', () => {
       return loaded
     },
     putTask: async (task: TaskRecord) => {
+      if (dbMockState.putTaskFailuresRemaining > 0) {
+        dbMockState.putTaskFailuresRemaining--
+        throw new Error('task persistence failed')
+      }
       tasks.set(task.id, task)
       return task.id
     },
@@ -297,6 +303,8 @@ import {
   putAgentConversation,
   putCompositeAssets,
   putImage,
+  getAllSopBatchSnapshots,
+  putSopBatchSnapshot,
   putTask as putDbTask,
 } from './lib/db'
 import { callImageApi } from './lib/api'
@@ -322,7 +330,9 @@ import {
   regenerateAgentAssistantMessage,
   remapAgentRoundMentionsForPathChange,
   removeMultipleTasks,
+  removeDeletedLocalImage,
   removeTask,
+  rerunSopBatchTasks,
   retryTask,
   reuseConfig,
   submitAgentMessage,
@@ -1561,6 +1571,83 @@ describe('mask draft lifecycle in store actions', () => {
     expect(useStore.getState().workspaceTabs[0].tasks[0]).toMatchObject({
       filenameBatch: 2,
     })
+  })
+
+  it('returns the created task id when retry succeeds', async () => {
+    const source = task({ createdAt: Date.now(), filenameBatch: 1 })
+    const tab = workspaceTab({ id: 'tab-retry-result', name: '重试', tasks: [source] })
+    useStore.setState({
+      tasks: [source],
+      workspaceTabs: [tab],
+      activeWorkspaceTabId: tab.id,
+    })
+
+    const taskId = await retryTask(source)
+
+    expect(taskId).toBeTruthy()
+    expect(useStore.getState().tasks.some((item) => item.id === taskId)).toBe(true)
+  })
+
+  it('reports a partial SOP rerun and records only successfully created task ids', async () => {
+    const snapshot: SopBatchSnapshot = {
+      id: 'snapshot-source',
+      batchId: 'batch-source',
+      workspaceTabId: 'tab-sop-rerun',
+      createdAt: 1,
+      status: 'submitted',
+      sop: { id: 'sop-1', name: '测试 SOP', description: '', content: '规则' },
+      brief: '',
+      referenceImageIds: [],
+      promptCount: 2,
+      imagesPerPrompt: 1,
+      prompts: [
+        { id: 'prompt-1', text: '第一条', origin: 'ai', edited: false },
+        { id: 'prompt-2', text: '第二条', origin: 'ai', edited: false },
+      ],
+      params: { ...DEFAULT_PARAMS },
+      taskIds: ['task-1', 'task-2'],
+    }
+    const first = task({
+      id: 'task-1',
+      prompt: '第一条',
+      sopBatch: {
+        batchId: snapshot.batchId,
+        snapshotId: snapshot.id,
+        sopId: 'sop-1',
+        sopName: '测试 SOP',
+        promptId: 'prompt-1',
+        promptIndex: 1,
+        promptCount: 2,
+      },
+    })
+    const second = task({
+      id: 'task-2',
+      prompt: '第二条',
+      sopBatch: {
+        ...first.sopBatch!,
+        promptId: 'prompt-2',
+        promptIndex: 2,
+      },
+    })
+    const tab = workspaceTab({ id: 'tab-sop-rerun', name: 'SOP', tasks: [first, second] })
+    const showToast = vi.fn()
+    useStore.setState({
+      tasks: [first, second],
+      workspaceTabs: [tab],
+      activeWorkspaceTabId: tab.id,
+      showToast,
+    })
+    await putSopBatchSnapshot(snapshot)
+    dbMockState.putTaskFailuresRemaining = 1
+
+    await rerunSopBatchTasks([first, second])
+
+    const newSnapshot = (await getAllSopBatchSnapshots()).find((item) => item.id !== snapshot.id)
+    expect(newSnapshot?.status).toBe('submitted')
+    expect(newSnapshot?.taskIds).toHaveLength(1)
+    expect(newSnapshot?.taskIds?.every((id) => useStore.getState().tasks.some((item) => item.id === id))).toBe(true)
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('1 条成功，1 条失败'), 'info')
+    dbMockState.putTaskFailuresRemaining = 0
   })
 
   it('updates task progress when submitting a gallery task', async () => {
@@ -3968,6 +4055,42 @@ describe('agent context for removed outputs', () => {
     // 无关任务的导出文件不在删除列表
     const calledPaths = deleteLocalImageFilesMock.mock.calls[0][0] as string[]
     expect(calledPaths).not.toContain('D:\\LocalSaves\\images\\keep.png')
+  })
+
+  it('purges the matching image when its managed workspace file is deleted externally', async () => {
+    const asset: GeneratedAsset = {
+      id: 'asset-missing-file',
+      imageId: 'img-missing-file',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      trashedAt: null,
+      favorite: false,
+      rating: 0,
+      collectionIds: [],
+      tagIds: [],
+      origins: [],
+      primaryOriginKey: null,
+      parentAssetIds: [],
+      metadataVersion: 1,
+    }
+    dbMockState.assetsByImage.set(asset.imageId, asset)
+    const missingPath = 'D:\\LocalSaves\\images\\项目\\missing.png'
+    useAssetLibraryStore.setState({ assetsById: { [asset.id]: asset }, assetOrder: [asset.id] })
+    useStore.setState({
+      tasks: [
+        task({
+          id: 'task-missing-file',
+          outputImages: [asset.imageId],
+          localSavedOutputImagePaths: { [`0:${asset.imageId}`]: missingPath },
+        }),
+      ],
+    })
+
+    await expect(removeDeletedLocalImage({ path: missingPath })).resolves.toBe(1)
+    expect(dbMockState.purgedAssetIds).toContain(asset.id)
+    expect(useStore.getState().tasks[0].outputImages[0]).toBeUndefined()
+    expect(useStore.getState().tasks[0].localSavedOutputImagePaths).toEqual({})
   })
 
   it('deletes local saved output files when removing multiple tasks', async () => {

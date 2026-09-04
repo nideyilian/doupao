@@ -4,7 +4,9 @@ import {
   clearSopAiRevisionThread,
   createSopAiRevisionMessage,
   getSopAiRevisionJobState,
+  getSopAiRevisionAttachmentReferences,
   loadSopAiRevisionThread,
+  removeSopAiRevisionAttachments,
   saveSopAiRevisionThread,
   startSopAiRevisionJob,
 } from './sopAiRevision'
@@ -15,6 +17,10 @@ function createStorage() {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => values.set(key, value),
     removeItem: (key: string) => values.delete(key),
+    key: (index: number) => Array.from(values.keys())[index] ?? null,
+    get length() {
+      return values.size
+    },
   }
 }
 
@@ -76,5 +82,35 @@ describe('SOP AI revision thread storage', () => {
     ])
     expect(getSopAiRevisionJobState('sop-a').status).toBe('idle')
     clearSopAiRevisionJob('sop-a')
+  })
+
+  it('persists attachment metadata and exposes references for image cleanup protection', () => {
+    const storage = createStorage()
+    const message = createSopAiRevisionMessage('user', '参考这张图', undefined, [{ id: 'image-a', name: '参考图.png' }])
+    saveSopAiRevisionThread('sop-a', [message], storage)
+
+    expect(loadSopAiRevisionThread('sop-a', storage).messages[0].attachments).toEqual([
+      { id: 'image-a', name: '参考图.png' },
+    ])
+    expect(getSopAiRevisionAttachmentReferences(storage)).toEqual([{ documentId: 'sop-a', imageId: 'image-a' }])
+  })
+
+  it('removes purged images from all persisted SOP AI messages', () => {
+    const storage = createStorage()
+    saveSopAiRevisionThread(
+      'sop-a',
+      [
+        createSopAiRevisionMessage('user', '看图', undefined, [
+          { id: 'image-a', name: 'a.png' },
+          { id: 'image-b', name: 'b.png' },
+        ]),
+      ],
+      storage,
+    )
+
+    expect(removeSopAiRevisionAttachments(new Set(['image-a']), storage)).toBe(1)
+    expect(loadSopAiRevisionThread('sop-a', storage).messages[0].attachments).toEqual([
+      { id: 'image-b', name: 'b.png' },
+    ])
   })
 })

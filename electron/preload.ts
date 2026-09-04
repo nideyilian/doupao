@@ -124,6 +124,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+  loadApiSecrets: () => ipcRenderer.invoke('settings:load-api-secrets'),
+  saveApiSecrets: (secrets: unknown) => ipcRenderer.invoke('settings:save-api-secrets', secrets),
   getStartupMode: () => ipcRenderer.invoke('app:get-startup-mode'),
   getCloseToTray: () => ipcRenderer.invoke('app:get-close-to-tray'),
   setCloseToTray: (enabled: boolean) => ipcRenderer.invoke('app:set-close-to-tray', { enabled }),
@@ -190,6 +192,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
     ipcRenderer.on('app:deep-link', handler)
     return () => ipcRenderer.removeListener('app:deep-link', handler)
+  },
+  onLibraryImageFileRemoved: (callback: (payload: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
+    ipcRenderer.on('library:image-file-removed', handler)
+    return () => ipcRenderer.removeListener('library:image-file-removed', handler)
   },
   getDiskStorageUsage: () => ipcRenderer.invoke('storage:get-disk-usage'),
   writeImageToClipboard: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),

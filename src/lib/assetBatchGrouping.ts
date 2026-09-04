@@ -1,4 +1,5 @@
 import type { GeneratedAsset, GeneratedAssetOrigin, SopBatchSnapshot, TaskRecord } from '../types'
+import { hasCompletedTaskOutputs } from './taskProgressDisplay'
 
 /**
  * 素材库「生成批次」展现方式的分组纯函数。
@@ -66,7 +67,7 @@ function summarizeTasks(tasks: TaskRecord[]): AssetBatchGroupSummary {
   return tasks.reduce<AssetBatchGroupSummary>(
     (summary, task) => {
       if (task.status === 'running') summary.running += 1
-      else if (task.status === 'error') summary.failed += 1
+      else if (task.status === 'error' && !hasCompletedTaskOutputs(task)) summary.failed += 1
       else summary.completed += 1
       summary.total += 1
       return summary
@@ -77,7 +78,10 @@ function summarizeTasks(tasks: TaskRecord[]): AssetBatchGroupSummary {
 
 /** 任务是否有失败迹象：完全失败（status=error）或部分失败（status=done 但含失败槽位）。 */
 export function hasTaskFailure(task: TaskRecord): boolean {
-  return task.status === 'error' || (task.batchItemErrors != null && task.batchItemErrors.length > 0)
+  return (
+    (task.status === 'error' && !hasCompletedTaskOutputs(task)) ||
+    (task.batchItemErrors != null && task.batchItemErrors.length > 0 && !hasCompletedTaskOutputs(task))
+  )
 }
 
 export interface AssetBatchGroupingOptions {
@@ -296,7 +300,7 @@ export function buildAssetBatchOverview(
     const task = tasksById.get(taskId)
     if (!task) continue
     if (task.status === 'running') running += 1
-    else if (task.status === 'error') failed += 1
+    else if (task.status === 'error' && !hasCompletedTaskOutputs(task)) failed += 1
     else completed += 1
   }
   return {

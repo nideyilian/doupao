@@ -96,6 +96,38 @@ describe('SQLite asset catalog', () => {
     expect(second.nextCursor).toBeNull()
   })
 
+  it('paginates text searches beyond fifty matching assets', () => {
+    const catalog = new AssetCatalog(':memory:')
+    catalogs.push(catalog)
+    catalog.upsertAssets(
+      Array.from({ length: 75 }, (_, index) => ({
+        asset: makeAsset(`search-${String(index).padStart(2, '0')}`, `共同关键词 ${index}`, 1000 - index),
+      })),
+    )
+
+    const first = catalog.query({
+      scope: 'all',
+      query: '共同关键词',
+      filters: {},
+      sortKey: 'updatedAt',
+      sortOrder: 'desc',
+      limit: 40,
+    })
+    const second = catalog.query({
+      scope: 'all',
+      query: '共同关键词',
+      filters: {},
+      sortKey: 'updatedAt',
+      sortOrder: 'desc',
+      limit: 40,
+      cursor: first.nextCursor,
+    })
+
+    expect(first.assets).toHaveLength(40)
+    expect(second.assets).toHaveLength(35)
+    expect(new Set([...first.assets, ...second.assets].map((asset) => asset.id)).size).toBe(75)
+  })
+
   it('keeps collections, tags and tombstones as authoritative metadata tables', () => {
     const catalog = new AssetCatalog(':memory:')
     catalogs.push(catalog)

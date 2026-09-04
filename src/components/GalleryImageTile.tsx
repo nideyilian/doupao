@@ -51,6 +51,8 @@ function GalleryImageTile({
   const hoveredRef = useRef(false)
   const hoverLoadVersionRef = useRef(0)
   const loadedImageIdRef = useRef(item.imageId)
+  const onAspectRatioChangeRef = useRef(onAspectRatioChange)
+  onAspectRatioChangeRef.current = onAspectRatioChange
 
   useEffect(() => {
     let cancelled = false
@@ -64,7 +66,7 @@ function GalleryImageTile({
     const applyThumbnail = (thumbnail: { dataUrl: string; width?: number; height?: number }) => {
       if (cancelled) return
       setThumbnailSrc(thumbnail.dataUrl)
-      if (thumbnail.width && thumbnail.height) onAspectRatioChange?.(thumbnail.width / thumbnail.height)
+      if (thumbnail.width && thumbnail.height) onAspectRatioChangeRef.current?.(thumbnail.width / thumbnail.height)
     }
     const unsubscribe = subscribeImageThumbnail(item.imageId, applyThumbnail)
     ensureImageThumbnailCached(item.imageId)

@@ -120,6 +120,8 @@ function resetState() {
     batchFocusTaskId: null,
     viewerAssetId: null,
     viewerAssetIds: [],
+    quickPreviewAssetId: null,
+    hoveredAssetId: null,
     savedFilters: [],
     pinnedFilters: [],
     visibleFilterControls: [],
@@ -316,6 +318,10 @@ describe('mutation actions', () => {
       assetOrder: ['a', 'b'],
       selectedAssetIds: ['a'],
       activeAssetId: 'a',
+      viewerAssetId: 'a',
+      viewerAssetIds: ['a', 'b'],
+      quickPreviewAssetId: 'a',
+      hoveredAssetId: 'a',
     })
     useAssetLibraryStore.getState().removeAssetLocal('a')
     const state = useAssetLibraryStore.getState()
@@ -323,6 +329,10 @@ describe('mutation actions', () => {
     expect(state.assetOrder).toEqual(['b'])
     expect(state.selectedAssetIds).toEqual([])
     expect(state.activeAssetId).toBeNull()
+    expect(state.viewerAssetId).toBeNull()
+    expect(state.viewerAssetIds).toEqual(['b'])
+    expect(state.quickPreviewAssetId).toBeNull()
+    expect(state.hoveredAssetId).toBeNull()
   })
 
   it('purges the current selection through the main store', async () => {

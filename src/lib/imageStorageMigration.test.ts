@@ -18,15 +18,32 @@ describe('migrateLegacyImages', () => {
     expect(writes).toEqual([{ ...legacy, localPath: '/cache/legacy-a.png', dataUrl: undefined }])
   })
 
-  it('fails promptly and preserves IndexedDB data when the local write fails', async () => {
+  it('skips a failed image, preserves its data, and continues migrating later images', async () => {
     const replaceImage = vi.fn()
-    await expect(
-      migrateLegacyImages({
-        readBatch: async () => [legacy],
-        saveImage: async () => null,
-        replaceImage,
-      }),
-    ).rejects.toThrow('legacy-a')
-    expect(replaceImage).not.toHaveBeenCalled()
+    const later = { id: 'legacy-b', dataUrl: 'data:image/png;base64,Yg==' }
+    const remaining = new Map([
+      [legacy.id, legacy],
+      [later.id, later],
+    ])
+    const failures: string[] = []
+    const migrated = await migrateLegacyImages({
+      readBatch: async (limit) => [...remaining.values()].slice(0, limit),
+      saveImage: async (image) => (image.id === legacy.id ? null : `/cache/${image.id}.png`),
+      replaceImage: async (image) => {
+        remaining.delete(image.id)
+        replaceImage(image)
+      },
+      onFailure: (image) => failures.push(image.id),
+      yieldToEventLoop: async () => {},
+    })
+
+    expect(migrated).toBe(1)
+    expect(failures).toEqual(['legacy-a'])
+    expect(remaining.get('legacy-a')).toEqual(legacy)
+    expect(replaceImage).toHaveBeenCalledWith({
+      ...later,
+      localPath: '/cache/legacy-b.png',
+      dataUrl: undefined,
+    })
   })
 })

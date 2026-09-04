@@ -100,6 +100,19 @@ describe('getTaskProgressDisplay', () => {
     expect(display.detailDescription).toContain('API key 无效')
   })
 
+  it('keeps a task successful when all requested output images exist despite a stale error status', () => {
+    const display = getTaskProgressDisplay(
+      task({
+        status: 'error',
+        error: '缩略图加载超时',
+        outputImages: ['img-1', 'img-2', 'img-3', 'img-4'],
+      }),
+    )
+
+    expect(display.cardLabel).toBe('已完成')
+    expect(display.tone).toBe('success')
+  })
+
   it('shows stopped label for interrupted tasks', () => {
     const display = getTaskProgressDisplay(
       task({

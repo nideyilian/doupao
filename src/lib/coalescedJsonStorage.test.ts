@@ -46,4 +46,26 @@ describe('createCoalescedJsonStorage', () => {
 
     expect(write).toHaveBeenCalledWith('', { skipBackup: true })
   })
+
+  it('keeps a failed write pending and retries the latest content', async () => {
+    const onWriteError = vi.fn()
+    const write = vi.fn().mockRejectedValueOnce(new Error('disk full')).mockResolvedValueOnce(true)
+    const storage = createCoalescedJsonStorage(
+      {
+        read: async () => null,
+        write,
+      },
+      { onWriteError },
+    )
+
+    const saved = storage.setItem('state', 'latest')
+    await expect(storage.flush()).rejects.toThrow('disk full')
+    expect(onWriteError).toHaveBeenCalledTimes(1)
+
+    await storage.flush()
+    await saved
+
+    expect(write).toHaveBeenCalledTimes(2)
+    expect(write).toHaveBeenLastCalledWith('latest', { skipBackup: false })
+  })
 })

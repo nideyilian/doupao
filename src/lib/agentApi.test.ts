@@ -47,7 +47,7 @@ describe('callAgentResponsesApi', () => {
     const result = await callAgentResponsesApi({
       settings: DEFAULT_SETTINGS,
       profile,
-      params: DEFAULT_PARAMS,
+      params: { ...DEFAULT_PARAMS, size: '720x1280' },
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'prompt' }] }],
       onTextDelta: (delta) => textDeltas.push(delta),
     })
@@ -55,6 +55,7 @@ describe('callAgentResponsesApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
+    expect(body.tools[0].size).toBe('720x1280')
     expect(body.tools[0].partial_images).toBe(2)
     expect(body.instructions).toContain('Information-flow ad negative constraints')
     expect(body.instructions).toContain(
@@ -77,7 +78,13 @@ describe('callAgentResponsesApi', () => {
     expect(result).toMatchObject({
       responseId: 'resp_1',
       text: 'Hello',
-      images: [{ toolCallId: 'ig_1', dataUrl: 'data:image/png;base64,ZmluYWw=' }],
+      images: [
+        {
+          toolCallId: 'ig_1',
+          dataUrl: 'data:image/png;base64,ZmluYWw=',
+          actualParams: { size: '1024x1024' },
+        },
+      ],
     })
   })
 
@@ -208,6 +215,43 @@ describe('callAgentResponsesApi', () => {
         }),
       ],
     })
+  })
+
+  it('automatically uses Chat Completions and hybrid tools for a Gemini model', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: '可以。' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const result = await callAgentApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        agentApiConfigMode: 'native',
+        agentTextProtocol: 'responses',
+      },
+      profile: createDefaultOpenAIProfile({
+        baseUrl: 'https://jbbt.pages.dev/v1',
+        apiKey: 'test-key',
+        model: 'gemini-3.1-pro',
+        apiMode: 'responses',
+        streamImages: false,
+      }),
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: '你好' }] }],
+    })
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/chat/completions')
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function',
+          function: expect.objectContaining({ name: 'generate_image' }),
+        }),
+      ]),
+    )
+    expect(result.text).toBe('可以。')
   })
 
   it('assembles streamed Chat Completions text and tool arguments', async () => {
@@ -487,6 +531,102 @@ describe('callAgentResponsesApi', () => {
       content: '# SOP\n\n1. 执行\n2. 验收',
       changeSummary: ['补充验收标准', '压缩重复说明'],
     })
+  })
+
+  it('passes SOP AI conversation images to the Responses API', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output: [
+            {
+              type: 'message',
+              content: [
+                {
+                  type: 'output_text',
+                  text: JSON.stringify({
+                    assistant_reply: '已参考图片。',
+                    change_summary: ['结合图片调整'],
+                    revised_sop: '# SOP\n\n执行。',
+                  }),
+                },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      model: 'agent-sop-chat-model',
+    })
+
+    await reviseSopDocument({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      content: '# SOP\n\n执行。',
+      conversation: [
+        {
+          role: 'user',
+          text: '参考这张图调整风格',
+          imageDataUrls: ['data:image/png;base64,reference'],
+        },
+      ],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.input.at(-1).content).toEqual([
+      { type: 'input_text', text: '参考这张图调整风格' },
+      { type: 'input_image', image_url: 'data:image/png;base64,reference' },
+    ])
+  })
+
+  it('converts SOP AI conversation images for Chat Completions providers', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  assistant_reply: '已参考图片。',
+                  change_summary: ['结合图片调整'],
+                  revised_sop: '# SOP\n\n执行。',
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      model: 'agent-sop-chat-model',
+    })
+
+    await reviseSopDocument({
+      settings: { ...DEFAULT_SETTINGS, agentTextProtocol: 'chat-completions' },
+      profile,
+      content: '# SOP\n\n执行。',
+      conversation: [
+        {
+          role: 'user',
+          text: '参考这张图调整风格',
+          imageDataUrls: ['data:image/png;base64,reference'],
+        },
+      ],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.messages.at(-1).content).toEqual([
+      { type: 'text', text: '参考这张图调整风格' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,reference' } },
+    ])
   })
 
   it('rejects a generalization revision that adds variable-prompt syntax', async () => {

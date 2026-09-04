@@ -1,4 +1,5 @@
 import type { TaskRecord } from '../types'
+import { hasCompletedTaskOutputs } from './taskProgressDisplay'
 
 export type SopBatchSummary = {
   total: number
@@ -63,7 +64,7 @@ function summarize(tasks: TaskRecord[]): SopBatchSummary {
   return tasks.reduce<SopBatchSummary>(
     (summary, task) => {
       if (task.status === 'running') summary.running += 1
-      else if (task.status === 'error') summary.failed += 1
+      else if (task.status === 'error' && !hasCompletedTaskOutputs(task)) summary.failed += 1
       else summary.completed += 1
       summary.total += 1
       return summary

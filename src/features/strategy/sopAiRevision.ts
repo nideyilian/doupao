@@ -1,8 +1,14 @@
+export type SopAiRevisionAttachment = {
+  id: string
+  name: string
+}
+
 export type SopAiRevisionMessage = {
   id: string
   role: 'user' | 'assistant'
   text: string
   createdAt: number
+  attachments?: SopAiRevisionAttachment[]
   revision?: {
     content: string
     changeSummary: string[]
@@ -23,6 +29,7 @@ export type SopAiRevisionThread = {
 }
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+type EnumerableStorageLike = StorageLike & Partial<Pick<Storage, 'key' | 'length'>>
 
 type SopAiRevisionResult = {
   reply: string
@@ -47,7 +54,7 @@ const revisionJobs = new Map<string, SopAiRevisionJob>()
 const revisionJobListeners = new Map<string, Set<(state: SopAiRevisionJobState) => void>>()
 const IDLE_JOB_STATE: SopAiRevisionJobState = { status: 'idle' }
 
-function getStorage(): StorageLike | null {
+function getStorage(): Storage | null {
   return typeof window === 'undefined' ? null : window.localStorage
 }
 
@@ -60,6 +67,19 @@ function isRevisionMessage(value: unknown): value is SopAiRevisionMessage {
   const message = value as Partial<SopAiRevisionMessage>
   if (typeof message.id !== 'string' || (message.role !== 'user' && message.role !== 'assistant')) return false
   if (typeof message.text !== 'string' || typeof message.createdAt !== 'number') return false
+  if (
+    message.attachments !== undefined &&
+    (!Array.isArray(message.attachments) ||
+      !message.attachments.every(
+        (item) =>
+          item &&
+          typeof item === 'object' &&
+          typeof (item as SopAiRevisionAttachment).id === 'string' &&
+          typeof (item as SopAiRevisionAttachment).name === 'string',
+      ))
+  ) {
+    return false
+  }
   if (!message.revision) return true
   return (
     typeof message.revision.content === 'string' &&
@@ -113,16 +133,69 @@ export function clearSopAiRevisionThread(documentId: string, storage: StorageLik
   }
 }
 
+export function getSopAiRevisionAttachmentReferences(
+  storage: EnumerableStorageLike | null = getStorage(),
+): Array<{ documentId: string; imageId: string }> {
+  if (!storage || typeof storage.length !== 'number' || typeof storage.key !== 'function') return []
+  const references: Array<{ documentId: string; imageId: string }> = []
+  const seen = new Set<string>()
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index)
+    if (!key?.startsWith(STORAGE_PREFIX)) continue
+    const documentId = key.slice(STORAGE_PREFIX.length)
+    for (const message of loadSopAiRevisionThread(documentId, storage).messages) {
+      for (const attachment of message.attachments ?? []) {
+        const referenceKey = `${documentId}:${attachment.id}`
+        if (seen.has(referenceKey)) continue
+        seen.add(referenceKey)
+        references.push({ documentId, imageId: attachment.id })
+      }
+    }
+  }
+  return references
+}
+
+export function removeSopAiRevisionAttachments(
+  imageIds: ReadonlySet<string>,
+  storage: EnumerableStorageLike | null = getStorage(),
+): number {
+  if (!storage || typeof storage.length !== 'number' || typeof storage.key !== 'function' || imageIds.size === 0)
+    return 0
+  const documentIds: string[] = []
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index)
+    if (key?.startsWith(STORAGE_PREFIX)) documentIds.push(key.slice(STORAGE_PREFIX.length))
+  }
+
+  let changedThreads = 0
+  for (const documentId of documentIds) {
+    const thread = loadSopAiRevisionThread(documentId, storage)
+    let changed = false
+    const messages = thread.messages.map((message) => {
+      const attachments = message.attachments?.filter((attachment) => !imageIds.has(attachment.id))
+      if (attachments?.length === message.attachments?.length) return message
+      changed = true
+      return { ...message, attachments: attachments?.length ? attachments : undefined }
+    })
+    if (!changed) continue
+    saveSopAiRevisionThread(documentId, messages, storage)
+    changedThreads++
+  }
+  return changedThreads
+}
+
 export function createSopAiRevisionMessage(
   role: SopAiRevisionMessage['role'],
   text: string,
   revision?: SopAiRevisionMessage['revision'],
+  attachments?: SopAiRevisionAttachment[],
 ): SopAiRevisionMessage {
   return {
     id: `sop-ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     role,
     text,
     createdAt: Date.now(),
+    ...(attachments?.length ? { attachments } : {}),
     revision,
   }
 }

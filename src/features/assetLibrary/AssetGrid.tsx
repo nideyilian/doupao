@@ -14,6 +14,7 @@ import {
 import type { GeneratedAsset } from '../../types'
 import { HOVER_FULL_IMAGE_LIMIT } from '../../lib/imageHover'
 import { markScrollActivity } from '../../lib/scrollActivity'
+import { prefetchImageThumbnails } from '../../store'
 import { ImageIcon } from '../../design-system/icons'
 import { EmptyState } from '../../design-system'
 import { useDragSelect, getMarqueeBoxStyle } from '../../hooks/useDragSelect'
@@ -23,8 +24,10 @@ import AssetTile, { type TileSelectMode } from './AssetTile'
 
 const CARD_GAP = 12
 const VIRTUAL_OVERSCAN = 900
+const SCROLL_PREFETCH_COUNT = 48
 
 export interface AssetMasonryItem {
+  index: number
   asset: GeneratedAsset
   left: number
   top: number
@@ -68,6 +71,7 @@ export function buildAssetMasonryLayout(
     const left = column * (itemWidth + CARD_GAP)
     const top = heights[column]
     const item: AssetMasonryItem = {
+      index,
       asset,
       left,
       top,
@@ -143,6 +147,12 @@ export default function AssetGrid({
   const scrollRef = useRef<HTMLDivElement>(null)
   const layoutRef = useRef<HTMLDivElement>(null)
   const scrollFrameRef = useRef<number | null>(null)
+  const prefetchFrameRef = useRef<number | null>(null)
+  const lastScrollTopRef = useRef(0)
+  const visibleItemsRef = useRef<AssetMasonryItem[]>([])
+  const pendingPrefetchDirectionRef = useRef<-1 | 1>(1)
+  const initialPrefetchKeyRef = useRef<string | undefined>(undefined)
+  const hasInitialPrefetchedRef = useRef(false)
   const suppressClickUntilRef = useRef(0)
   const [layoutWidth, setLayoutWidth] = useState(0)
   const [viewport, setViewport] = useState({ top: 0, height: 800 })
@@ -284,6 +294,7 @@ export default function AssetGrid({
   useEffect(
     () => () => {
       if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current)
+      if (prefetchFrameRef.current !== null) cancelAnimationFrame(prefetchFrameRef.current)
     },
     [],
   )
@@ -298,6 +309,21 @@ export default function AssetGrid({
     const max = viewport.top + viewport.height + VIRTUAL_OVERSCAN
     return layout.items.filter((item) => item.top + item.height >= min && item.top <= max)
   }, [layout.items, viewport])
+
+  useEffect(() => {
+    visibleItemsRef.current = visibleItems
+  }, [visibleItems])
+
+  useEffect(() => {
+    if (assets.length === 0) return
+    if (hasInitialPrefetchedRef.current && initialPrefetchKeyRef.current === resetScrollKey) return
+    hasInitialPrefetchedRef.current = true
+    initialPrefetchKeyRef.current = resetScrollKey
+    prefetchImageThumbnails(
+      assets.slice(0, SCROLL_PREFETCH_COUNT).map((asset) => asset.imageId),
+      'ahead',
+    )
+  }, [assets, resetScrollKey])
 
   // 数学命中：虚拟布局数据已知（top/left/width/height），框选拖拽每帧零强制布局。
   // 只测已挂载（可见 + 预取）的卡片，与 DOM 命中语义一致；布局层矩形随滚动自动校正。
@@ -337,6 +363,31 @@ export default function AssetGrid({
   const handleScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       const element = event.currentTarget
+      const direction: -1 | 1 = element.scrollTop >= lastScrollTopRef.current ? 1 : -1
+      lastScrollTopRef.current = element.scrollTop
+      pendingPrefetchDirectionRef.current = direction
+      if (prefetchFrameRef.current === null) {
+        prefetchFrameRef.current = requestAnimationFrame(() => {
+          prefetchFrameRef.current = null
+          const direction = pendingPrefetchDirectionRef.current
+          const mounted = visibleItemsRef.current
+          if (mounted.length === 0) return
+          const minIndex = Math.min(...mounted.map((item) => item.index))
+          const maxIndex = Math.max(...mounted.map((item) => item.index))
+          const start =
+            direction > 0 ? Math.min(assets.length, maxIndex + 1) : Math.max(0, minIndex - SCROLL_PREFETCH_COUNT)
+          const end =
+            direction > 0
+              ? Math.min(assets.length, maxIndex + 1 + SCROLL_PREFETCH_COUNT)
+              : Math.min(assets.length, minIndex)
+          if (end > start) {
+            prefetchImageThumbnails(
+              assets.slice(start, end).map((asset) => asset.imageId),
+              'ahead',
+            )
+          }
+        })
+      }
       if (hasMore && !loadingMore && element.scrollHeight - element.scrollTop - element.clientHeight < 1200)
         onLoadMore?.()
       if (scrollFrameRef.current !== null) return
@@ -346,7 +397,7 @@ export default function AssetGrid({
         setViewport({ top: element.scrollTop, height: element.clientHeight })
       })
     },
-    [hasMore, loadingMore, onLoadMore],
+    [assets, hasMore, loadingMore, onLoadMore],
   )
 
   // 键盘方向键导航：←/→ 相邻卡片，↑/↓ 换行（按当前列数），Home/End 首尾；

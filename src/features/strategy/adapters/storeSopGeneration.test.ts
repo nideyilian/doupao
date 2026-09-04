@@ -27,6 +27,7 @@ vi.mock('../../../lib/apiProfiles', () => ({
     model: 'gpt-test',
     apiProxy: false,
   }),
+  getAgentTextProtocol: () => 'responses',
   validateApiProfile: () => null,
 }))
 

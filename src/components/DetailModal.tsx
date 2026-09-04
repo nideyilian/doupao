@@ -28,7 +28,7 @@ import {
   getGeneratedImageDownloadEntries,
 } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
-import { getTaskProgressDisplay } from '../lib/taskProgressDisplay'
+import { getTaskProgressDisplay, hasCompletedTaskOutputs } from '../lib/taskProgressDisplay'
 import { replaceImageMentionsForApi, getPromptMentionParts } from '../lib/promptImageMentions'
 import { getHoverPreviewPosition, getHoverPreviewSize } from '../lib/hoverPreviewPosition'
 import { isElectron as isElectronEnv, openInExplorer } from '../lib/localSave'
@@ -48,6 +48,7 @@ import ViewportTooltip from './ViewportTooltip'
 
 const HOVER_PREVIEW_MAX_LONG_EDGE = 1024
 const TASK_DETAIL_MODAL_MODE_STORAGE_KEY = 'doupao.task-detail-modal-mode'
+const EMPTY_IMAGE_IDS: string[] = []
 /** 打开弹窗后的遮罩点击保护窗口：连点/双击打开时第二次点击会落在遮罩上，窗口内忽略避免刚打开就被关闭 */
 const BACKDROP_CLOSE_GUARD_MS = 400
 
@@ -104,12 +105,17 @@ export default function DetailModal() {
   const openImageDirectoryTooltip = useTooltip()
 
   const task = useMemo(() => tasks.find((t) => t.id === detailTaskId) ?? null, [tasks, detailTaskId])
+  const taskPrompt = task?.prompt ?? ''
+  const taskOutputImages = task?.outputImages ?? EMPTY_IMAGE_IDS
+  const taskInputImageIds = task?.inputImageIds ?? EMPTY_IMAGE_IDS
+  const taskMaskImageId = task?.maskImageId ?? null
+  const taskActualParamsByImage = task?.actualParamsByImage
 
   const wordLibraryEntries = useStore((s) => s.wordLibraryEntries)
 
   const VAR_COLOR_MAP = useMemo(() => buildVariableColorMap(wordLibraryEntries), [wordLibraryEntries])
 
-  const promptParts = useMemo(() => (task ? getPromptMentionParts(task.prompt || '', []) : []), [task?.prompt])
+  const promptParts = useMemo(() => getPromptMentionParts(taskPrompt, []), [taskPrompt])
 
   const [isEditingParams, setIsEditingParams] = useState(false)
   const [editPrompt, setEditPrompt] = useState('')
@@ -136,14 +142,14 @@ export default function DetailModal() {
   }
 
   useEffect(() => {
-    if (task && task.isFavorite) {
+    if (task?.isFavorite) {
       setIsEditingParams(true)
       setEditPrompt(task.prompt)
       setEditParams(task.params)
     } else {
       setIsEditingParams(false)
     }
-  }, [task?.id]) // Run once when the modal opens for a task
+  }, [task?.id, task?.isFavorite, task?.params, task?.prompt])
 
   const clearTextSelection = () => {
     const selection = window.getSelection()
@@ -223,7 +229,8 @@ export default function DetailModal() {
 
   // Open the requested output when the detail view came from image tiles.
   useEffect(() => {
-    const requestedIndex = detailImageId ? (task?.outputImages.indexOf(detailImageId) ?? -1) : -1
+    const currentTask = detailTaskId ? useStore.getState().tasks.find((item) => item.id === detailTaskId) : null
+    const requestedIndex = detailImageId ? (currentTask?.outputImages.indexOf(detailImageId) ?? -1) : -1
     setImageIndex(requestedIndex >= 0 ? requestedIndex : 0)
   }, [detailImageId, detailTaskId])
 
@@ -237,7 +244,7 @@ export default function DetailModal() {
 
   // 加载所有相关图片
   useEffect(() => {
-    if (!task) {
+    if (!detailTaskId) {
       setImageSrcs({})
       setOutputPreviewSrcs({})
       setImageRatios({})
@@ -246,7 +253,7 @@ export default function DetailModal() {
     }
 
     let cancelled = false
-    const ids = [...new Set([...(task.inputImageIds || []), ...(task.maskImageId ? [task.maskImageId] : [])])]
+    const ids = [...new Set([...taskInputImageIds, ...(taskMaskImageId ? [taskMaskImageId] : [])])]
     const initial: Record<string, string> = {}
     for (const id of ids) {
       const cached = getCachedImage(id)
@@ -263,18 +270,17 @@ export default function DetailModal() {
     return () => {
       cancelled = true
     }
-  }, [task])
+  }, [detailTaskId, taskInputImageIds, taskMaskImageId])
 
-  const currentOutputImageId =
-    (imageIndex < (task?.outputImages?.length || 0) ? task?.outputImages?.[imageIndex] : '') || ''
+  const currentOutputImageId = (imageIndex < taskOutputImages.length ? taskOutputImages[imageIndex] : '') || ''
   const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
   const maskTargetId = task?.maskTargetImageId || null
   const maskTargetSrc = maskTargetId ? imageSrcs[maskTargetId] || '' : ''
   const maskSrc = task?.maskImageId ? imageSrcs[task.maskImageId] || '' : ''
-  const allInputImageIds = task?.inputImageIds ?? []
+  const allInputImageIds = taskInputImageIds
 
   useEffect(() => {
-    const outputImageIds = task?.outputImages ?? []
+    const outputImageIds = taskOutputImages
     if (outputImageIds.length === 0) {
       setOutputPreviewSrcs({})
       setOutputThumbSrcs({})
@@ -285,9 +291,9 @@ export default function DetailModal() {
     const initialRatios: Record<string, string> = {}
     const initialSizes: Record<string, string> = {}
 
-    if (task && task.actualParamsByImage) {
+    if (taskActualParamsByImage) {
       for (const imageId of outputImageIds) {
-        const params = task.actualParamsByImage[imageId]
+        const params = taskActualParamsByImage[imageId]
         if (params?.size && typeof params.size === 'string') {
           const [w, h] = params.size.split('x').map(Number)
           if (w && h) {
@@ -323,11 +329,11 @@ export default function DetailModal() {
       cancelled = true
       unsubscribes.forEach((fn) => fn())
     }
-  }, [task?.outputImages, task?.actualParamsByImage])
+  }, [taskActualParamsByImage, taskOutputImages])
 
   // 当前激活/收藏的图片按需加载原图（其他缩略图仅用 512px 缩略图展示）。
   useEffect(() => {
-    const outputImageIds = task?.outputImages ?? []
+    const outputImageIds = taskOutputImages
     if (outputImageIds.length === 0) return
 
     let cancelled = false
@@ -352,7 +358,7 @@ export default function DetailModal() {
     return () => {
       cancelled = true
     }
-  }, [currentOutputImageId, task?.isFavorite, task?.outputImages])
+  }, [currentOutputImageId, task?.isFavorite, taskOutputImages])
 
   useEffect(() => {
     let cancelled = false
@@ -374,8 +380,11 @@ export default function DetailModal() {
 
   // 实时进度订阅必须在 early return 之前调用（hooks 顺序规则）；
   // selector 对 task 为空做防御，组件挂载后 task 从空变为非空时也不会改变 hook 顺序。
+  const displayTaskStatus = task?.status === 'error' && hasCompletedTaskOutputs(task) ? 'done' : task?.status
   const liveTaskProgress = useRuntimeStore((s) =>
-    task && (task.status === 'running' || (task.status === 'error' && (task.falRecoverable || task.customRecoverable)))
+    task &&
+    (displayTaskStatus === 'running' ||
+      (displayTaskStatus === 'error' && (task.falRecoverable || task.customRecoverable)))
       ? s.taskProgress[task.id]
       : undefined,
   )
@@ -384,7 +393,7 @@ export default function DetailModal() {
 
   const isAgentTask = task.sourceMode === 'agent' || Boolean(task.agentConversationId || task.agentRoundId)
   const showPendingPrompt = isAgentTaskPromptPending(task)
-  const isAgentEditTool = task.status === 'done' && String(task.agentToolAction ?? '').toLowerCase() === 'edit'
+  const isAgentEditTool = displayTaskStatus === 'done' && String(task.agentToolAction ?? '').toLowerCase() === 'edit'
   const showReferenceSection = allInputImageIds.length > 0 || isAgentEditTool
 
   const outputLen = task.outputImages?.length || 0
@@ -411,12 +420,12 @@ export default function DetailModal() {
   const taskProfileName = task.apiProfileName || '未知'
   const taskModel = task.apiModel || '未知'
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
-  const isFalReconnecting = task.status === 'error' && task.falRecoverable
-  const isCustomReconnecting = task.status === 'error' && task.customRecoverable
+  const isFalReconnecting = displayTaskStatus === 'error' && task.falRecoverable
+  const isCustomReconnecting = displayTaskStatus === 'error' && task.customRecoverable
   const hasPartialSuccess =
-    task.status === 'error' && (task.outputImages?.length ?? 0) > 0 && !isFalReconnecting && !isCustomReconnecting
+    displayTaskStatus === 'error' && (task.outputImages?.length ?? 0) > 0 && !isFalReconnecting && !isCustomReconnecting
   const progressDisplay = getTaskProgressDisplay(task, liveTaskProgress)
-  const showProgressDetails = task.status !== 'done' || progressDisplay.cardLabel === '数量不够'
+  const showProgressDetails = displayTaskStatus !== 'done' || progressDisplay.cardLabel === '数量不够'
   const rawImageUrls = task.rawImageUrls ?? []
   const streamPreviewLen = streamPreviewItems.length
   const currentStreamPreviewSrc = activeStreamPreviewSrc
@@ -428,7 +437,7 @@ export default function DetailModal() {
   }
 
   const formatDuration = () => {
-    if (task.status === 'running' || isFalReconnecting || isCustomReconnecting) {
+    if (displayTaskStatus === 'running' || isFalReconnecting || isCustomReconnecting) {
       const seconds = Math.max(0, Math.floor((now - task.createdAt) / 1000))
       const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
       const ss = String(seconds % 60).padStart(2, '0')
@@ -737,7 +746,7 @@ export default function DetailModal() {
                     打开原图位置
                   </ViewportTooltip>
                 </div>
-                {task.status === 'running' && (
+                {displayTaskStatus === 'running' && (
                   <span className="flex items-center gap-1 rounded bg-ds-primary px-2 py-0.5 text-xs font-medium text-ds-text-inverse backdrop-blur-sm">
                     <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -950,7 +959,7 @@ export default function DetailModal() {
                 </div>
               </div>
             )
-          ) : task.status === 'running' ? (
+          ) : displayTaskStatus === 'running' ? (
             <div className="m-auto flex flex-col items-center gap-3 text-ds-primary">
               <svg className="h-ds-control-lg w-ds-control-lg animate-spin" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -962,7 +971,7 @@ export default function DetailModal() {
                 </span>
               )}
             </div>
-          ) : task.status === 'error' ? (
+          ) : displayTaskStatus === 'error' ? (
             <div className="m-auto w-full max-w-md px-4 text-center">
               <svg
                 className="w-ds-control-lg h-ds-control-lg text-ds-danger mx-auto mb-2"
@@ -1214,7 +1223,7 @@ export default function DetailModal() {
                       { label: '1536x1024 (3:2 推荐)', value: '1536x1024' },
                       { label: '1024x1536 (2:3 推荐)', value: '1024x1536' },
                       { label: '1280x720 (16:9 推荐)', value: '1280x720' },
-                      { label: '1080x1920 (9:16 推荐)', value: '1080x1920' },
+                      { label: '720x1280 (9:16 推荐)', value: '720x1280' },
                       { label: '1024x768 (4:3)', value: '1024x768' },
                       { label: '768x1024 (3:4)', value: '768x1024' },
                       { label: '2048x2048 (1:1 推荐)', value: '2048x2048' },

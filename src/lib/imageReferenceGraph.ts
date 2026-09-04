@@ -14,6 +14,7 @@ export type ImageReferenceType =
   | 'agent-draft'
   | 'agent-conversation'
   | 'sop-reference'
+  | 'sop-ai-conversation'
   | 'sop-cover'
   | 'strategy-reference'
   | 'strategy-cover'

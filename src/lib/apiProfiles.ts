@@ -44,6 +44,18 @@ export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
+
+export function isGeminiModel(model: string): boolean {
+  return model.trim().toLowerCase().includes('gemini')
+}
+
+export function getAgentTextProtocol(
+  settings: Partial<AppSettings> | unknown,
+  profile?: Pick<ApiProfile, 'model'>,
+): AgentTextProtocol {
+  if (profile && isGeminiModel(profile.model)) return 'chat-completions'
+  return normalizeSettings(settings).agentTextProtocol
+}
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
 
@@ -750,6 +762,9 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
       ? record.activeAgentProfileId
       : (agentProfiles[0]?.id ?? createDefaultAgentProfile().id)
   const activeAgentProfile = agentProfiles.find((profile) => profile.id === activeAgentProfileId) ?? agentProfiles[0]
+  const configuredAgentApiConfigMode = normalizeAgentApiConfigMode(record.agentApiConfigMode)
+  const configuredAgentTextProtocol = normalizeAgentTextProtocol(record.agentTextProtocol)
+  const geminiAgent = isGeminiModel(activeAgentProfile.model)
   const wordLibraryDerivativeRuleMode = normalizeDerivativeRuleMode(record.wordLibraryDerivativeRuleMode)
   const wordLibraryDerivativeRules = normalizeDerivativeRules(record, wordLibraryDerivativeRuleMode)
   const adNegativeRuleProfiles = normalizeAdNegativeRuleProfiles(record.adNegativeRuleProfiles)
@@ -788,8 +803,9 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
       typeof record.agentScrollToBottomAfterSubmit === 'boolean' ? record.agentScrollToBottomAfterSubmit : true,
     agentMaxToolRounds: normalizeAgentMaxToolRounds(record.agentMaxToolRounds),
     agentWebSearch: typeof record.agentWebSearch === 'boolean' ? record.agentWebSearch : false,
-    agentApiConfigMode: normalizeAgentApiConfigMode(record.agentApiConfigMode),
-    agentTextProtocol: normalizeAgentTextProtocol(record.agentTextProtocol),
+    // Gemini 的 OpenAI 兼容中转通常只提供 Chat Completions；自动切换，免得用户手动理解协议差异。
+    agentApiConfigMode: geminiAgent ? 'hybrid' : configuredAgentApiConfigMode,
+    agentTextProtocol: geminiAgent ? 'chat-completions' : configuredAgentTextProtocol,
     allowPromptRewrite: typeof record.allowPromptRewrite === 'boolean' ? record.allowPromptRewrite : false,
     assistantActions: normalizeAssistantActionPreferences(
       record.assistantActions as Partial<AssistantActionPreferences> | undefined,
@@ -960,8 +976,11 @@ export function getAgentProfileValidationError(settings: Partial<AppSettings> | 
   const textProfile = getAgentTextApiProfile(normalized)
   const textError = validateApiProfile(textProfile)
   if (textError) return { message: `文本模型配置：${textError}` }
-  if (textProfile.provider !== 'openai' || textProfile.apiMode !== 'responses') {
-    return { message: '文本模型必须使用支持 Responses API 的 OpenAI 兼容配置' }
+  if (textProfile.provider !== 'openai') {
+    return { message: '文本模型必须使用 OpenAI 兼容的 Agent 服务' }
+  }
+  if (normalized.agentTextProtocol === 'responses' && textProfile.apiMode !== 'responses') {
+    return { message: '当前文本协议需要使用 Responses API 配置' }
   }
   if (normalized.agentApiConfigMode === 'hybrid') {
     const imageError = validateApiProfile(getAgentImageApiProfile(normalized))

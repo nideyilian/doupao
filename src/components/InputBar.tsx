@@ -369,13 +369,11 @@ function syncMentionTagSelection(el: HTMLElement) {
   }
 
   tags.forEach((tag) => {
-    let isSelected = false
     try {
-      isSelected = range.intersectsNode(tag)
+      tag.classList.toggle('selected', range.intersectsNode(tag))
     } catch {
-      isSelected = false
+      tag.classList.remove('selected')
     }
-    tag.classList.toggle('selected', isSelected)
   })
 }
 
@@ -958,20 +956,23 @@ export default function InputBar() {
     setShowGallerySopBatch(true)
   }, [])
 
-  const handleGallerySopRunStatusChange = useCallback((scopeKey: string, nextStatus: GallerySopRunStatus) => {
-    setGallerySopRunStatusByTab((current) => ({ ...current, [scopeKey]: nextStatus }))
-    // 后台静默运行时弹窗不可见，成败必须通过 toast 让用户感知
-    const prevPhase = gallerySopPhaseRef.current[scopeKey]
-    gallerySopPhaseRef.current[scopeKey] = nextStatus.phase
-    if (prevPhase === nextStatus.phase) return
-    if (!silentGallerySopTabsRef.current.has(scopeKey)) return
-    if (nextStatus.phase === 'error') {
-      showToast(nextStatus.message || 'SOP 后台批次执行失败，点击提示词管理查看详情', 'error')
-    } else if (nextStatus.phase === 'success') {
-      silentGallerySopTabsRef.current.delete(scopeKey)
-      showToast(`SOP 批次完成，已提交 ${nextStatus.totalImages} 张图片`, 'success')
-    }
-  }, [])
+  const handleGallerySopRunStatusChange = useCallback(
+    (scopeKey: string, nextStatus: GallerySopRunStatus) => {
+      setGallerySopRunStatusByTab((current) => ({ ...current, [scopeKey]: nextStatus }))
+      // 后台静默运行时弹窗不可见，成败必须通过 toast 让用户感知
+      const prevPhase = gallerySopPhaseRef.current[scopeKey]
+      gallerySopPhaseRef.current[scopeKey] = nextStatus.phase
+      if (prevPhase === nextStatus.phase) return
+      if (!silentGallerySopTabsRef.current.has(scopeKey)) return
+      if (nextStatus.phase === 'error') {
+        showToast(nextStatus.message || 'SOP 后台批次执行失败，点击提示词管理查看详情', 'error')
+      } else if (nextStatus.phase === 'success') {
+        silentGallerySopTabsRef.current.delete(scopeKey)
+        showToast(`SOP 批次完成，已提交 ${nextStatus.totalImages} 张图片`, 'success')
+      }
+    },
+    [showToast],
+  )
 
   const refreshSavedSopPromptCount = useCallback(() => {
     try {
@@ -1033,7 +1034,7 @@ export default function InputBar() {
     if (gallerySopId && !sopItems.some((item) => item.id === gallerySopId)) {
       setGallerySopId('')
     }
-  }, [gallerySopId, sopItems])
+  }, [gallerySopId, setGallerySopId, sopItems])
 
   useEffect(() => {
     refreshSavedSopPromptCount()
@@ -1957,12 +1958,13 @@ export default function InputBar() {
 
   useEffect(() => {
     let cancelled = false
-    if (!maskDraft || !maskTargetImage) {
+    const targetDataUrl = maskTargetImage?.dataUrl
+    if (!maskDraft || !targetDataUrl) {
       setMaskPreviewUrl('')
       return
     }
 
-    createMaskPreviewDataUrl(maskTargetImage.dataUrl, maskDraft.maskDataUrl)
+    createMaskPreviewDataUrl(targetDataUrl, maskDraft.maskDataUrl)
       .then((url) => {
         if (!cancelled) setMaskPreviewUrl(url)
       })
@@ -1973,7 +1975,7 @@ export default function InputBar() {
     return () => {
       cancelled = true
     }
-  }, [maskDraft, maskTargetImage?.id, maskTargetImage?.dataUrl])
+  }, [maskDraft, maskTargetImage?.dataUrl])
 
   const commitPostprocessMaxSize = useCallback(() => {
     if (postprocessMaxSizeInput.trim() === '') {
@@ -2003,7 +2005,7 @@ export default function InputBar() {
     const clampedValue = Math.max(1, normalizedValue)
     setNInput(String(clampedValue))
     setParams({ n: clampedValue })
-  }, [agentAutoImageCount, nInput, params.n, setParams])
+  }, [agentAutoImageCount, nInput, nLimitHint, params.n, setParams])
 
   const showNLimitHint = useCallback(() => {
     nLimitHint.show()
@@ -2659,9 +2661,10 @@ export default function InputBar() {
       document.removeEventListener('mousedown', handleGlobalMouseDown, true)
     }
   }, [])
+  const hasMaskDraft = Boolean(maskDraft)
   useEffect(() => {
     adjustTextareaHeight()
-  }, [inputImages.length, Boolean(maskDraft), maskPreviewUrl, adjustTextareaHeight])
+  }, [adjustTextareaHeight, hasMaskDraft, inputImages.length, maskPreviewUrl])
 
   useEffect(() => {
     window.addEventListener('resize', adjustTextareaHeight)

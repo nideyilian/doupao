@@ -137,13 +137,22 @@ export function patchTaskForPurgedSlots(task: TaskRecord, slots: number[]): Task
     }
     return next
   }
+  const purgeLocalPathMap = (record: Record<string, string> | undefined): Record<string, string> | undefined => {
+    if (!record) return record
+    const next: Record<string, string> = {}
+    for (const [key, value] of Object.entries(record)) {
+      const imageId = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key
+      if (!removedImageIds.has(imageId)) next[key] = value
+    }
+    return next
+  }
   return {
     ...task,
     outputImages,
     generationSlots: (task.generationSlots ?? []).filter((slot) => !slotSet.has(slot.index)),
     actualParamsByImage: purgeImageMap(task.actualParamsByImage),
     revisedPromptByImage: purgeImageMap(task.revisedPromptByImage),
-    localSavedOutputImagePaths: purgeImageMap(task.localSavedOutputImagePaths),
+    localSavedOutputImagePaths: purgeLocalPathMap(task.localSavedOutputImagePaths),
     // rawImageUrls 是 URL 列表（非按图索引），保留原样
     purgedOutputSlots: Array.from(new Set([...(task.purgedOutputSlots ?? []), ...slots])).sort((a, b) => a - b),
   }

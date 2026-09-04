@@ -9,6 +9,7 @@ import {
 } from '../design-system/icons'
 import type { TaskRecord, TaskStatus } from '../types'
 import { formatSopBatchElapsed, getSopBatchElapsedMs, type SopBatchSummary } from '../lib/sopBatchTaskGrouping'
+import { hasCompletedTaskOutputs } from '../lib/taskProgressDisplay'
 import { Card, IconButton } from '../design-system'
 import TaskParamSummary from './TaskParamSummary'
 import { useCoverThumbnail } from '../hooks/useCoverThumbnail'
@@ -113,10 +114,14 @@ function SopBatchTaskCard({
   )
   const imageCompleted = outputImageIds.length
   const promptTarget = Math.max(summary.total, ...tasks.map((task) => task.sopBatch?.promptCount ?? 0))
-  const isRunning = tasks.some((task) => task.status === 'running' || task.falRecoverable || task.customRecoverable)
-  const isFailed = summary.total > 0 && summary.failed === summary.total
+  const isRunning = tasks.some(
+    (task) =>
+      task.status === 'running' || ((task.falRecoverable || task.customRecoverable) && !hasCompletedTaskOutputs(task)),
+  )
+  const failedCount = tasks.filter((task) => task.status === 'error' && !hasCompletedTaskOutputs(task)).length
+  const isFailed = tasks.length > 0 && failedCount === tasks.length
   const cardStatus: TaskStatus = isRunning ? 'running' : isFailed ? 'error' : 'done'
-  const status = isRunning ? '生成中' : isFailed ? '生成失败' : summary.failed > 0 ? '部分完成' : '已完成'
+  const status = isRunning ? '生成中' : isFailed ? '生成失败' : failedCount > 0 ? '部分完成' : '已完成'
   const representativeTask = tasks[0]
   const elapsed = formatSopBatchElapsed(getSopBatchElapsedMs(tasks, now))
 
@@ -177,7 +182,7 @@ function SopBatchTaskCard({
               <p className="gallery-task-meta mt-1 line-clamp-2 text-xs leading-relaxed">
                 整批 {promptTarget} 条提示词 · 图片 {imageCompleted}/{imageTotal} · 耗时 {elapsed}
                 {summary.running ? ` · 生成中 ${summary.running}` : ''}
-                {summary.failed ? ` · 失败 ${summary.failed}` : ''}
+                {failedCount ? ` · 失败 ${failedCount}` : ''}
               </p>
             </div>
             {representativeTask && (

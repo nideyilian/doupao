@@ -1,4 +1,6 @@
 import { ipcMain, net } from 'electron'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({
@@ -71,7 +73,7 @@ describe('main-process API transport request validation', () => {
       }),
     )
     const mainFrame = {
-      url: 'file:///app/index.html',
+      url: pathToFileURL(path.resolve('dist/index.html')).toString(),
     }
     const sender = {
       id: 7,

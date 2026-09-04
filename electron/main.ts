@@ -9,9 +9,12 @@ import { handleChecked } from './ipc-guard'
 import { decideRendererRecovery } from './renderer-crash-recovery'
 import { AssetKernelManager, registerAssetScheme } from './asset-kernel'
 import { runAssetMcpServer } from './asset-mcp'
-import { resolveCatalogDbPath, resolveCatalogDbPathFor } from './library-paths'
+import { getLibraryPaths, resolveCatalogDbPath, resolveCatalogDbPathFor } from './library-paths'
 import { migrateCatalogIntoLibrary } from './catalog-migration'
 import { ensureStateFileReadable, migrateLegacyAppDataIfNeeded } from './legacy-data-migration'
+import { isTrustedRendererUrl } from './trusted-renderer'
+import { loadApiSecrets, saveApiSecrets } from './secure-api-secrets'
+import { LibraryImageWatcher } from './library-image-watcher'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -21,6 +24,7 @@ let pendingReleaseNotes: unknown
 let rendererSafeMode = false
 let rendererCrashTimestamps: number[] = []
 let assetKernel: AssetKernelManager | null = null
+const libraryImageWatcher = new LibraryImageWatcher()
 let assetKernelCloseInitiated = false
 // 更新安装流程自身会触发 quit；此时不应拦截 before-quit 等待 sqlite 关闭，
 // 否则 app.exit() 会跳过 electron-updater 的安装步骤。
@@ -192,9 +196,7 @@ function scheduleWindowStateSave(window: BrowserWindow) {
 // 此时 preload 仍挂在 webContents 上，远程页面会获得全部 IPC 能力。
 function hardenWebContents(contents: WebContents) {
   contents.on('will-navigate', (event, url) => {
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL
-    const allowed = devServerUrl ? url.startsWith(devServerUrl) : url.startsWith('file://')
-    if (!allowed) event.preventDefault()
+    if (!isTrustedRendererUrl(url)) event.preventDefault()
   })
   contents.setWindowOpenHandler(({ url }) => {
     // 新窗口一律拒绝；http(s) 链接交给系统浏览器打开。
@@ -235,6 +237,10 @@ function sendToWindow(channel: string, ...args: unknown[]) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, ...args)
   }
+}
+
+function watchLibraryImages(root = getLibraryPaths().root) {
+  libraryImageWatcher.start(root, (file) => sendToWindow('library:image-file-removed', file))
 }
 
 function recordRendererCrash(details: { reason: string; exitCode: number }, safeMode: boolean) {
@@ -539,6 +545,10 @@ app.whenReady().then(async () => {
     return app.getVersion()
   })
 
+  handleChecked('settings:load-api-secrets', () => loadApiSecrets())
+
+  handleChecked('settings:save-api-secrets', (_event, secrets: unknown) => saveApiSecrets(secrets))
+
   assetKernel = new AssetKernelManager(() => mainWindow)
   try {
     await assetKernel.initialize()
@@ -546,8 +556,14 @@ app.whenReady().then(async () => {
     console.error('[asset-kernel-init-failed]', error)
   }
   setLibraryKernelHooks({
-    close: () => assetKernel?.close() ?? Promise.resolve(),
-    open: (root) => assetKernel?.reopenCatalog(resolveCatalogDbPathFor(root)) ?? Promise.resolve(),
+    close: () => {
+      libraryImageWatcher.close()
+      return assetKernel?.close() ?? Promise.resolve()
+    },
+    open: async (root) => {
+      await (assetKernel?.reopenCatalog(resolveCatalogDbPathFor(root)) ?? Promise.resolve())
+      watchLibraryImages(root)
+    },
   })
   // 注册为 doupao:// 协议默认处理程序（Windows/Linux 需要在 ready 后调用）
   try {
@@ -563,6 +579,7 @@ app.whenReady().then(async () => {
   // 启动时恢复“关闭到托盘”设置（local-settings.json 持久化）
   closeToTray = readLocalSettings().closeToTray === true
   createWindow()
+  watchLibraryImages()
   if (closeToTray) createTray()
   // 启动参数携带的深链接（Windows/Linux 双击关联文件/命令行唤起；需窗口就绪后分发）
   const startupDeepLink = findDeepLinkArgv(process.argv)
@@ -585,6 +602,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  libraryImageWatcher.close()
   tray?.destroy()
   tray = null
 })

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { initStore, exportDataToPath } from './store'
+import { hydrateDesktopApiSecrets, initStore, exportDataToPath, removeDeletedLocalImage } from './store'
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
 import { mergeImportedSettings } from './lib/apiProfiles'
@@ -93,6 +93,18 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    let lastShownAt = 0
+    const handlePersistError = () => {
+      const now = Date.now()
+      if (now - lastShownAt < 5000) return
+      lastShownAt = now
+      useStore.getState().showToast('本地状态保存失败，程序正在自动重试', 'error')
+    }
+    window.addEventListener('doupao:persist-error', handlePersistError)
+    return () => window.removeEventListener('doupao:persist-error', handlePersistError)
+  }, [])
+
+  useEffect(() => {
     // Zustand 正式设置为准：应用外观并重写首屏快照
     applyAppearance({ skinId, themeMode }, document.documentElement, { transition: themeAppliedRef.current })
     writeAppearanceSnapshot({ skinId, themeMode })
@@ -147,6 +159,23 @@ export default function App() {
 
   useEffect(() => {
     const api = window.electronAPI
+    if (!api?.onLibraryImageFileRemoved) return
+    let queue = Promise.resolve()
+    return api.onLibraryImageFileRemoved((file) => {
+      queue = queue
+        .catch(() => {})
+        .then(async () => {
+          const removed = await removeDeletedLocalImage(file)
+          if (removed > 0) {
+            useStore.getState().showToast(`本地文件已删除，已同步移除 ${removed} 张图片`, 'info')
+          }
+        })
+        .catch((error) => console.warn('[library-image-sync] 同步删除失败', error))
+    })
+  }, [])
+
+  useEffect(() => {
+    const api = window.electronAPI
     if (!api?.onExternalAssetCommand || !api.completeExternalAssetCommand) return
     return api.onExternalAssetCommand(({ id, command }) => {
       const run = async () => {
@@ -187,7 +216,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const startupSettingsPromise = waitForStoreHydration().then(() => {
+    const startupSettingsPromise = waitForStoreHydration().then(async () => {
+      await hydrateDesktopApiSecrets()
       const searchParams = new URLSearchParams(window.location.search)
       const nextSettings = buildSettingsFromUrlParams(useStore.getState().settings, searchParams)
 

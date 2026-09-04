@@ -355,7 +355,6 @@ function AssetLibraryWorkspaceInner() {
         sortKey,
         sortOrder,
         limit: 120,
-        semantic: { enabled: Boolean(deferredQuery.trim()), context: deferredQuery },
       })
       .then((page) => {
         if (!active) return
@@ -562,7 +561,6 @@ function AssetLibraryWorkspaceInner() {
           filters: effectiveFilters,
           sortKey,
           sortOrder,
-          semantic: { enabled: Boolean(deferredQuery.trim()), context: deferredQuery },
         })
         const ids = result.ids.length > 0 ? result.ids : visibleIds
         useAssetLibraryStore.getState().selectAllVisibleAssets(ids)

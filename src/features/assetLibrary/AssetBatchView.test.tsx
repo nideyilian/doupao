@@ -34,6 +34,7 @@ const storeMocks = vi.hoisted(() => {
     ensureImageCached: vi.fn(async () => null),
     ensureImageThumbnailCached: vi.fn(async () => null),
     getCachedThumbnail: vi.fn(() => null),
+    prefetchImageThumbnails: vi.fn(),
     subscribeImageThumbnail: vi.fn(() => () => {}),
   }
 })

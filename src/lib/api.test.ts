@@ -87,6 +87,34 @@ describe('callImageApi', () => {
     expect(result.revisedPrompts).toEqual(['移除靴子'])
   })
 
+  it('sends the 9:16 relay whitelist size without overriding the returned size structure', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          size: '1024x1536',
+          data: [{ b64_json: 'aW1hZ2U=' }],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS, size: '720x1280' },
+      inputImageDataUrls: [],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.size).toBe('720x1280')
+    expect(result.actualParams?.size).toBe('1024x1536')
+    expect(result.actualParamsList?.[0]?.size).toBe('1024x1536')
+  })
+
   it('does not synthesize actual quality in Codex CLI mode when the API omits it', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
@@ -153,7 +181,7 @@ describe('callImageApi', () => {
         })),
       },
       prompt: 'prompt',
-      params: { ...DEFAULT_PARAMS },
+      params: { ...DEFAULT_PARAMS, size: '720x1280' },
       inputImageDataUrls: [],
       onPartialImage: (partial: { image: string }) => partialImages.push(partial.image),
     } as any)
@@ -161,6 +189,7 @@ describe('callImageApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body).toMatchObject({
+      size: '720x1280',
       stream: true,
       partial_images: 3,
     })
@@ -361,7 +390,7 @@ describe('callImageApi', () => {
         })),
       },
       prompt: 'prompt',
-      params: { ...DEFAULT_PARAMS },
+      params: { ...DEFAULT_PARAMS, size: '720x1280' },
       inputImageDataUrls: [],
       onPartialImage: (partial: { image: string }) => partialImages.push(partial.image),
     } as any)
@@ -369,6 +398,7 @@ describe('callImageApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.stream).toBe(true)
+    expect(body.tools[0].size).toBe('720x1280')
     expect(body.tools[0].partial_images).toBe(1)
     expect(partialImages).toEqual(['data:image/png;base64,cGFydGlhbA=='])
     expect(result).toMatchObject({
@@ -380,7 +410,7 @@ describe('callImageApi', () => {
   })
 
   it('parses Responses API image result objects in gallery mode', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
           output: [
@@ -401,10 +431,13 @@ describe('callImageApi', () => {
     const result = await callImageApi({
       settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
       prompt: 'prompt',
-      params: { ...DEFAULT_PARAMS },
+      params: { ...DEFAULT_PARAMS, size: '720x1280' },
       inputImageDataUrls: [],
     })
 
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.tools[0].size).toBe('720x1280')
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],
       actualParams: { size: '1024x1024' },

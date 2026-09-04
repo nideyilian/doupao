@@ -16,19 +16,30 @@ export type CoalescedJsonStorage = {
   flush(): Promise<void>
 }
 
-export function createCoalescedJsonStorage(adapter: JsonTextStorageAdapter, debounceMs = 400): CoalescedJsonStorage {
+export function createCoalescedJsonStorage(
+  adapter: JsonTextStorageAdapter,
+  options: {
+    debounceMs?: number
+    retryMs?: number
+    onWriteError?: (error: unknown) => void
+  } = {},
+): CoalescedJsonStorage {
+  const debounceMs = options.debounceMs ?? 400
+  const retryMs = options.retryMs ?? 1500
   let lastWrittenContent: string | undefined
   let pending: PendingWrite | null = null
   let writing = false
   let timer: ReturnType<typeof setTimeout> | null = null
   let flushing: Promise<void> | null = null
 
-  const scheduleFlush = () => {
+  const scheduleFlush = (delay = debounceMs) => {
     if (timer || writing || !pending) return
     timer = setTimeout(() => {
       timer = null
-      void flushPending()
-    }, debounceMs)
+      void flushPending().catch(() => {
+        scheduleFlush(retryMs)
+      })
+    }, delay)
   }
 
   const enqueue = (content: string, skipBackup: boolean) =>
@@ -60,20 +71,30 @@ export function createCoalescedJsonStorage(adapter: JsonTextStorageAdapter, debo
       timer = null
     }
 
+    let failed = false
     flushing = (async () => {
       while (pending) {
         const next = pending
         pending = null
         writing = true
         try {
-          if (await adapter.write(next.content, { skipBackup: next.skipBackup })) {
-            lastWrittenContent = next.content
-          }
-        } catch {
-          // Persist is best-effort here, matching the previous fire-and-forget behavior.
+          const written = await adapter.write(next.content, { skipBackup: next.skipBackup })
+          if (!written) throw new Error('持久化写入失败')
+          lastWrittenContent = next.content
+          next.waiters.forEach((resolve) => resolve())
+        } catch (error) {
+          const newerPending = pending as PendingWrite | null
+          pending = newerPending
+            ? {
+                ...newerPending,
+                waiters: [...next.waiters, ...newerPending.waiters],
+              }
+            : next
+          options.onWriteError?.(error)
+          failed = true
+          throw error
         } finally {
           writing = false
-          next.waiters.forEach((resolve) => resolve())
         }
       }
     })()
@@ -82,7 +103,7 @@ export function createCoalescedJsonStorage(adapter: JsonTextStorageAdapter, debo
       await flushing
     } finally {
       flushing = null
-      scheduleFlush()
+      scheduleFlush(failed ? retryMs : debounceMs)
     }
   }
 

@@ -292,6 +292,16 @@ describe('hasTaskFailure', () => {
     expect(hasTaskFailure(makeTask('c', { status: 'done' }))).toBe(false)
     expect(hasTaskFailure(makeTask('d', { status: 'running' }))).toBe(false)
     expect(hasTaskFailure(makeTask('e', { status: 'done', batchItemStatuses: ['done', 'done'] }))).toBe(false)
+    expect(
+      hasTaskFailure(
+        makeTask('f', {
+          status: 'error',
+          error: '缩略图加载超时',
+          params: { ...makeTask('base').params, n: 1 },
+          outputImages: ['img-ok'],
+        }),
+      ),
+    ).toBe(false)
   })
 })
 

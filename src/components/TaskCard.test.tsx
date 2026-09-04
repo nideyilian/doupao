@@ -102,4 +102,38 @@ describe('TaskCard', () => {
     expect(texts).toContain('2048×2048')
     expect(texts).not.toContain('1024×1024')
   })
+
+  it('does not show a completed output as failed when thumbnail loading reports a stale error', async () => {
+    storeMocks.ensureImageThumbnailCached.mockResolvedValueOnce({
+      dataUrl: 'data:image/webp;base64,thumb',
+      width: 1024,
+      height: 1024,
+      thumbnailVersion: 5,
+    })
+    const staleErrorTask: TaskRecord = {
+      ...task,
+      status: 'error',
+      error: '缩略图加载超时',
+    }
+    let renderer!: ReturnType<typeof create>
+
+    await act(async () => {
+      renderer = create(
+        <TaskCard
+          task={staleErrorTask}
+          onReuse={vi.fn()}
+          onEditOutputs={vi.fn()}
+          onDelete={vi.fn()}
+          onClick={vi.fn()}
+        />,
+      )
+    })
+    mountedRenderers.push(renderer)
+
+    expect(renderer.root.find((node) => node.props['data-status']).props['data-status']).toBe('done')
+    expect(renderer.root.findAll((node) => node.props['aria-label'] === '重试任务')).toHaveLength(0)
+    expect(
+      renderer.root.findAll((node) => typeof node.props.children === 'string').map((node) => node.props.children),
+    ).not.toContain('生成失败')
+  })
 })

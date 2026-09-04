@@ -25,6 +25,8 @@ import type { AssetCatalogUpsert, CatalogAssetDetails } from './asset-catalog'
 interface PendingCall {
   resolve: (value: unknown) => void
   reject: (error: Error) => void
+  method: string
+  args: unknown[]
 }
 
 type WorkerHandle = {
@@ -41,8 +43,11 @@ export class CatalogClient {
   private current: WorkerHandle | null = null
   private readonly pending = new Map<number, PendingCall>()
   private sequence = 0
+  private dbPath: string
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(dbPath: string) {
+    this.dbPath = dbPath
     this.fork(dbPath)
   }
 
@@ -83,9 +88,39 @@ export class CatalogClient {
         clearTimeout(readyTimer)
         // 关键：worker 未 ready 就退出时也必须 reject，否则调用方永久挂起（界面卡「加载中」）
         rejectReady(new Error('asset catalog worker exited before ready'))
-        if (this.current?.worker === worker) this.current = null
-        for (const pending of this.pending.values()) pending.reject(new Error('asset catalog worker stopped'))
+        const shouldRestart = this.current?.worker === worker
+        if (shouldRestart) this.current = null
+        const interrupted = [...this.pending.values()]
         this.pending.clear()
+        if (shouldRestart && !this.restartTimer) {
+          this.restartTimer = setTimeout(() => {
+            this.restartTimer = null
+            if (!this.current) this.fork(this.dbPath)
+            const restarted = this.current
+            if (!restarted) {
+              for (const pending of interrupted) pending.reject(new Error('asset catalog worker unavailable'))
+              return
+            }
+            void restarted.ready.then(
+              () => {
+                if (this.current !== restarted) {
+                  for (const pending of interrupted) pending.reject(new Error('asset catalog worker restarted'))
+                  return
+                }
+                for (const pending of interrupted) {
+                  const id = ++this.sequence
+                  this.pending.set(id, pending)
+                  restarted.worker.postMessage({ id, method: pending.method, args: pending.args })
+                }
+              },
+              (error) => {
+                for (const pending of interrupted) pending.reject(error)
+              },
+            )
+          }, 500)
+        } else {
+          for (const pending of interrupted) pending.reject(new Error('asset catalog worker stopped'))
+        }
       })
       this.current = { worker, ready }
       // dbPath 经 init 消息传递（utility process 的 process.argv 语义不可靠，见 catalog-worker 注释）
@@ -106,6 +141,8 @@ export class CatalogClient {
         this.pending.set(id, {
           resolve: (value) => resolve(value as T),
           reject,
+          method,
+          args,
         })
         current.worker.postMessage({ id, method, args })
       })
@@ -319,6 +356,10 @@ export class CatalogClient {
 
   /** 正常关闭 worker（worker 内 close DB 后退出）。 */
   async close(): Promise<void> {
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = null
+    }
     const current = this.current
     this.current = null
     if (!current) return
@@ -337,6 +378,7 @@ export class CatalogClient {
   /** 库根变更：关闭旧 worker，用新 DB 路径重启。 */
   async reopen(dbPath: string): Promise<void> {
     await this.close()
+    this.dbPath = dbPath
     this.fork(dbPath)
   }
 }

@@ -7,22 +7,27 @@ export type ImageStorageMigrationDeps = {
   batchSize?: number
   yieldToEventLoop?: () => Promise<void>
   onProgress?: (migrated: number) => Promise<void>
+  onFailure?: (image: StoredImage, error: Error) => void
 }
 
 export async function migrateLegacyImages(deps: ImageStorageMigrationDeps): Promise<number> {
   const batchSize = deps.batchSize ?? 4
   const yieldToEventLoop = deps.yieldToEventLoop ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+  const failedIds = new Set<string>()
   let migrated = 0
   while (true) {
-    const images = await deps.readBatch(batchSize)
+    const images = (await deps.readBatch(batchSize + failedIds.size))
+      .filter((image) => !failedIds.has(image.id))
+      .slice(0, batchSize)
     if (images.length === 0) return migrated
-    let batchError: Error | null = null
     for (const image of images) {
       if (!image.dataUrl) continue
       try {
         const localPath = await deps.saveImage(image)
         if (!localPath) {
-          batchError ??= new Error(`图片 ${image.id} 保存失败`)
+          const error = new Error(`图片 ${image.id} 保存失败`)
+          failedIds.add(image.id)
+          deps.onFailure?.(image, error)
           console.warn(`[image-migration] 图片 ${image.id} 保存失败`)
           continue
         }
@@ -30,11 +35,12 @@ export async function migrateLegacyImages(deps: ImageStorageMigrationDeps): Prom
         migrated++
         await deps.onProgress?.(migrated)
       } catch (error) {
-        batchError ??= error instanceof Error ? error : new Error(String(error))
+        const failure = error instanceof Error ? error : new Error(String(error))
+        failedIds.add(image.id)
+        deps.onFailure?.(image, failure)
         console.warn(`[image-migration] 图片 ${image.id} 迁移异常`, error)
       }
     }
-    if (batchError) throw batchError
     await yieldToEventLoop()
   }
 }

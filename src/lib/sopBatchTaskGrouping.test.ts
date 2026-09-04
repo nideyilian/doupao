@@ -58,6 +58,21 @@ describe('groupSopBatchTasks', () => {
     if (batch?.kind === 'sop-batch') expect(batch.tasks.map((item) => item.id)).toEqual(['retry-attempt'])
   })
 
+  it('counts a task with all outputs as completed even if a loading error left a stale error status', () => {
+    const completedWithStaleError = {
+      ...task('completed', 10, 'error', 'batch-1', 1),
+      params: { n: 1 },
+      outputImages: ['img-1'],
+      error: '缩略图加载超时',
+    } as TaskRecord
+    const result = groupSopBatchTasks([completedWithStaleError])
+
+    expect(result[0]).toMatchObject({
+      kind: 'sop-batch',
+      summary: { total: 1, running: 0, completed: 1, failed: 0 },
+    })
+  })
+
   it('groups all request batches from the same SOP run into one card', () => {
     const result = groupSopBatchTasks([
       task('first-request', 10, 'done', 'request-batch-1', 1, 'snapshot-1'),

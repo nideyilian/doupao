@@ -98,4 +98,34 @@ describe('SopBatchTaskCard', () => {
     act(() => deleteButton!.props.onClick({ stopPropagation: vi.fn() }))
     expect(onDelete).toHaveBeenCalledOnce()
   })
+
+  it('does not mark a batch as failed when its completed output only has a stale loading error', () => {
+    storeMocks.ensureImageThumbnailCached.mockResolvedValue(undefined)
+    const staleErrorTask = {
+      ...task('task-1', 1),
+      status: 'error',
+      error: '缩略图加载超时',
+    } as TaskRecord
+    let renderer: ReturnType<typeof create>
+
+    act(() => {
+      renderer = create(
+        <SopBatchTaskCard
+          sopName="天体图"
+          tasks={[staleErrorTask]}
+          summary={{ total: 1, running: 0, completed: 0, failed: 1 }}
+          onClick={vi.fn()}
+          onOpenBatch={vi.fn()}
+          onOpenImage={vi.fn()}
+          onRerun={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      )
+    })
+    mountedRenderers.push(renderer!)
+
+    const card = renderer!.root.findAll((node) => String(node.props.className).includes('gallery-sop-card')).at(0)
+    expect(card?.props['data-status']).toBe('done')
+    expect(renderer!.root.findByType('h3').children).toContain('已完成')
+  })
 })

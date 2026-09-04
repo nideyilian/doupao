@@ -6,6 +6,7 @@ import {
   getActiveApiProfile,
   getAgentTextApiProfile,
   getApiProviderLabel,
+  isGeminiModel,
 } from '../lib/apiProfiles'
 import { fetchAvailableModels, type AvailableModel } from '../lib/modelCatalog'
 import {
@@ -105,7 +106,7 @@ export default function ModelSwitcher() {
           : profile,
       )
       setSettings({ agentProfiles })
-      showToast(`已切换文本模型：${id}`, 'success')
+      showToast(`已切换文本模型：${id}${isGeminiModel(id) ? '（已自动启用兼容模式）' : ''}`, 'success')
       setManualModel('')
       setOpen(false)
     },

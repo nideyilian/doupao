@@ -1,7 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react'
 import { EmptyState } from '../../design-system'
 import { ImageIcon, StarIcon } from '../../design-system/icons'
-import { ensureImageThumbnailCached, getCachedThumbnail, subscribeImageThumbnail } from '../../store'
+import {
+  ensureImageThumbnailCached,
+  getCachedThumbnail,
+  prefetchImageThumbnails,
+  subscribeImageThumbnail,
+} from '../../store'
 import { markScrollActivity } from '../../lib/scrollActivity'
 import type { GeneratedAsset } from '../../types'
 import { useAssetLibraryStore } from './store'
@@ -12,6 +17,7 @@ import { startAssetDrag, type TileSelectMode } from './AssetTile'
 
 const ROW_HEIGHT = 64
 const OVERSCAN_ROWS = 8
+const SCROLL_PREFETCH_ROWS = 32
 
 function ListRowThumbnail({ imageId }: { imageId: string }) {
   const [src, setSrc] = useState(() => getCachedThumbnail(imageId)?.dataUrl ?? '')
@@ -153,6 +159,7 @@ function AssetListView({
   const clearSelection = useAssetLibraryStore((state) => state.clearSelection)
   const scrollRef = useRef<HTMLDivElement>(null)
   const scrollFrameRef = useRef<number | null>(null)
+  const prefetchFrameRef = useRef<number | null>(null)
   const suppressClickUntilRef = useRef(0)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
@@ -271,12 +278,27 @@ function AssetListView({
   useEffect(
     () => () => {
       if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current)
+      if (prefetchFrameRef.current !== null) cancelAnimationFrame(prefetchFrameRef.current)
     },
     [],
   )
 
   const handleScroll = (event: UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget
+    if (prefetchFrameRef.current === null) {
+      prefetchFrameRef.current = requestAnimationFrame(() => {
+        prefetchFrameRef.current = null
+        const first = Math.max(0, Math.floor(element.scrollTop / ROW_HEIGHT) - SCROLL_PREFETCH_ROWS)
+        const last = Math.min(
+          assets.length,
+          Math.ceil((element.scrollTop + element.clientHeight) / ROW_HEIGHT) + SCROLL_PREFETCH_ROWS,
+        )
+        prefetchImageThumbnails(
+          assets.slice(first, last).map((asset) => asset.imageId),
+          'ahead',
+        )
+      })
+    }
     if (hasMore && !loadingMore && element.scrollHeight - element.scrollTop - element.clientHeight < 600) onLoadMore?.()
     if (scrollFrameRef.current !== null) return
     scrollFrameRef.current = requestAnimationFrame(() => {

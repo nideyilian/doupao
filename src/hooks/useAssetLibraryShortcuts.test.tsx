@@ -36,6 +36,13 @@ describe('useAssetLibraryShortcuts 空格快速预览', () => {
     })
     expect(useAssetLibraryStore.getState().quickPreviewAssetId).toBe('b')
 
+    const repeat = new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true, cancelable: true })
+    act(() => {
+      window.dispatchEvent(repeat)
+    })
+    expect(repeat.defaultPrevented).toBe(true)
+    expect(useAssetLibraryStore.getState().quickPreviewAssetId).toBe('b')
+
     // 松开空格关闭预览
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }))

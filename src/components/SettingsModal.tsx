@@ -108,6 +108,10 @@ function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
 
+function getDefaultModelForMode(apiMode: AppSettings['apiMode']) {
+  return apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
+}
+
 const ADD_CUSTOM_PROVIDER_VALUE = '__add_custom_provider__'
 const COPY_IMPORT_URL_OPTIONS_STORAGE_KEY = 'gpt-image-playground.copy-import-url-options'
 const SETTINGS_TAB_ORDER: SettingsTab[] = ['api', 'general', 'data', 'backup', 'about']
@@ -1006,7 +1010,7 @@ export default function SettingsModal() {
     }
   }
 
-  const refreshStorageOverview = async () => {
+  const refreshStorageOverview = useCallback(async () => {
     setStorageOverviewLoading(true)
     try {
       setStorageOverview(await getStorageOverview())
@@ -1016,7 +1020,7 @@ export default function SettingsModal() {
     } finally {
       setStorageOverviewLoading(false)
     }
-  }
+  }, [showToast])
 
   const collectAllAssetsForExport = async (): Promise<GeneratedAsset[]> => {
     if (isElectronEnv()) {
@@ -1209,9 +1213,6 @@ export default function SettingsModal() {
     }),
   ]
 
-  const getDefaultModelForMode = (apiMode: AppSettings['apiMode']) =>
-    apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL
-
   const enabledZipDownloadRouteCount = ZIP_DOWNLOAD_ROUTE_OPTIONS.filter((option) =>
     draft.zipDownloadRoutes.includes(option.route),
   ).length
@@ -1279,7 +1280,7 @@ export default function SettingsModal() {
       void refreshStorageOverview()
       void window.electronAPI?.getAssetApiStatus?.().then(setAssetApiStatus)
     }
-  }, [activeTab])
+  }, [activeTab, refreshStorageOverview])
 
   useEffect(() => {
     apiCatalogRequestRef.current += 1
@@ -1395,50 +1396,55 @@ export default function SettingsModal() {
     }
   }
 
-  const commitSettings = (nextDraft: AppSettings) => {
-    const normalizedProfiles = nextDraft.profiles.map((profile) => {
-      const nextApiProxy =
-        isProfileApiProxyEligible(nextDraft, profile) && apiProxyAvailable ? apiProxyLocked || profile.apiProxy : false
-      const shouldKeepEmptyBaseUrl = profile.provider !== 'fal' && nextApiProxy && !profile.baseUrl.trim()
-      const normalizedBaseUrl =
-        profile.provider === 'fal'
-          ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
-          : shouldKeepEmptyBaseUrl
-            ? ''
-            : normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
-      const defaultModel = profile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(profile.apiMode)
-      return {
-        ...profile,
-        name: profile.name.trim() || (profile.id === DEFAULT_OPENAI_PROFILE_ID ? '默认' : '新配置'),
-        baseUrl: normalizedBaseUrl,
-        model: profile.model.trim() || defaultModel,
-        timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
-        apiProxy: nextApiProxy,
-        codexCli: profile.provider === 'openai' ? profile.codexCli : false,
-        streamImages: profile.provider === 'openai' ? profile.streamImages : false,
-        streamPartialImages:
-          profile.provider === 'openai'
-            ? normalizeStreamPartialImages(profile.streamPartialImages)
-            : DEFAULT_STREAM_PARTIAL_IMAGES,
-        maxConcurrent: normalizeMaxConcurrent(profile.maxConcurrent),
-        maxRetries: normalizeMaxRetries(profile.maxRetries),
-      }
-    })
-    const fallbackProfile = createDefaultOpenAIProfile({ id: newId('openai') })
-    const normalizedDraft = normalizeSettings({
-      ...nextDraft,
-      profiles: normalizedProfiles.length ? normalizedProfiles : [fallbackProfile],
-      activeProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.activeProfileId)
-        ? nextDraft.activeProfileId
-        : (normalizedProfiles[0]?.id ?? fallbackProfile.id),
-      agentProfileId:
-        nextDraft.agentProfileId && normalizedProfiles.some((profile) => profile.id === nextDraft.agentProfileId)
-          ? nextDraft.agentProfileId
-          : null,
-    })
-    setDraft(normalizedDraft)
-    setSettings(normalizedDraft)
-  }
+  const commitSettings = useCallback(
+    (nextDraft: AppSettings) => {
+      const normalizedProfiles = nextDraft.profiles.map((profile) => {
+        const nextApiProxy =
+          isProfileApiProxyEligible(nextDraft, profile) && apiProxyAvailable
+            ? apiProxyLocked || profile.apiProxy
+            : false
+        const shouldKeepEmptyBaseUrl = profile.provider !== 'fal' && nextApiProxy && !profile.baseUrl.trim()
+        const normalizedBaseUrl =
+          profile.provider === 'fal'
+            ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
+            : shouldKeepEmptyBaseUrl
+              ? ''
+              : normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
+        const defaultModel = profile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(profile.apiMode)
+        return {
+          ...profile,
+          name: profile.name.trim() || (profile.id === DEFAULT_OPENAI_PROFILE_ID ? '默认' : '新配置'),
+          baseUrl: normalizedBaseUrl,
+          model: profile.model.trim() || defaultModel,
+          timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
+          apiProxy: nextApiProxy,
+          codexCli: profile.provider === 'openai' ? profile.codexCli : false,
+          streamImages: profile.provider === 'openai' ? profile.streamImages : false,
+          streamPartialImages:
+            profile.provider === 'openai'
+              ? normalizeStreamPartialImages(profile.streamPartialImages)
+              : DEFAULT_STREAM_PARTIAL_IMAGES,
+          maxConcurrent: normalizeMaxConcurrent(profile.maxConcurrent),
+          maxRetries: normalizeMaxRetries(profile.maxRetries),
+        }
+      })
+      const fallbackProfile = createDefaultOpenAIProfile({ id: newId('openai') })
+      const normalizedDraft = normalizeSettings({
+        ...nextDraft,
+        profiles: normalizedProfiles.length ? normalizedProfiles : [fallbackProfile],
+        activeProfileId: normalizedProfiles.some((profile) => profile.id === nextDraft.activeProfileId)
+          ? nextDraft.activeProfileId
+          : (normalizedProfiles[0]?.id ?? fallbackProfile.id),
+        agentProfileId:
+          nextDraft.agentProfileId && normalizedProfiles.some((profile) => profile.id === nextDraft.agentProfileId)
+            ? nextDraft.agentProfileId
+            : null,
+      })
+      setDraft(normalizedDraft)
+      setSettings(normalizedDraft)
+    },
+    [apiProxyAvailable, apiProxyLocked, setSettings],
+  )
 
   const setZipDownloadRouteEnabled = (route: ZipDownloadRoute, enabled: boolean) => {
     const nextRoutes = enabled
@@ -1556,11 +1562,19 @@ export default function SettingsModal() {
     profiles: draft.profiles.map((profile) => (profile.id === activeProfile.id ? { ...profile, ...patch } : profile)),
   })
 
-  const updateActiveProfile = (patch: Partial<ApiProfile>, commit = false) => {
-    const nextDraft = getDraftWithActiveProfilePatch(patch)
-    setDraft(nextDraft)
-    if (commit) commitSettings(nextDraft)
-  }
+  const updateActiveProfile = useCallback(
+    (patch: Partial<ApiProfile>, commit = false) => {
+      const nextDraft = {
+        ...draft,
+        profiles: draft.profiles.map((profile) =>
+          profile.id === activeProfile.id ? { ...profile, ...patch } : profile,
+        ),
+      }
+      setDraft(nextDraft)
+      if (commit) commitSettings(nextDraft)
+    },
+    [activeProfile.id, commitSettings, draft],
+  )
 
   const commitActiveProfilePatch = (patch: Partial<ApiProfile>) => {
     const nextDraft = getDraftWithActiveProfilePatch(patch)
@@ -1673,16 +1687,7 @@ export default function SettingsModal() {
       void requestModelCatalog(activeProfile, 'api')
     }, 700)
     return () => window.clearTimeout(timer)
-  }, [
-    activeProfile.apiKey,
-    activeProfile.apiProxy,
-    activeProfile.baseUrl,
-    activeProfile.id,
-    activeProviderIsOpenAICompatible,
-    activeTab,
-    requestModelCatalog,
-    showSettings,
-  ])
+  }, [activeProfile, activeProviderIsOpenAICompatible, activeTab, requestModelCatalog, showSettings])
 
   useEffect(() => {
     if (!showSettings || activeTab !== 'api') return
@@ -1691,15 +1696,7 @@ export default function SettingsModal() {
       void requestModelCatalog(effectiveAgentProfile, 'agent')
     }, 700)
     return () => window.clearTimeout(timer)
-  }, [
-    activeTab,
-    effectiveAgentProfile.id,
-    effectiveAgentProfile.baseUrl,
-    effectiveAgentProfile.apiKey,
-    effectiveAgentProfile.apiProxy,
-    requestModelCatalog,
-    showSettings,
-  ])
+  }, [activeTab, effectiveAgentProfile, requestModelCatalog, showSettings])
 
   const selectApiModel = (modelId: string) => {
     updateActiveProfile({ model: modelId }, true)
@@ -1753,7 +1750,7 @@ export default function SettingsModal() {
           : nextTimeout
     setTimeoutInput(String(normalizedTimeout))
     updateActiveProfile({ timeout: normalizedTimeout }, true)
-  }, [draft, activeProfile.id, activeProfile.provider, activeProfile.timeout, timeoutInput])
+  }, [activeProfile.provider, activeProfile.timeout, draft, timeoutInput, updateActiveProfile])
 
   const commitAgentMaxToolRounds = useCallback(() => {
     const value =
@@ -1762,7 +1759,7 @@ export default function SettingsModal() {
         : normalizeAgentMaxToolRounds(agentMaxToolRoundsInput, draft.agentMaxToolRounds)
     setAgentMaxToolRoundsInput(String(value))
     if (value !== draft.agentMaxToolRounds) commitSettings({ ...draft, agentMaxToolRounds: value })
-  }, [agentMaxToolRoundsInput, draft])
+  }, [agentMaxToolRoundsInput, commitSettings, draft])
 
   const showNotificationPermissionMessage = (result: Exclude<BrowserNotificationPermissionResult, { ok: true }>) => {
     if (result.reason === 'unsupported') {

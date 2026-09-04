@@ -7,13 +7,16 @@ import {
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
   DEFAULT_SETTINGS,
+  createDefaultAgentProfile,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
   findEquivalentApiProfile,
   getAgentImageApiProfile,
+  getAgentProfileValidationError,
   getAgentTextApiProfile,
   importCustomProviderDefinitionFromJson,
   importCustomProviderSettingsFromJson,
+  isGeminiModel,
   mergeImportedSettings,
   normalizeSettings,
   switchApiProfileProvider,
@@ -106,6 +109,46 @@ describe('Agent API configuration mode', () => {
 
     expect(getAgentTextApiProfile(settings)?.id).toBe(textProfile.id)
     expect(getAgentImageApiProfile(settings)?.id).toBe(imageProfile.id)
+  })
+
+  it('automatically uses Chat Completions hybrid mode for Gemini models', () => {
+    const imageProfile = createDefaultOpenAIProfile({
+      id: 'image-profile',
+      apiKey: 'image-key',
+      model: 'gpt-image-2',
+    })
+    const settings = normalizeSettings({
+      agentProfile: createDefaultOpenAIProfile({
+        id: 'agent-gemini',
+        baseUrl: 'https://jbbt.pages.dev/v1',
+        apiKey: 'test-key',
+        model: 'google/gemini-2.5-pro',
+        apiMode: 'responses',
+      }),
+      agentShareApiParameters: false,
+      agentApiConfigMode: 'native',
+      agentTextProtocol: 'responses',
+      profiles: [imageProfile],
+      activeProfileId: imageProfile.id,
+    })
+
+    expect(isGeminiModel('gemini-2.5-pro')).toBe(true)
+    expect(settings.agentApiConfigMode).toBe('hybrid')
+    expect(settings.agentTextProtocol).toBe('chat-completions')
+    expect(getAgentTextApiProfile(settings).model).toBe('google/gemini-2.5-pro')
+    expect(getAgentProfileValidationError(settings)).toBeNull()
+  })
+
+  it('keeps Responses mode for non-Gemini models', () => {
+    const settings = normalizeSettings({
+      agentApiConfigMode: 'native',
+      agentTextProtocol: 'responses',
+      agentProfile: createDefaultAgentProfile({ model: 'gpt-5.5' }),
+    })
+
+    expect(isGeminiModel('gpt-5.5')).toBe(false)
+    expect(settings.agentApiConfigMode).toBe('native')
+    expect(settings.agentTextProtocol).toBe('responses')
   })
 
   it('normalizes multiple Agent services and keeps the active one as the mirror', () => {

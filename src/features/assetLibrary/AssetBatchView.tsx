@@ -13,7 +13,15 @@ import {
 } from 'react'
 import { EmptyState } from '../../design-system'
 import { BookOpenCheckIcon, Layers3Icon } from '../../design-system/icons'
-import { editOutputs, removeMultipleTasks, removeTask, rerunSopBatchTasks, reuseConfig, useStore } from '../../store'
+import {
+  editOutputs,
+  prefetchImageThumbnails,
+  removeMultipleTasks,
+  removeTask,
+  rerunSopBatchTasks,
+  reuseConfig,
+  useStore,
+} from '../../store'
 import { getAllSopBatchSnapshots } from '../../lib/db'
 import { HOVER_FULL_IMAGE_LIMIT } from '../../lib/imageHover'
 import { markScrollActivity } from '../../lib/scrollActivity'
@@ -41,6 +49,8 @@ import { useDragSelect, getMarqueeBoxStyle } from '../../hooks/useDragSelect'
 const CARD_H = 200
 const CARD_GAP = 16
 const VIRTUAL_OVERSCAN = 600
+const SCROLL_PREFETCH_GROUPS = 12
+const SCROLL_PREFETCH_ASSETS = 48
 
 // ===== 图片砖·列表行形式的组块常量（组头 + 内联砖区）=====
 const HEADER_H = 52
@@ -370,6 +380,11 @@ function AssetGroupedView({
   const scrollRef = useRef<HTMLDivElement>(null)
   const layoutRef = useRef<HTMLDivElement>(null)
   const scrollFrameRef = useRef<number | null>(null)
+  const prefetchFrameRef = useRef<number | null>(null)
+  const lastScrollTopRef = useRef(0)
+  const pendingPrefetchDirectionRef = useRef<-1 | 1>(1)
+  const initialPrefetchKeyRef = useRef<string | undefined>(undefined)
+  const hasInitialPrefetchedRef = useRef(false)
   const groupElementRefs = useRef(new Map<string, HTMLDivElement>())
   const highlightTimerRef = useRef<number | null>(null)
 
@@ -541,6 +556,19 @@ function AssetGroupedView({
     return blockLayouts.filter((block) => block.top + block.height >= min && block.top <= max)
   }, [groupedViewStyle, cardLayouts, blockLayouts, viewport])
 
+  useEffect(() => {
+    if (groups.length === 0) return
+    const prefetchKey = `${resetScrollKey ?? ''}|${groupedViewStyle}|${viewMode}`
+    if (hasInitialPrefetchedRef.current && initialPrefetchKeyRef.current === prefetchKey) return
+    hasInitialPrefetchedRef.current = true
+    initialPrefetchKeyRef.current = prefetchKey
+    const ids = groups
+      .flatMap((group) => (groupedViewStyle === 'cards' ? group.assets.slice(0, 1) : group.assets))
+      .slice(0, SCROLL_PREFETCH_ASSETS)
+      .map((asset) => asset.imageId)
+    prefetchImageThumbnails(ids, 'ahead')
+  }, [groupedViewStyle, groups, resetScrollKey, viewMode])
+
   const measure = useCallback((resetScroll = false) => {
     const layoutElement = layoutRef.current
     const scrollElement = scrollRef.current
@@ -610,6 +638,7 @@ function AssetGroupedView({
   useEffect(
     () => () => {
       if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current)
+      if (prefetchFrameRef.current !== null) cancelAnimationFrame(prefetchFrameRef.current)
     },
     [],
   )
@@ -617,6 +646,37 @@ function AssetGroupedView({
   const handleScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       const element = event.currentTarget
+      const direction: -1 | 1 = element.scrollTop >= lastScrollTopRef.current ? 1 : -1
+      lastScrollTopRef.current = element.scrollTop
+      pendingPrefetchDirectionRef.current = direction
+      if (prefetchFrameRef.current === null) {
+        prefetchFrameRef.current = requestAnimationFrame(() => {
+          prefetchFrameRef.current = null
+          const layouts = groupedViewStyle === 'cards' ? cardLayouts : blockLayouts
+          const min = element.scrollTop - VIRTUAL_OVERSCAN
+          const max = element.scrollTop + element.clientHeight + VIRTUAL_OVERSCAN
+          const mounted = layouts.filter((layout) => layout.top + layout.height >= min && layout.top <= max)
+          if (mounted.length === 0) return
+          const minIndex = layouts.indexOf(mounted[0]!)
+          const maxIndex = layouts.indexOf(mounted[mounted.length - 1]!)
+          const currentDirection = pendingPrefetchDirectionRef.current
+          const start =
+            currentDirection > 0
+              ? Math.min(layouts.length, maxIndex + 1)
+              : Math.max(0, minIndex - SCROLL_PREFETCH_GROUPS)
+          const end =
+            currentDirection > 0
+              ? Math.min(layouts.length, maxIndex + 1 + SCROLL_PREFETCH_GROUPS)
+              : Math.min(layouts.length, minIndex)
+          if (end <= start) return
+          const ids = layouts
+            .slice(start, end)
+            .flatMap((layout) => (groupedViewStyle === 'cards' ? layout.group.assets.slice(0, 1) : layout.group.assets))
+            .slice(0, SCROLL_PREFETCH_ASSETS)
+            .map((asset) => asset.imageId)
+          prefetchImageThumbnails(ids, 'ahead')
+        })
+      }
       if (hasMore && !loadingMore && element.scrollHeight - element.scrollTop - element.clientHeight < 600)
         onLoadMore?.()
       if (scrollFrameRef.current !== null) return
@@ -630,7 +690,7 @@ function AssetGroupedView({
         })
       })
     },
-    [hasMore, loadingMore, onLoadMore],
+    [blockLayouts, cardLayouts, groupedViewStyle, hasMore, loadingMore, onLoadMore],
   )
 
   // 查看来源任务：定位并高亮对应分组（3 秒后自动清除）

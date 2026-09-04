@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { createDesktopJsonStorage } from './lib/desktopJsonStorage'
+import { applyApiSecrets, extractApiSecrets, stripApiSecrets, type ApiSecretBundle } from './lib/apiSecrets'
 import { calculateImageSize, inferSizeTier, normalizeImageSize } from './lib/size'
 import { parseVariablePrompt, renderVariablePromptBatch } from './lib/variablePrompt'
 import { useRuntimeStore } from './stores/runtimeStore'
@@ -273,6 +274,7 @@ import { createWorkspaceBackupState, restoreWorkspaceBackupState } from './lib/w
 import { buildGeneratedImageFileNameBase, findNextGeneratedImageSequence } from './lib/generatedImageFilename'
 import { assignMissingGeneratedImageBatches, getNextGeneratedImageBatch } from './lib/generatedImageBatch'
 import { useRequirementPrototype } from './features/requirementPrototype/store'
+import { getSopAiRevisionAttachmentReferences, removeSopAiRevisionAttachments } from './features/strategy/sopAiRevision'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -779,8 +781,11 @@ export function ensureImageThumbnailCached(
   // 滚动闸门：滚动中挂起大缩略图加载（任务卡封面 / Agent 网格 / 收藏夹等全部消费方共享），
   // 滚动停止后按可见优先补齐——避免滚动帧内开几十个 IPC/IDB 事务与离屏解码。
   if (isScrollActive(THUMBNAIL_DEFER_WINDOW_MS)) {
-    pendingThumbnailIds.add(id)
-    scheduleThumbnailDrain()
+    const priority = thumbnailSubscribers.has(id) ? 'visible' : backfillPriority
+    // Map 重新插入可把刚进入视口的图片放到同优先级队尾；离屏卡片卸载时会取消该项，
+    // 因此停滚后不会先处理快速划过时遗留的大批废弃请求。
+    pendingThumbnailIds.delete(id)
+    pendingThumbnailIds.set(id, priority)
     return new Promise((resolve) => {
       let waiters = thumbnailWaiters.get(id)
       if (!waiters) {
@@ -788,6 +793,7 @@ export function ensureImageThumbnailCached(
         thumbnailWaiters.set(id, waiters)
       }
       waiters.add(resolve)
+      scheduleThumbnailDrain(priority === 'visible' ? 100 : THUMBNAIL_DEFER_WINDOW_MS)
     })
   }
   return startThumbnailLoad(id, backfillPriority)
@@ -855,46 +861,61 @@ function startThumbnailLoad(
 
 // 大缩略图（1024px）滚动延迟队列：与网格小图同策略，滚动停止后按可见优先补齐。
 const THUMBNAIL_DEFER_WINDOW_MS = 300
-const THUMBNAIL_DRAIN_BATCH = 4
-const pendingThumbnailIds = new Set<string>()
+const THUMBNAIL_DRAIN_BATCH = 8
+const pendingThumbnailIds = new Map<string, 'visible' | 'background'>()
 const thumbnailWaiters = new Map<
   string,
   Set<(thumbnail: { dataUrl: string; width?: number; height?: number } | undefined) => void>
 >()
 let thumbnailDrainScheduled = false
+const aheadThumbnailIds = new Set<string>()
+let aheadThumbnailRunning = 0
+let aheadThumbnailDrainScheduled = false
+const MAX_AHEAD_THUMBNAIL_CONCURRENT = 3
 
-function scheduleThumbnailDrain() {
+function resolveThumbnailWaiters(
+  id: string,
+  thumbnail: { dataUrl: string; width?: number; height?: number } | undefined,
+) {
+  const waiters = thumbnailWaiters.get(id)
+  if (!waiters) return
+  thumbnailWaiters.delete(id)
+  for (const resolve of waiters) resolve(thumbnail)
+}
+
+function scheduleThumbnailDrain(delay = THUMBNAIL_DEFER_WINDOW_MS) {
   if (thumbnailDrainScheduled) return
   thumbnailDrainScheduled = true
   setTimeout(() => {
     thumbnailDrainScheduled = false
     void runThumbnailDrain()
-  }, THUMBNAIL_DEFER_WINDOW_MS)
+  }, delay)
 }
 
 async function runThumbnailDrain() {
   if (pendingThumbnailIds.size === 0) return
-  if (isScrollActive(THUMBNAIL_DEFER_WINDOW_MS)) {
+  const scrolling = isScrollActive(THUMBNAIL_DEFER_WINDOW_MS)
+  const visible: string[] = []
+  const background: string[] = []
+  for (const [id, priority] of pendingThumbnailIds) {
+    if (priority === 'visible') visible.push(id)
+    else background.push(id)
+  }
+  // 滚动中只读取少量当前可见图，保持画面跟手；离屏预取继续由 ahead 队列负责。
+  const ids = (scrolling ? visible.slice(0, 2) : [...visible, ...background]).slice(0, THUMBNAIL_DRAIN_BATCH)
+  if (ids.length === 0) {
     scheduleThumbnailDrain()
     return
-  }
-  const ids: string[] = []
-  for (const id of pendingThumbnailIds) {
-    ids.push(id)
-    if (ids.length >= THUMBNAIL_DRAIN_BATCH) break
   }
   for (const id of ids) pendingThumbnailIds.delete(id)
   await Promise.allSettled(
     ids.map(async (id) => {
       const result = await startThumbnailLoad(id)
-      const waiters = thumbnailWaiters.get(id)
-      if (waiters) {
-        thumbnailWaiters.delete(id)
-        for (const resolve of waiters) resolve(result)
-      }
+      resolveThumbnailWaiters(id, result)
     }),
   )
-  if (pendingThumbnailIds.size > 0) scheduleThumbnailDrain()
+  // 已经停滚时连续排空小批次；滚动中保持短间隔，只补当前可见图。
+  if (pendingThumbnailIds.size > 0) scheduleThumbnailDrain(scrolling ? 100 : 0)
 }
 
 // 缩略图批量预取：分页加载（如素材库每批 120 张）落地后提前把缩略图读入内存缓存，
@@ -902,7 +923,46 @@ async function runThumbnailDrain() {
 // 分批串行（每批默认 12 张），避免一次性打开大量 IndexedDB 事务。
 const THUMBNAIL_PREFETCH_BATCH_SIZE = 12
 
-export function prefetchImageThumbnails(imageIds: Iterable<string>): void {
+function scheduleAheadThumbnailDrain() {
+  if (aheadThumbnailDrainScheduled || aheadThumbnailIds.size === 0) return
+  aheadThumbnailDrainScheduled = true
+  const run = () => {
+    aheadThumbnailDrainScheduled = false
+    while (aheadThumbnailRunning < MAX_AHEAD_THUMBNAIL_CONCURRENT && aheadThumbnailIds.size > 0) {
+      const id = aheadThumbnailIds.values().next().value as string | undefined
+      if (!id) break
+      aheadThumbnailIds.delete(id)
+      if (getCachedThumbnail(id) || thumbnailLoadPromises.has(id)) continue
+      pendingThumbnailIds.delete(id)
+      aheadThumbnailRunning++
+      void startThumbnailLoad(id, 'visible')
+        .then((result) => resolveThumbnailWaiters(id, result))
+        .catch(() => resolveThumbnailWaiters(id, undefined))
+        .finally(() => {
+          aheadThumbnailRunning--
+          scheduleAheadThumbnailDrain()
+        })
+    }
+  }
+
+  if ('requestIdleCallback' in globalThis) {
+    globalThis.requestIdleCallback(run, { timeout: 250 })
+  } else {
+    globalThis.setTimeout(run, 0)
+  }
+}
+
+export function prefetchImageThumbnails(imageIds: Iterable<string>, mode: 'background' | 'ahead' = 'background'): void {
+  if (mode === 'ahead') {
+    // 快速滚动时旧窗口没有继续预取的价值，保留最新窗口避免 FIFO 队列拖住当前视口。
+    aheadThumbnailIds.clear()
+    for (const id of imageIds) {
+      if (!getCachedThumbnail(id) && !thumbnailLoadPromises.has(id)) aheadThumbnailIds.add(id)
+    }
+    scheduleAheadThumbnailDrain()
+    return
+  }
+
   const pending: string[] = []
   for (const id of imageIds) {
     if (!getCachedThumbnail(id)) pending.push(id)
@@ -914,7 +974,7 @@ export function prefetchImageThumbnails(imageIds: Iterable<string>): void {
     const batch = pending.slice(index, index + THUMBNAIL_PREFETCH_BATCH_SIZE)
     index += batch.length
     if (batch.length === 0) return
-    void Promise.all(batch.map((id) => ensureImageThumbnailCached(id))).then(() => {
+    void Promise.all(batch.map((id) => ensureImageThumbnailCached(id, 'background'))).then(() => {
       if (index < pending.length) {
         if ('requestIdleCallback' in globalThis) {
           globalThis.requestIdleCallback(runBatch, { timeout: 2_000 })
@@ -937,9 +997,19 @@ export function subscribeImageThumbnail(
     thumbnailSubscribers.set(id, subscribers)
   }
   subscribers.add(callback)
+  if (pendingThumbnailIds.has(id)) {
+    pendingThumbnailIds.delete(id)
+    pendingThumbnailIds.set(id, 'visible')
+  }
   return () => {
     subscribers?.delete(callback)
-    if (subscribers?.size === 0) thumbnailSubscribers.delete(id)
+    if (subscribers?.size === 0) {
+      thumbnailSubscribers.delete(id)
+      if (pendingThumbnailIds.get(id) === 'visible') {
+        pendingThumbnailIds.delete(id)
+        resolveThumbnailWaiters(id, undefined)
+      }
+    }
   }
 }
 
@@ -1569,11 +1639,79 @@ function getLatestAgentConversation(conversations: AgentConversation[]) {
   }, null)
 }
 
+let secureApiSecretsAvailable = false
+let pendingApiSecrets: ApiSecretBundle | null = null
+let apiSecretsPersistTimer: ReturnType<typeof setTimeout> | null = null
+let apiSecretsPersisting = false
+
+function notifyApiSecretsPersistError() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('doupao:persist-error', { detail: { namespace: 'apiSecrets' } }))
+}
+
+async function flushApiSecrets(): Promise<void> {
+  if (apiSecretsPersisting || !pendingApiSecrets) return
+  const api = typeof window !== 'undefined' ? window.electronAPI : undefined
+  if (!api?.saveApiSecrets) return
+  apiSecretsPersisting = true
+  const secrets = pendingApiSecrets
+  pendingApiSecrets = null
+  try {
+    const result = await api.saveApiSecrets(secrets)
+    if (!result.success) throw new Error(result.error || 'API 密钥安全存储失败')
+  } catch (error) {
+    console.error('[api-secrets] 写入失败，将自动重试', error)
+    pendingApiSecrets = pendingApiSecrets ?? secrets
+    notifyApiSecretsPersistError()
+  } finally {
+    apiSecretsPersisting = false
+    if (pendingApiSecrets && !apiSecretsPersistTimer) {
+      apiSecretsPersistTimer = setTimeout(() => {
+        apiSecretsPersistTimer = null
+        void flushApiSecrets()
+      }, 1500)
+    }
+  }
+}
+
+function scheduleApiSecretsPersist(settings: AppSettings) {
+  if (!secureApiSecretsAvailable) return
+  pendingApiSecrets = extractApiSecrets(settings)
+  void flushApiSecrets()
+}
+
+export async function hydrateDesktopApiSecrets(): Promise<void> {
+  const api = typeof window !== 'undefined' ? window.electronAPI : undefined
+  if (!api?.loadApiSecrets || !api.saveApiSecrets) return
+  try {
+    const loaded = await api.loadApiSecrets()
+    if (!loaded.available) return
+    if (loaded.error) console.warn('[api-secrets] 读取安全存储失败，将使用当前配置', loaded.error)
+    const current = normalizeSettings(useStore.getState().settings)
+    const settings = normalizeSettings(applyApiSecrets(current, loaded.secrets))
+    const saved = await api.saveApiSecrets(extractApiSecrets(settings))
+    if (!saved.success) throw new Error(saved.error || 'API 密钥安全存储失败')
+    secureApiSecretsAvailable = true
+    useStore.setState({ settings })
+  } catch (error) {
+    console.error('[api-secrets] 初始化失败，暂不清理普通设置中的密钥', error)
+    notifyApiSecretsPersistError()
+  }
+}
+
+function getPersistableCodexCliPromptKeys(settings: AppSettings, values: string[]) {
+  const allowed = new Set(
+    [...settings.profiles, ...settings.agentProfiles].map((profile) => `${profile.id}\n${profile.baseUrl}`),
+  )
+  return values.filter((value) => allowed.has(value))
+}
+
 export function getPersistedState(state: AppState) {
   const settings = normalizeSettings(state.settings)
+  const persistedSettings = secureApiSecretsAvailable ? stripApiSecrets(settings) : settings
   const galleryInputDraft = getPersistableGalleryInputDraft(state)
   return {
-    settings,
+    settings: persistedSettings,
     params: state.params,
     customOutputPath: state.customOutputPath,
     ...(settings.persistInputOnRestart && (state.appMode === 'gallery' || galleryInputDraft)
@@ -1582,7 +1720,7 @@ export function getPersistedState(state: AppState) {
           inputImages: galleryInputDraft?.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) ?? [],
         }
       : {}),
-    dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
+    dismissedCodexCliPrompts: getPersistableCodexCliPromptKeys(settings, state.dismissedCodexCliPrompts),
     appMode: state.appMode,
     galleryInputDraft:
       settings.persistInputOnRestart && galleryInputDraft
@@ -4221,6 +4359,10 @@ export const useStore = create<AppState>()(
   ),
 )
 
+useStore.subscribe((state, previous) => {
+  if (state.settings !== previous.settings) scheduleApiSecretsPersist(normalizeSettings(state.settings))
+})
+
 let lastStoredAgentConversations = useStore.getState().agentConversations
 let agentConversationPersistRunning = false
 let agentConversationPersistQueued = false
@@ -4398,7 +4540,7 @@ export function putTask(task: TaskRecord): Promise<IDBValidKey> {
 
 export function getCodexCliPromptKey(settings: AppSettings): string {
   const profile = getActiveApiProfile(settings)
-  return `${profile.baseUrl}\n${profile.apiKey}`
+  return `${profile.id}\n${profile.baseUrl}`
 }
 
 function isOpenAITask(task: TaskRecord) {
@@ -4865,6 +5007,7 @@ export function ensureImageStorageMigrated(): Promise<number> {
   if (!isElectronEnv()) return Promise.resolve(0)
   imageStorageMigrationPromise ??= (async () => {
     let migrated = 0
+    const failedImageIds = new Set<string>()
     await runMigration(
       'electron-image-files-v1',
       {
@@ -4878,9 +5021,13 @@ export function ensureImageStorageMigrated(): Promise<number> {
             image.dataUrl ? saveRawCacheImageToLocal(image.id, image.dataUrl) : Promise.resolve(null),
           replaceImage: putImage,
           onProgress: (count) => checkpoint(String(count)),
+          onFailure: (image) => failedImageIds.add(image.id),
         })
       },
     )
+    if (failedImageIds.size > 0) {
+      useStore.getState().showToast(`有 ${failedImageIds.size} 张历史图片无法迁移，已跳过且保留原数据`, 'error')
+    }
     return migrated
   })().catch((error) => {
     imageStorageMigrationPromise = null
@@ -5283,6 +5430,7 @@ export async function initStore(options: { safeMode?: boolean } = {}) {
   for (const run of sopRuns) {
     for (const imageId of run.referenceImageIds) referencedIds.add(imageId)
   }
+  for (const reference of getSopAiRevisionAttachmentReferences()) referencedIds.add(reference.imageId)
   for (const tab of state.workspaceTabs) {
     for (const img of tab.inputImages) referencedIds.add(img.id)
     if (tab.inputImageFolder) {
@@ -6471,6 +6619,15 @@ export async function buildStoreImageReferenceGraph(snapshot?: AssetLibrarySnaps
           },
         })),
       ),
+      ...getSopAiRevisionAttachmentReferences().map(({ documentId, imageId }) => ({
+        imageId,
+        reference: {
+          type: 'sop-ai-conversation' as const,
+          ownerId: documentId,
+          label: 'SOP AI 对话图片',
+          blocking: true,
+        },
+      })),
     ],
   })
 }
@@ -6521,6 +6678,7 @@ async function detachImageReferencesForPurge(items: ForceDetachItem[]): Promise<
   const strategyIds = new Set<string>()
   const orderIds = new Set<string>()
   const wordBatchIds = new Set<string>()
+  const sopAiDocumentIds = new Set<string>()
   let sopCoverTouched = false
   let currentInputTouched = false
   let galleryDraftTouched = false
@@ -6553,6 +6711,9 @@ async function detachImageReferencesForPurge(items: ForceDetachItem[]): Promise<
           break
         case 'sop-reference':
           sopRunIds.add(ref.ownerId)
+          break
+        case 'sop-ai-conversation':
+          sopAiDocumentIds.add(ref.ownerId)
           break
         case 'sop-cover':
           sopCoverTouched = true
@@ -6736,6 +6897,7 @@ async function detachImageReferencesForPurge(items: ForceDetachItem[]): Promise<
   if (orderIds.size > 0) patchedModuleRecords += countChanged(requirementState.orders, orders)
   if (wordBatchIds.size > 0)
     patchedModuleRecords += countChanged(workspaceState.wordGenerationBatches, wordGenerationBatches)
+  if (sopAiDocumentIds.size > 0) patchedModuleRecords += removeSopAiRevisionAttachments(imageIds)
 
   return {
     detachedRefCount,
@@ -6802,6 +6964,57 @@ export interface PurgeGeneratedAssetsOptions {
    */
   force?: boolean
   onProgress?: (progress: PurgeGeneratedAssetsProgress) => void
+}
+
+export interface RemovedManagedImageFile {
+  path: string
+  imageId?: string
+}
+
+function normalizeManagedImagePath(filePath: string): string {
+  return filePath.replaceAll('\\', '/').toLocaleLowerCase()
+}
+
+/** 磁盘上的应用管理图片被外部删除后，按图片 id 走统一永久删除流程。 */
+export async function removeDeletedLocalImage(file: RemovedManagedImageFile): Promise<number> {
+  const imageIds = new Set<string>()
+  if (file.imageId) imageIds.add(file.imageId)
+  const removedPath = normalizeManagedImagePath(file.path)
+  for (const task of useStore.getState().tasks) {
+    for (const [key, localPath] of Object.entries(task.localSavedOutputImagePaths ?? {})) {
+      if (normalizeManagedImagePath(localPath) !== removedPath) continue
+      const imageId = key.slice(key.indexOf(':') + 1)
+      if (imageId) imageIds.add(imageId)
+    }
+  }
+  if (imageIds.size === 0) return 0
+
+  const loadedAssets = Object.values(useAssetLibraryStore.getState().assetsById).filter((asset) =>
+    imageIds.has(asset.imageId),
+  )
+  const assetsByImageId =
+    loadedAssets.length === imageIds.size
+      ? new Map(loadedAssets.map((asset) => [asset.imageId, asset]))
+      : await getAssetsByImageIds([...imageIds])
+  const eventAssets = [
+    ...new Map([...loadedAssets, ...assetsByImageId.values()].map((asset) => [asset.id, asset])).values(),
+  ]
+  const assetIds = eventAssets.map((asset) => asset.id)
+  if (assetIds.length === 0) return 0
+
+  // 删除事件可能发生在当前分页未加载该素材时。把事件命中的素材补进全量快照，
+  // 仍由统一引用图和永久删除事务决定最终清理范围。
+  const snapshot = await hydrateFull()
+  const snapshotAssetsById = new Map(snapshot.assets.map((asset) => [asset.id, asset]))
+  for (const asset of eventAssets) snapshotAssetsById.set(asset.id, asset)
+  const mergedSnapshot = { ...snapshot, assets: [...snapshotAssetsById.values()] }
+  const graph = await buildStoreImageReferenceGraph(mergedSnapshot)
+  const plan = planAssetPurge(
+    { assetIds, assets: mergedSnapshot.assets, tasks: useStore.getState().tasks, graph },
+    { force: true },
+  )
+  const result = await purgeGeneratedAssets(assetIds, { plan })
+  return result.purged.length
 }
 
 export async function purgeGeneratedAssets(
@@ -10583,7 +10796,11 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 }
 
 /** 重试失败的任务：创建新任务并执行 */
-export async function retryTask(task: TaskRecord, options: { sopBatch?: TaskRecord['sopBatch'] } = {}) {
+export async function retryTask(
+  task: TaskRecord,
+  options: { sopBatch?: TaskRecord['sopBatch'] } = {},
+): Promise<string | null> {
+  let createdTaskId: string | null = null
   try {
     const { settings, workspaceTabs, activeWorkspaceTabId } = useStore.getState()
     const activeProfile = getActiveApiProfile(settings)
@@ -10597,6 +10814,7 @@ export async function retryTask(task: TaskRecord, options: { sopBatch?: TaskReco
     )
     const createdAt = Date.now()
     const taskId = genId()
+    createdTaskId = taskId
     const filenameBatch = getNextTaskFilenameBatch(createdAt, tabIdToUpdate)
     const newTask: TaskRecord = {
       id: taskId,
@@ -10648,10 +10866,23 @@ export async function retryTask(task: TaskRecord, options: { sopBatch?: TaskReco
 
     await putTask(newTask)
 
-    executeTask(taskId)
+    void executeTask(taskId)
+    return taskId
   } catch (error) {
+    if (createdTaskId) {
+      taskAbortControllers.get(createdTaskId)?.abort()
+      taskAbortControllers.delete(createdTaskId)
+      useStore.setState((state) => ({
+        tasks: state.tasks.filter((item) => item.id !== createdTaskId),
+        workspaceTabs: state.workspaceTabs.map((tab) => ({
+          ...tab,
+          tasks: tab.tasks.filter((item) => item.id !== createdTaskId),
+        })),
+      }))
+    }
     console.error('任务重试失败:', error)
     useStore.getState().showToast('任务重试失败，请重试', 'error')
+    return null
   }
 }
 
@@ -10671,6 +10902,10 @@ export async function rerunSopBatchTasks(tasks: TaskRecord[]) {
           id: snapshotId,
           batchId,
           createdAt: Date.now(),
+          updatedAt: Date.now(),
+          status: 'generating',
+          batchIds: [batchId],
+          taskIds: [],
           prompts: previousSnapshot.prompts.map((prompt) => ({ ...prompt })),
           referenceImageIds: [...previousSnapshot.referenceImageIds],
           params: { ...previousSnapshot.params },
@@ -10678,18 +10913,43 @@ export async function rerunSopBatchTasks(tasks: TaskRecord[]) {
         })
       }
     }
-    await Promise.all(
-      batchTasks.map((task) =>
-        retryTask(task, {
-          sopBatch: {
-            ...task.sopBatch!,
-            batchId,
-            snapshotId,
-          },
-        }),
-      ),
-    )
-    useStore.getState().showToast(`已创建新的 SOP 批次，共 ${batchTasks.length} 条提示词`, 'success')
+    const createdTaskIds = (
+      await Promise.all(
+        batchTasks.map((task) =>
+          retryTask(task, {
+            sopBatch: {
+              ...task.sopBatch!,
+              batchId,
+              snapshotId,
+            },
+          }),
+        ),
+      )
+    ).filter((taskId): taskId is string => Boolean(taskId))
+    if (snapshotId) {
+      const snapshot = await getSopBatchSnapshot(snapshotId)
+      if (snapshot) {
+        await putSopBatchSnapshot({
+          ...snapshot,
+          taskIds: createdTaskIds,
+          status: createdTaskIds.length > 0 ? 'submitted' : 'failed',
+          updatedAt: Date.now(),
+        })
+      }
+    }
+    if (createdTaskIds.length === 0) {
+      useStore.getState().showToast('SOP 批次重新生成失败，没有创建新任务', 'error')
+      return
+    }
+    const failedCount = batchTasks.length - createdTaskIds.length
+    useStore
+      .getState()
+      .showToast(
+        failedCount > 0
+          ? `SOP 批次部分创建成功：${createdTaskIds.length} 条成功，${failedCount} 条失败`
+          : `已创建新的 SOP 批次，共 ${createdTaskIds.length} 条提示词`,
+        failedCount > 0 ? 'info' : 'success',
+      )
   } catch (error) {
     console.error('SOP 批次重新生成失败:', error)
     useStore.getState().showToast('SOP 批次重新生成失败', 'error')
@@ -11177,6 +11437,7 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
     falRecoveryInFlight.clear()
     customRecoveryInFlight.clear()
     thumbnailBackfillIds.clear()
+    aheadThumbnailIds.clear()
     if (typeof localStorage !== 'undefined') {
       for (let index = localStorage.length - 1; index >= 0; index--) {
         const key = localStorage.key(index)
@@ -11255,33 +11516,48 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
 }
 
 /** 从 ZIP 归档中提取单个条目（其余条目跳过不解压），并收集全部条目路径清单。 */
-function scanZipArchive(archive: Uint8Array): {
+async function pushFileStreamToUnzip(file: File, unzip: Unzip): Promise<void> {
+  if (typeof file.stream !== 'function') {
+    if (file.size > 256 * 1024 * 1024) {
+      throw new Error('当前浏览器不支持大型备份流式导入，请使用 Chromium 浏览器或 Windows 桌面版')
+    }
+    unzip.push(new Uint8Array(await file.arrayBuffer()), true)
+    return
+  }
+  const reader = file.stream().getReader()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    unzip.push(value, false)
+  }
+  unzip.push(new Uint8Array(), true)
+}
+
+async function scanZipFile(file: File): Promise<{
   manifestBytes: Uint8Array | null
   paths: Set<string>
   error: unknown
-} {
+}> {
   const paths = new Set<string>()
   let manifestBytes: Uint8Array | null = null
   let error: unknown = null
-  const unzip = new Unzip((file) => {
-    paths.add(file.name)
-    if (file.name === 'manifest.json') {
-      const chunks: Uint8Array[] = []
-      file.ondata = (err, data, final) => {
-        if (err) {
-          error = err
-          return
-        }
-        if (data) chunks.push(data)
-        if (final) manifestBytes = concatBytes(chunks)
+  const unzip = new Unzip((entry) => {
+    paths.add(entry.name)
+    if (entry.name !== 'manifest.json') return
+    const chunks: Uint8Array[] = []
+    entry.ondata = (entryError, data, final) => {
+      if (entryError) {
+        error = entryError
+        return
       }
-      file.start()
+      if (data) chunks.push(data)
+      if (final) manifestBytes = concatBytes(chunks)
     }
-    // 其余条目不 start()：不解压、不驻留，仅记录路径
+    entry.start()
   })
   unzip.register(UnzipInflate)
   unzip.register(UnzipPassThrough)
-  unzip.push(archive, true)
+  await pushFileStreamToUnzip(file, unzip)
   return { manifestBytes, paths, error }
 }
 
@@ -11427,6 +11703,100 @@ function getCompositeAssetExtension(type: string) {
   return 'png'
 }
 
+type BrowserZipSink = {
+  onData: (error: Error | null, chunk: Uint8Array, final: boolean) => void
+  complete: () => Promise<void>
+}
+
+async function createBrowserZipSink(fileName: string): Promise<BrowserZipSink | null> {
+  const runtimeWindow = window as typeof window & {
+    showSaveFilePicker?: (options: {
+      suggestedName: string
+      types: Array<{ description: string; accept: Record<string, string[]> }>
+    }) => Promise<{
+      createWritable: () => Promise<{
+        write: (chunk: Uint8Array) => Promise<void>
+        close: () => Promise<void>
+        abort: () => Promise<void>
+      }>
+    }>
+  }
+  const picker = runtimeWindow.showSaveFilePicker
+  if (picker) {
+    try {
+      const handle = await picker({
+        suggestedName: fileName,
+        types: [{ description: 'ZIP 备份', accept: { 'application/zip': ['.zip'] } }],
+      })
+      const writable = await handle.createWritable()
+      let writeChain = Promise.resolve()
+      let resolveComplete!: () => void
+      let rejectComplete!: (error: unknown) => void
+      const completed = new Promise<void>((resolve, reject) => {
+        resolveComplete = resolve
+        rejectComplete = reject
+      })
+      return {
+        onData: (error, chunk, final) => {
+          if (error) {
+            writeChain = writeChain.then(() => writable.abort())
+            rejectComplete(error)
+            return
+          }
+          if (chunk.length > 0) writeChain = writeChain.then(() => writable.write(chunk))
+          if (final) {
+            writeChain.then(() => writable.close()).then(resolveComplete, rejectComplete)
+          }
+        },
+        complete: () => completed,
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return null
+      throw error
+    }
+  }
+
+  const chunks: Uint8Array[] = []
+  let accumulatedBytes = 0
+  let failed = false
+  let resolveComplete!: () => void
+  let rejectComplete!: (error: unknown) => void
+  const completed = new Promise<void>((resolve, reject) => {
+    resolveComplete = resolve
+    rejectComplete = reject
+  })
+  return {
+    onData: (error, chunk, final) => {
+      if (failed) return
+      if (error) {
+        failed = true
+        rejectComplete(error)
+        return
+      }
+      if (chunk.length > 0) {
+        accumulatedBytes += chunk.length
+        if (accumulatedBytes > 256 * 1024 * 1024) {
+          failed = true
+          chunks.length = 0
+          rejectComplete(new Error('当前浏览器不支持大型备份流式保存，请使用 Chromium 浏览器或 Windows 桌面版'))
+          return
+        }
+        chunks.push(chunk)
+      }
+      if (!final) return
+      const blob = new Blob(chunks as unknown as BlobPart[], { type: 'application/zip' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = fileName
+      anchor.click()
+      URL.revokeObjectURL(url)
+      resolveComplete()
+    },
+    complete: () => completed,
+  }
+}
+
 async function restoreCompositeBackup(data: ExportData, unzipped: Record<string, Uint8Array>): Promise<void> {
   if (!data.compositeState) return
 
@@ -11487,6 +11857,9 @@ export async function exportData(
       wordGenerationBatches,
     } = state
     const exportedAt = Date.now()
+    const fileName = `gpt-image-playground-backup_${formatExportFileTime(new Date(exportedAt))}.zip`
+    const zipSink = await createBrowserZipSink(fileName)
+    if (!zipSink) return
     const assetLibrary = options.exportAssets || options.exportImages ? await hydrateFull() : null
     const imageCreatedAtFallback = new Map<string, number>()
 
@@ -11527,10 +11900,7 @@ export async function exportData(
     // 流式 ZIP：逐条目写入并立即丢弃，不再全量驻留图片字节 + zipSync 同步压缩。
     // 图片/缩略图/合成资源用 ZipPassThrough（存储模式）——它们已是压缩格式，
     // 再压缩收益极小，且避免压缩内存翻倍；manifest 用 Deflate 压缩。
-    const chunks: Uint8Array[] = []
-    const zip = new Zip((error, chunk) => {
-      if (!error && chunk?.length) chunks.push(chunk)
-    })
+    const zip = new Zip(zipSink.onData)
     const compositeBackup = options.exportConfig ? await buildCompositeBackup() : null
     if (compositeBackup) {
       for (const [id, asset] of compositeBackup.assets) {
@@ -11665,14 +12035,7 @@ export async function exportData(
     zip.add(manifestEntry)
     manifestEntry.push(strToU8(JSON.stringify(manifest, null, 2)), true)
     zip.end()
-    // Uint8Array<ArrayBufferLike> 与 BlobPart 的泛型不匹配，运行时合法，显式断言
-    const blob = new Blob(chunks as unknown as BlobPart[], { type: 'application/zip' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `gpt-image-playground-backup_${formatExportFileTime(new Date(exportedAt))}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
+    await zipSink.complete()
     useStore.getState().showToast('数据已导出', 'success')
   } catch (e) {
     useStore.getState().showToast(`导出失败：${e instanceof Error ? e.message : String(e)}`, 'error')
@@ -12034,10 +12397,8 @@ export async function importData(
   options: ImportOptions = { importConfig: true, importTasks: true },
 ): Promise<boolean> {
   try {
-    const archiveBytes = new Uint8Array(await file.arrayBuffer())
-
     // 第一遍：只解压 manifest.json + 收集全部条目路径清单（其余条目跳过、不解压不驻留）
-    const { manifestBytes, paths, error: scanError } = scanZipArchive(archiveBytes)
+    const { manifestBytes, paths, error: scanError } = await scanZipFile(file)
     if (scanError) throw scanError
     if (!manifestBytes) throw new Error('ZIP 中缺少 manifest.json')
 
@@ -12116,7 +12477,7 @@ export async function importData(
     })
     unzip.register(UnzipInflate)
     unzip.register(UnzipPassThrough)
-    unzip.push(archiveBytes, true)
+    await pushFileStreamToUnzip(file, unzip)
     await settleImportExtraction(state)
 
     const reconciledBackup =
