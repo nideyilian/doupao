@@ -29,6 +29,7 @@ import { formatSopBatchElapsed, getSopBatchElapsedMs } from '../../lib/sopBatchT
 import {
   buildAssetBatchGroups,
   buildAssetBatchOverview,
+  getPrimaryOrigin,
   hasTaskFailure,
   type AssetBatchGroup,
 } from '../../lib/assetBatchGrouping'
@@ -193,6 +194,17 @@ const AssetGroupCardBody = memo(function AssetGroupCardBody({
   }, [group, batchTasks])
   const taskList = batchTasks(group)
   const groupAssetIds = group.assets.map((asset) => asset.id)
+  const outputImagesByTask = useMemo(() => {
+    const result = new Map<string, string[]>()
+    for (const asset of group.assets) {
+      const taskId = getPrimaryOrigin(asset)?.taskId
+      if (!taskId || !asset.imageId) continue
+      const imageIds = result.get(taskId) ?? []
+      if (!imageIds.includes(asset.imageId)) imageIds.push(asset.imageId)
+      result.set(taskId, imageIds)
+    }
+    return result
+  }, [group.assets])
 
   const handleTaskCardClick = useCallback(
     (event: ReactMouseEvent | ReactTouchEvent) => {
@@ -295,6 +307,7 @@ const AssetGroupCardBody = memo(function AssetGroupCardBody({
         onOpenImage={handleOpenImage}
         onRerun={handleRerunBatch}
         onDelete={handleDeleteGroup}
+        outputImagesByTask={outputImagesByTask}
       />
     )
   }

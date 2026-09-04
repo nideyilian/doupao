@@ -9,7 +9,7 @@ import {
 } from '../design-system/icons'
 import type { TaskRecord, TaskStatus } from '../types'
 import { formatSopBatchElapsed, getSopBatchElapsedMs, type SopBatchSummary } from '../lib/sopBatchTaskGrouping'
-import { hasCompletedTaskOutputs } from '../lib/taskProgressDisplay'
+import { hasCompletedTaskOutputCount } from '../lib/taskProgressDisplay'
 import { Card, IconButton } from '../design-system'
 import TaskParamSummary from './TaskParamSummary'
 import { useCoverThumbnail } from '../hooks/useCoverThumbnail'
@@ -95,6 +95,7 @@ function SopBatchTaskCard({
   onOpenImage,
   onRerun,
   onDelete,
+  outputImagesByTask,
 }: {
   sopName: string
   tasks: TaskRecord[]
@@ -105,20 +106,31 @@ function SopBatchTaskCard({
   onOpenImage: (imageId: string) => void
   onRerun: () => void
   onDelete: () => void
+  outputImagesByTask?: ReadonlyMap<string, string[]>
 }) {
   const [now, setNow] = useState(Date.now())
-  const outputImageIds = tasks.flatMap((task) => task.outputImages)
+  const getTaskOutputImageIds = (task: TaskRecord) => {
+    return Array.from(
+      new Set([...(outputImagesByTask?.get(task.id) ?? []), ...(task.outputImages ?? []).filter(Boolean)]),
+    )
+  }
+  const outputImageIds = tasks.flatMap(getTaskOutputImageIds)
   const imageTotal = tasks.reduce(
-    (total, task) => total + Math.max(task.sopBatch?.imagesPerPrompt ?? task.params?.n ?? 1, task.outputImages.length),
+    (total, task) =>
+      total + Math.max(task.sopBatch?.imagesPerPrompt ?? task.params?.n ?? 1, getTaskOutputImageIds(task).length),
     0,
   )
   const imageCompleted = outputImageIds.length
   const promptTarget = Math.max(summary.total, ...tasks.map((task) => task.sopBatch?.promptCount ?? 0))
   const isRunning = tasks.some(
     (task) =>
-      task.status === 'running' || ((task.falRecoverable || task.customRecoverable) && !hasCompletedTaskOutputs(task)),
+      task.status === 'running' ||
+      ((task.falRecoverable || task.customRecoverable) &&
+        !hasCompletedTaskOutputCount(task, getTaskOutputImageIds(task).length)),
   )
-  const failedCount = tasks.filter((task) => task.status === 'error' && !hasCompletedTaskOutputs(task)).length
+  const failedCount = tasks.filter(
+    (task) => task.status === 'error' && !hasCompletedTaskOutputCount(task, getTaskOutputImageIds(task).length),
+  ).length
   const isFailed = tasks.length > 0 && failedCount === tasks.length
   const cardStatus: TaskStatus = isRunning ? 'running' : isFailed ? 'error' : 'done'
   const status = isRunning ? '生成中' : isFailed ? '生成失败' : failedCount > 0 ? '部分完成' : '已完成'
@@ -236,5 +248,6 @@ export default memo(
     previous.sopName === next.sopName &&
     previous.tasks === next.tasks &&
     previous.summary === next.summary &&
-    previous.isSelected === next.isSelected,
+    previous.isSelected === next.isSelected &&
+    previous.outputImagesByTask === next.outputImagesByTask,
 )

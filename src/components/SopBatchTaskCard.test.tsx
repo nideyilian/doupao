@@ -128,4 +128,81 @@ describe('SopBatchTaskCard', () => {
     expect(card?.props['data-status']).toBe('done')
     expect(renderer!.root.findByType('h3').children).toContain('已完成')
   })
+
+  it('uses asset-library outputs when the task record has not received the output ids yet', () => {
+    storeMocks.ensureImageThumbnailCached.mockResolvedValue(undefined)
+    const staleTask = {
+      ...task('task-1', 1),
+      outputImages: [],
+      status: 'error',
+      error: '保存状态同步失败',
+    } as TaskRecord
+    let renderer: ReturnType<typeof create>
+
+    act(() => {
+      renderer = create(
+        <SopBatchTaskCard
+          sopName="天体图"
+          tasks={[staleTask]}
+          summary={{ total: 1, running: 0, completed: 0, failed: 1 }}
+          outputImagesByTask={new Map([['task-1', ['asset-image-1']]])}
+          onClick={vi.fn()}
+          onOpenBatch={vi.fn()}
+          onOpenImage={vi.fn()}
+          onRerun={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      )
+    })
+    mountedRenderers.push(renderer!)
+
+    const card = renderer!.root.findAll((node) => String(node.props.className).includes('gallery-sop-card')).at(0)
+    expect(card?.props['data-status']).toBe('done')
+    expect(renderer!.root.findByType('h3').children).toContain('已完成')
+    expect(
+      renderer!.root.findAll(
+        (node) =>
+          node.type === 'span' && node.children.join('') === '1/1' && String(node.props.className).includes('bottom-1'),
+      ),
+    ).toHaveLength(1)
+  })
+
+  it('keeps a stale failed card failed when the asset library only has a partial output', () => {
+    storeMocks.ensureImageThumbnailCached.mockResolvedValue(undefined)
+    const staleTask = {
+      ...task('task-1', 1),
+      params: { ...DEFAULT_PARAMS, size: '1536x1024', quality: 'high', n: 2 },
+      outputImages: [],
+      status: 'error',
+      error: '第二张图片生成失败',
+    } as TaskRecord
+    let renderer: ReturnType<typeof create>
+
+    act(() => {
+      renderer = create(
+        <SopBatchTaskCard
+          sopName="天体图"
+          tasks={[staleTask]}
+          summary={{ total: 1, running: 0, completed: 0, failed: 1 }}
+          outputImagesByTask={new Map([['task-1', ['asset-image-1']]])}
+          onClick={vi.fn()}
+          onOpenBatch={vi.fn()}
+          onOpenImage={vi.fn()}
+          onRerun={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      )
+    })
+    mountedRenderers.push(renderer!)
+
+    const card = renderer!.root.findAll((node) => String(node.props.className).includes('gallery-sop-card')).at(0)
+    expect(card?.props['data-status']).toBe('error')
+    expect(renderer!.root.findByType('h3').children).toContain('生成失败')
+    expect(
+      renderer!.root.findAll(
+        (node) =>
+          node.type === 'span' && node.children.join('') === '1/2' && String(node.props.className).includes('bottom-1'),
+      ),
+    ).toHaveLength(1)
+  })
 })

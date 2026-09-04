@@ -25,9 +25,12 @@ function getSuccessCount(task: TaskRecord): number {
 }
 
 /** 已保存的输出数量达到请求数量时，生成结果本身应视为成功，不能被后续加载错误覆盖。 */
-export function hasCompletedTaskOutputs(task: TaskRecord): boolean {
-  const outputCount = task.outputImages?.length ?? 0
+export function hasCompletedTaskOutputCount(task: TaskRecord, outputCount: number): boolean {
   return outputCount > 0 && outputCount >= getRequestedCount(task)
+}
+
+export function hasCompletedTaskOutputs(task: TaskRecord): boolean {
+  return hasCompletedTaskOutputCount(task, task.outputImages?.length ?? 0)
 }
 
 function getTaskSourceLabel(task: TaskRecord): string {

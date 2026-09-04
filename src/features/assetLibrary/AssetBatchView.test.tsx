@@ -235,6 +235,32 @@ describe('AssetGroupedView（分组视图 · 任务卡片形式）', () => {
     act(() => renderer.unmount())
   })
 
+  it('shows a completed SOP card when its image is already in the asset library but the task state is stale', () => {
+    const staleTask = {
+      ...taskB,
+      outputImages: [],
+      status: 'error',
+      error: '保存状态同步失败',
+    } as TaskRecord
+    ;(storeMocks.useStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (selector: (value: unknown) => unknown) =>
+        selector({
+          tasks: [taskA, staleTask],
+          settings: { alwaysShowRetryButton: false },
+          setConfirmDialog: vi.fn(),
+          setDetailTaskId: storeMocks.setDetailTaskId,
+        }),
+    )
+
+    const renderer = renderGrouped()
+    const sopCard = cardByGroupId(renderer, 'sop-batch:b1')
+    const statusCard = sopCard.find((node) => String(node.props.className).includes('gallery-sop-card'))
+    expect(statusCard.props['data-status']).toBe('done')
+    expect(collectText(renderer)).toContain('已完成')
+    expect(collectText(renderer)).toContain('图片 2/2')
+    act(() => renderer.unmount())
+  })
+
   it('does not render orphan cards for deleted tasks (禁止「任务已删除」状态)', () => {
     const renderer = renderGrouped()
     // 任务记录已删除的素材（asset e / origin t9）不再以「任务已删除」卡展示；
