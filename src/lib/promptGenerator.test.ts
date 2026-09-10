@@ -178,7 +178,7 @@ describe('render_prompt', () => {
   })
 
   it('returns empty string and empty reports for empty object state', () => {
-    const [text, reports] = render_prompt({} as any, 1)
+    const [text, reports] = render_prompt({} as unknown as Parameters<typeof render_prompt>[0], 1)
     expect(text).toBe('')
     expect(reports).toEqual([])
   })

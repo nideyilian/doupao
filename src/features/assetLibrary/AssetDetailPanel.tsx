@@ -135,12 +135,13 @@ function AssetDetailPanelInner({ embedded = false, onNext, onPrev, onPurgeReques
   const tasks = useStore((state) => state.tasks)
   const [fullImageSrc, setFullImageSrc] = useState('')
   const [storedImage, setStoredImage] = useState<StoredImage | undefined>()
+  const imageId = asset?.imageId
 
   useEffect(() => {
-    if (!asset) return
+    if (!imageId) return
     let cancelled = false
     setFullImageSrc('')
-    Promise.all([ensureImageCached(asset.imageId), getImage(asset.imageId)])
+    Promise.all([ensureImageCached(imageId), getImage(imageId)])
       .then(([dataUrl, image]) => {
         if (cancelled) return
         if (dataUrl) setFullImageSrc(dataUrl)
@@ -150,7 +151,7 @@ function AssetDetailPanelInner({ embedded = false, onNext, onPrev, onPurgeReques
     return () => {
       cancelled = true
     }
-  }, [asset?.imageId])
+  }, [imageId])
 
   const primaryOrigin = useMemo(() => {
     if (!asset) return undefined

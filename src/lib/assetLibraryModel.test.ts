@@ -89,7 +89,7 @@ describe('normalizeAsset', () => {
   it('reconstructs origin keys when missing', () => {
     const asset = normalizeAsset({
       id: 'a',
-      origins: [{ taskId: 'task-9', outputSlot: 2 } as any],
+      origins: [{ taskId: 'task-9', outputSlot: 2 }],
     })
     expect(asset.origins[0].key).toBe('task-9:2')
     expect(asset.origins[0].prompt).toBe('')
@@ -98,8 +98,8 @@ describe('normalizeAsset', () => {
   it('ignores non-string ids in arrays', () => {
     const asset = normalizeAsset({
       id: 'a',
-      collectionIds: ['c1', 42 as any, '', 'c2'],
-      tagIds: ['t1', null as any],
+      collectionIds: ['c1', 42, '', 'c2'],
+      tagIds: ['t1', null],
       parentAssetIds: ['p1', 'p2'],
     })
     expect(asset.collectionIds).toEqual(['c1', 'c2'])
@@ -111,13 +111,13 @@ describe('normalizeAsset', () => {
     const asset = normalizeAsset({
       id: 'a',
       primaryOriginKey: 'task-1:0',
-      origins: [{ key: 'task-1:0', taskId: 't', outputSlot: 0 } as any],
+      origins: [{ key: 'task-1:0', taskId: 't', outputSlot: 0 }],
     })
     expect(asset.primaryOriginKey).toBe('task-1:0')
     const bad = normalizeAsset({
       id: 'a',
       primaryOriginKey: 'missing',
-      origins: [{ key: 'task-1:0', taskId: 't', outputSlot: 0 } as any],
+      origins: [{ key: 'task-1:0', taskId: 't', outputSlot: 0 }],
     })
     expect(bad.primaryOriginKey).toBe('task-1:0')
   })

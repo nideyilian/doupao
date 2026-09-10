@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { StoredImage } from '../types'
 import { migrateLegacyImages } from './imageStorageMigration'
 
 const legacy = { id: 'legacy-a', dataUrl: 'data:image/png;base64,YQ==' }
 
 describe('migrateLegacyImages', () => {
   it('clears dataUrl only after the local file is saved', async () => {
-    const writes: any[] = []
+    const writes: StoredImage[] = []
     let calls = 0
     await migrateLegacyImages({
       readBatch: async () => (calls++ === 0 ? [legacy] : []),

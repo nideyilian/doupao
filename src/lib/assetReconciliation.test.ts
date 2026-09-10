@@ -81,7 +81,7 @@ describe('reconcileGeneratedAssets', () => {
   })
 
   it('continues after a failing task and reports failure count', async () => {
-    mock.upsertFromTask.mockRejectedValueOnce(new Error('boom')).mockResolvedValue([{ id: 'img-2' } as any])
+    mock.upsertFromTask.mockRejectedValueOnce(new Error('boom')).mockResolvedValue([{ id: 'img-2' }])
     const result = await reconcileGeneratedAssets({
       tasks: [makeTask('a'), makeTask('b')],
       workspaceTabs: [],

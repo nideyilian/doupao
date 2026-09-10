@@ -145,7 +145,12 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       headers: response.headers,
     })
   } catch (error) {
-    finishStream(error instanceof Error ? error : new TypeError(String(error)))
-    throw error
+    const normalizedError = request.signal.aborted
+      ? createAbortError(request.signal)
+      : error instanceof Error
+        ? error
+        : new TypeError(String(error))
+    finishStream(normalizedError)
+    throw normalizedError
   }
 }

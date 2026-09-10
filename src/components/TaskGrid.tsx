@@ -24,6 +24,7 @@ const GALLERY_IMAGE_GAP = 12
 const GALLERY_TASK_CARD_GAP = 16
 const TASK_CARD_ROW_HEIGHT = 192
 const GALLERY_MASONRY_SCROLL_STEP = 120
+const EMPTY_TASKS: TaskRecord[] = []
 
 function getInitialGalleryColumns() {
   const defaultValue = DEFAULT_GALLERY_COLUMNS
@@ -35,15 +36,11 @@ function getInitialGalleryColumns() {
 }
 
 export default function TaskGrid() {
-  const activeTabId = useStore((s) => s.activeWorkspaceTabId)
-  const allTasks = useStore((s) => s.tasks)
-  const workspaceTabs = useStore((s) => s.workspaceTabs)
-  const tabTasks = useMemo(() => {
-    const tab = activeTabId ? workspaceTabs.find((t) => t.id === activeTabId) : null
-    return tab?.tasks ?? []
-  }, [activeTabId, workspaceTabs])
   const filterFavorite = useStore((s) => s.filterFavorite)
-  const tasks = filterFavorite ? allTasks : activeTabId ? tabTasks : allTasks
+  const tasks = useStore((s) => {
+    if (s.filterFavorite || !s.activeWorkspaceTabId) return s.tasks
+    return s.workspaceTabs.find((tab) => tab.id === s.activeWorkspaceTabId)?.tasks ?? EMPTY_TASKS
+  })
   const searchQuery = useStore((s) => s.searchQuery)
   const deferredSearchQuery = useDeferredValue(searchQuery)
   const filterStatus = useStore((s) => s.filterStatus)

@@ -62,6 +62,17 @@ describe('findEndOfCentralDirectory', () => {
     expect(eocd!.entriesTotal).toBe(3)
     expect(eocd!.cdSize).toBeGreaterThan(0)
   })
+
+  it('rejects unsupported ZIP64 sentinel values', () => {
+    const tail = new Uint8Array(22)
+    const view = new DataView(tail.buffer)
+    view.setUint32(0, 0x06054b50, true)
+    view.setUint16(10, 0xffff, true)
+    view.setUint32(12, 0xffffffff, true)
+    view.setUint32(16, 0xffffffff, true)
+
+    expect(() => findEndOfCentralDirectory(tail)).toThrow('暂不支持 ZIP64')
+  })
 })
 
 describe('scanZipFile', () => {
@@ -100,6 +111,18 @@ describe('parseCentralDirectory', () => {
     const stored = entries.find((entry) => entry.archivePath === 'images/img-a.png')!
     expect(stored.method).toBe(0) // stored
     expect(stored.uncompressedSize).toBe(strToU8('fake-png-bytes-a').length)
+  })
+
+  it('rejects ZIP64 sizes in central directory entries', () => {
+    const central = new Uint8Array(46 + 8)
+    const view = new DataView(central.buffer)
+    view.setUint32(0, 0x02014b50, true)
+    view.setUint32(20, 0xffffffff, true)
+    view.setUint32(24, 0xffffffff, true)
+    view.setUint16(28, 8, true)
+    central.set(new TextEncoder().encode('file.bin'), 46)
+
+    expect(() => parseCentralDirectory(central)).toThrow('暂不支持 ZIP64')
   })
 })
 

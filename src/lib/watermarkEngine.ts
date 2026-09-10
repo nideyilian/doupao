@@ -16,8 +16,8 @@ function calculateAnchorPosition(
   marginX: number,
   marginY: number,
 ): { x: number; y: number } {
-  let x = 0
-  let y = 0
+  let x: number
+  let y: number
 
   if (anchor.includes('left')) {
     x = marginX

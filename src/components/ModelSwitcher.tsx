@@ -130,6 +130,26 @@ export default function ModelSwitcher() {
     return list
   }, [currentTextModel, textModels])
 
+  const imageProfilesByProvider = useMemo(() => {
+    const providerOrder = settings.providerOrder ?? [
+      'openai',
+      'fal',
+      ...settings.customProviders.map((item) => item.id),
+    ]
+    const order = new Map(providerOrder.map((provider, index) => [provider, index]))
+    const groups = new Map<ApiProfile['provider'], ApiProfile[]>()
+    for (const profile of settings.profiles) {
+      const profiles = groups.get(profile.provider) ?? []
+      profiles.push(profile)
+      groups.set(profile.provider, profiles)
+    }
+    return [...groups.entries()].sort(([providerA], [providerB]) => {
+      const indexA = order.get(providerA) ?? Number.MAX_SAFE_INTEGER
+      const indexB = order.get(providerB) ?? Number.MAX_SAFE_INTEGER
+      return indexA - indexB
+    })
+  }, [settings.customProviders, settings.profiles, settings.providerOrder])
+
   // 文本配置显示名：独立配置用 agentProfile.name；共享连接时为「生图配置名 · Agent」
   const textConfigName =
     textProfile.name || (settings.agentShareApiParameters ? `${imageProfile.name} · Agent` : 'Agent 服务')
@@ -170,33 +190,37 @@ export default function ModelSwitcher() {
             <span className="ml-1 font-normal text-ds-muted/80 dark:text-ds-muted/70">（按 API 配置）</span>
           </div>
           <div className={listClass}>
-            {settings.profiles.map((profile) => {
-              const active = profile.id === settings.activeProfileId
-              return (
-                <button
-                  key={profile.id}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  data-profile-id={profile.id}
-                  onClick={() => switchImageProfile(profile.id)}
-                  className={`${itemBaseClass} ${active ? itemActiveClass : itemIdleClass}`}
-                >
-                  <ImageIcon className="h-3.5 w-3.5 shrink-0 text-ds-muted dark:text-ds-muted" />
-                  <span className="min-w-0 flex-1 truncate">
-                    <span className="font-medium">{profile.name}</span>
-                    <span className="text-ds-muted dark:text-ds-muted"> · </span>
-                    <span className="font-mono text-[13px] text-ds-text-subtle dark:text-ds-muted">
-                      {profile.model || '未配置'}
-                    </span>
-                  </span>
-                  <span className="shrink-0 rounded bg-ds-surface px-1.5 py-0.5 text-xs text-ds-muted dark:bg-ds-surface dark:text-ds-muted">
-                    {getApiProviderLabel(settings, profile.provider)}
-                  </span>
-                  {active && <CheckIcon className="h-3.5 w-3.5 shrink-0 text-ds-primary" />}
-                </button>
-              )
-            })}
+            {imageProfilesByProvider.map(([provider, profiles]) => (
+              <div key={provider} data-provider-group={provider}>
+                <div className="px-2 pb-0.5 pt-1 text-[12px] font-medium text-ds-muted dark:text-ds-muted">
+                  {getApiProviderLabel(settings, provider)}
+                </div>
+                {profiles.map((profile) => {
+                  const active = profile.id === settings.activeProfileId
+                  return (
+                    <button
+                      key={profile.id}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      data-profile-id={profile.id}
+                      onClick={() => switchImageProfile(profile.id)}
+                      className={`${itemBaseClass} ${active ? itemActiveClass : itemIdleClass}`}
+                    >
+                      <ImageIcon className="h-3.5 w-3.5 shrink-0 text-ds-muted dark:text-ds-muted" />
+                      <span className="min-w-0 flex-1 truncate">
+                        <span className="font-medium">{profile.name}</span>
+                        <span className="text-ds-muted dark:text-ds-muted"> · </span>
+                        <span className="font-mono text-[13px] text-ds-text-subtle dark:text-ds-muted">
+                          {profile.model || '未配置'}
+                        </span>
+                      </span>
+                      {active && <CheckIcon className="h-3.5 w-3.5 shrink-0 text-ds-primary" />}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </div>
 
           <div className="mx-2 my-1.5 border-t border-ds-border/70 dark:border-ds-border" />
@@ -204,7 +228,9 @@ export default function ModelSwitcher() {
           <div className="flex items-center justify-between">
             <div className={sectionHeaderClass}>
               文本模型
-              <span className="ml-1 font-normal text-ds-muted/80 dark:text-ds-muted/70">（{textConfigName}）</span>
+              <span className="ml-1 font-normal text-ds-muted/80 dark:text-ds-muted/70">
+                （{getApiProviderLabel(settings, textProfile.provider)} · {textConfigName}）
+              </span>
             </div>
             {textModelsLoading && <Loader2Icon className="mr-2 h-3.5 w-3.5 animate-spin text-ds-muted" />}
           </div>

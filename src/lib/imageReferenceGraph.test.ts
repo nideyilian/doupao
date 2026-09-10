@@ -127,7 +127,7 @@ describe('buildImageReferenceGraph', () => {
     const tab = makeTab('tab-1', {
       inputImages: [{ id: 'tab-in', dataUrl: 'x' }],
       inputImageFolder: { path: '/p', imageIds: ['folder-in'] },
-      maskDraft: { targetImageId: 'mask-target', maskImageId: 'm' } as any,
+      maskDraft: { targetImageId: 'mask-target', maskDataUrl: 'data:image/png;base64,m', updatedAt: 1 },
     })
     const graph = buildImageReferenceGraph({
       ...empty,
@@ -148,7 +148,21 @@ describe('buildImageReferenceGraph', () => {
     const conversation: AgentConversation = {
       id: 'conv-1',
       title: 'c',
-      rounds: [{ id: 'round-1', inputImageIds: ['conv-in'], maskImageId: 'conv-mask', createdAt: 1 } as any],
+      rounds: [
+        {
+          id: 'round-1',
+          index: 0,
+          userMessageId: 'message-1',
+          prompt: 'prompt',
+          inputImageIds: ['conv-in'],
+          maskImageId: 'conv-mask',
+          outputTaskIds: [],
+          status: 'done',
+          error: null,
+          createdAt: 1,
+          finishedAt: 1,
+        },
+      ],
       messages: [],
       createdAt: 1,
       updatedAt: 1,

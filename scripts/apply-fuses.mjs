@@ -5,7 +5,8 @@
  * - 禁用 Node 选项环境变量 / CLI inspect 参数注入
  * - 启用 asar 完整性校验 + 仅从 asar 加载（防篡改）
  *
- * 用法：electron-builder 打包完成后执行（win-unpacked / mac / linux 产物自动探测）。
+ * 用法：仅用于检查或手动加固已有的 unpacked 产物。
+ * 正常构建由 electron-builder 的 electronFuses 配置在签名和制作安装包前自动加固。
  */
 import { flipFuses, FuseVersion, FuseV1Options } from '@electron/fuses'
 import { existsSync, readdirSync } from 'fs'

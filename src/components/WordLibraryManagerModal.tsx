@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { getUniqueWordLibraryEntryKey, useStore } from '../store'
 import { createVariableMention, parseVariableMention, VAR_MENTION_RE } from '../lib/promptImageMentions'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
@@ -128,13 +128,16 @@ export default function WordLibraryManagerModal() {
   }, [activeEntries, query, visibleGroupIds])
 
   const countGroup = (id: string) => activeEntries.filter((entry) => entry.groupId === id).length
-  const selectEntry = (id: string) => {
-    const entry = activeEntries.find((item) => item.id === id)
-    if (!entry) return
-    setEntryId(id)
-    setEntryName(entry.key)
-    setEntryValues(entry.entries.join('\n'))
-  }
+  const selectEntry = useCallback(
+    (id: string) => {
+      const entry = activeEntries.find((item) => item.id === id)
+      if (!entry) return
+      setEntryId(id)
+      setEntryName(entry.key)
+      setEntryValues(entry.entries.join('\n'))
+    },
+    [activeEntries],
+  )
   useEffect(() => {
     if (!open || !requestedEntryId) return
     const entry = activeEntries.find((item) => item.id === requestedEntryId)
@@ -144,7 +147,7 @@ export default function WordLibraryManagerModal() {
       selectEntry(entry.id)
     }
     setRequestedEntryId(null)
-  }, [activeEntries, open, requestedEntryId, setRequestedEntryId])
+  }, [activeEntries, open, requestedEntryId, selectEntry, setRequestedEntryId])
   const saveGroup = () => {
     if (!groupForm?.name.trim()) return
     const name = groupForm.name.trim()

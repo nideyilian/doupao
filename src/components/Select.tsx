@@ -132,16 +132,9 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
         parent = parent.parentElement
       }
 
-      let newPlacement: 'bottom' | 'top' = 'bottom'
-      let maxHeight = DEFAULT_DROPDOWN_MAX_HEIGHT
-
-      if (availableBelow < 120 && availableAbove > availableBelow) {
-        newPlacement = 'top'
-        maxHeight = Math.min(DEFAULT_DROPDOWN_MAX_HEIGHT, Math.floor(availableAbove))
-      } else {
-        newPlacement = 'bottom'
-        maxHeight = Math.min(DEFAULT_DROPDOWN_MAX_HEIGHT, Math.floor(availableBelow))
-      }
+      const newPlacement = availableBelow < 120 && availableAbove > availableBelow ? 'top' : 'bottom'
+      const availableHeight = newPlacement === 'top' ? availableAbove : availableBelow
+      const maxHeight = Math.min(DEFAULT_DROPDOWN_MAX_HEIGHT, Math.floor(availableHeight))
 
       setPlacement(newPlacement)
       setMenuMaxHeight(Math.max(0, maxHeight))

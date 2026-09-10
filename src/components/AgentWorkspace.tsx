@@ -30,6 +30,7 @@ import {
   getWebSearchStatusForCalls,
   type AgentWebSearchStatus,
 } from '../lib/agentWebSearch'
+import { getAgentExecutionProgress, type AgentExecutionStepStatus, type AgentExecutionTone } from '../lib/agentProgress'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import {
   downloadImageEntries,
@@ -209,6 +210,88 @@ function AgentWebSearchStatusLines({ statuses }: { statuses: AgentWebSearchStatu
         </div>
       ))}
     </div>
+  )
+}
+
+const AGENT_EXECUTION_TONE_DOT_CLASS: Record<AgentExecutionTone, string> = {
+  running: 'bg-ds-primary',
+  success: 'bg-ds-success',
+  warning: 'bg-ds-warning',
+  error: 'bg-ds-danger',
+}
+
+const AGENT_EXECUTION_STEP_DOT_CLASS: Record<AgentExecutionStepStatus, string> = {
+  pending: 'bg-ds-border',
+  running: 'bg-ds-primary animate-pulse',
+  done: 'bg-ds-success',
+  warning: 'bg-ds-warning',
+  error: 'bg-ds-danger',
+  stopped: 'bg-ds-warning',
+}
+
+const AGENT_EXECUTION_STEP_TEXT_CLASS: Record<AgentExecutionStepStatus, string> = {
+  pending: 'text-ds-text-subtle',
+  running: 'text-ds-primary',
+  done: 'text-ds-text',
+  warning: 'text-ds-warning',
+  error: 'text-ds-danger',
+  stopped: 'text-ds-warning',
+}
+
+const AGENT_EXECUTION_STEP_STATUS_LABEL: Record<AgentExecutionStepStatus, string> = {
+  pending: '等待执行',
+  running: '正在执行',
+  done: '已完成',
+  warning: '部分完成',
+  error: '执行失败',
+  stopped: '已停止',
+}
+
+function AgentExecutionProgressPanel({
+  round,
+  tasks,
+  hasAssistantText = false,
+}: {
+  round: AgentRound | null
+  tasks: TaskRecord[]
+  hasAssistantText?: boolean
+}) {
+  const liveProgressByTaskId = useRuntimeStore((state) => state.taskProgress)
+  const progress = getAgentExecutionProgress({ round, tasks, liveProgressByTaskId, hasAssistantText })
+  if (!progress) return null
+
+  return (
+    <section
+      className="mt-3 rounded-ds-lg border border-ds-border/60 bg-ds-subtle/40 px-3 py-2.5 dark:bg-ds-surface/40"
+      aria-label="Agent 执行步骤"
+    >
+      <div className="flex items-start gap-2" role="status" aria-live="polite">
+        <span
+          className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${AGENT_EXECUTION_TONE_DOT_CLASS[progress.tone]}`}
+          aria-hidden="true"
+        />
+        <span className="text-sm font-medium text-ds-text dark:text-ds-text-subtle">{progress.summary}</span>
+      </div>
+      <ol className="mt-2 grid gap-1.5 sm:grid-cols-2">
+        {progress.steps.map((step) => (
+          <li key={step.key} className="flex min-w-0 items-start gap-2">
+            <span
+              className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${AGENT_EXECUTION_STEP_DOT_CLASS[step.status]}`}
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className={`text-xs font-medium ${AGENT_EXECUTION_STEP_TEXT_CLASS[step.status]}`}>
+                  {step.label}
+                </span>
+                <span className="sr-only">{AGENT_EXECUTION_STEP_STATUS_LABEL[step.status]}</span>
+              </div>
+              <div className="mt-0.5 text-xs leading-relaxed text-ds-muted dark:text-ds-muted">{step.detail}</div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
   )
 }
 
@@ -1331,6 +1414,14 @@ export default function AgentWorkspace() {
                           </span>
                         </div>
 
+                        {isAssistant && isStreamingAssistant && (
+                          <AgentExecutionProgressPanel
+                            round={round ?? null}
+                            tasks={tasksForRound}
+                            hasAssistantText={Boolean(message.content.trim())}
+                          />
+                        )}
+
                         {message.role === 'user' && round && round.inputImageIds.length > 0 && (
                           <div className="flex gap-2 mb-3 overflow-x-auto pb-1" onClick={(e) => e.stopPropagation()}>
                             {round.inputImageIds.map((imgId, imageIndex) => (
@@ -1689,26 +1780,20 @@ export default function AgentWorkspace() {
               return (
                 <>
                   {renderedMessages}
-                  {runningRounds.map((round) => (
-                    <div key={`running-${round.id}`} className="flex w-full justify-start mb-6">
-                      <article className="flex min-w-[16rem] max-w-[95%] flex-col rounded-ds-xl rounded-tl-sm border border-ds-border bg-ds-surface/70 p-4 dark:border-ds-border dark:bg-ds-surface md:max-w-[85%] lg:max-w-[75%]">
-                        <div className="mb-2 text-sm text-ds-muted dark:text-ds-muted">
-                          <span className="text-ds-primary dark:text-ds-primary font-semibold">Agent</span>{' '}
-                          <span className="ml-1 font-normal opacity-60">· 第 {round.index} 轮</span>
-                        </div>
-                        <div className="flex items-center gap-3 text-sm text-ds-muted dark:text-ds-muted">
-                          <span className="inline-flex items-center gap-1.5">
-                            <span>正在生成回复</span>
-                            <span className="flex gap-1">
-                              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:150ms]" />
-                              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:300ms]" />
-                            </span>
-                          </span>
-                        </div>
-                      </article>
-                    </div>
-                  ))}
+                  {runningRounds.map((round) => {
+                    const runningTasks = getRoundTasks(round, tasks).filter((task): task is TaskRecord => task !== null)
+                    return (
+                      <div key={`running-${round.id}`} className="flex w-full justify-start mb-6">
+                        <article className="flex min-w-[16rem] max-w-[95%] flex-col rounded-ds-xl rounded-tl-sm border border-ds-border bg-ds-surface/70 p-4 dark:border-ds-border dark:bg-ds-surface md:max-w-[85%] lg:max-w-[75%]">
+                          <div className="mb-2 text-sm text-ds-muted dark:text-ds-muted">
+                            <span className="text-ds-primary dark:text-ds-primary font-semibold">Agent</span>{' '}
+                            <span className="ml-1 font-normal opacity-60">· 第 {round.index} 轮</span>
+                          </div>
+                          <AgentExecutionProgressPanel round={round} tasks={runningTasks} />
+                        </article>
+                      </div>
+                    )
+                  })}
                 </>
               )
             })()

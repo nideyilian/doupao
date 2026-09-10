@@ -81,7 +81,6 @@ export function buildProjectTreeCopies(
   const entries: ProjectCopyEntry[] = []
   let skippedNoFile = 0
   let totalAssets = 0
-  let collectionCount = 0
 
   const usedNames = new Map<string, Map<string, number>>()
   const uniqueName = (folderKey: string, base: string, extension: string): string => {
@@ -131,8 +130,7 @@ export function buildProjectTreeCopies(
     }
   }
 
-  collectionCount = activeCollections.length
-  return { entries, skippedNoFile, totalAssets, collectionCount }
+  return { entries, skippedNoFile, totalAssets, collectionCount: activeCollections.length }
 }
 
 export interface ProjectTreeExportOutcome {

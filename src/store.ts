@@ -8157,6 +8157,7 @@ async function executeAgentRound(
     const resumedAssistantContent = resume ? (existingAssistantMessage?.content.trim() ?? '') : ''
     const shouldStreamAssistantMessage = activeProfile.streamImages === true
     const streamingTaskIds: string[] = resume ? [...round.outputTaskIds] : []
+    const runCreatedTaskIds = new Set<string>()
     const taskIdByToolCallId = new Map<string, string>()
 
     const attachTaskToAgentRound = (taskId: string) => {
@@ -8238,6 +8239,7 @@ async function executeAgentRound(
       }
 
       taskIdByToolCallId.set(toolCallId, task.id)
+      runCreatedTaskIds.add(task.id)
       useStore.getState().setTasks([task, ...useStore.getState().tasks])
       attachTaskToAgentRound(task.id)
       await putTask(task)
@@ -8975,7 +8977,7 @@ async function executeAgentRound(
         }
       }
 
-      for (const taskId of streamingTaskIds) {
+      for (const taskId of runCreatedTaskIds) {
         const latestTask = useStore.getState().tasks.find((t) => t.id === taskId)
         if (latestTask && latestTask.status === 'running') {
           updateTaskInStore(taskId, {

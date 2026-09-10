@@ -512,7 +512,7 @@ export function getBatchCompletion(state: GenerationState, policy: GenerationPol
   const inFlightRequests = getInFlightRequests(state).length
   const pendingSlots = state.slots.filter((slot) => slot.status === 'pending').length
 
-  let status: GenerationBatchStatus = state.status
+  let status: GenerationBatchStatus
   if (state.status === 'cancelled') {
     status = 'cancelled'
   } else if (state.status === 'error') {

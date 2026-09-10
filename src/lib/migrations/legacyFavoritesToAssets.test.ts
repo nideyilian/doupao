@@ -7,6 +7,7 @@ import type {
   TaskRecord,
   WorkspaceTab,
 } from '../../types'
+import type { MigrationJournal, MigrationJournalStore } from './registry'
 import { normalizeAsset } from '../assetLibraryModel'
 
 const mock = vi.hoisted(() => ({
@@ -216,10 +217,10 @@ describe('runLegacyFavoritesToAssetsMigration', () => {
     const task = makeTask('t1', { isFavorite: true, favoriteCollectionIds: ['fav-brand'] })
     mock.getAllTasks.mockResolvedValue([task])
     mock.hydrate.mockResolvedValue({ assets: [], collections: [], tags: [], tombstones: [] })
-    const journal = new Map<string, any>()
-    const store = {
+    const journal = new Map<string, MigrationJournal>()
+    const store: MigrationJournalStore = {
       get: async (id: string) => journal.get(id),
-      put: async (record: any) => {
+      put: async (record) => {
         journal.set(record.id, record)
       },
     }
@@ -232,6 +233,6 @@ describe('runLegacyFavoritesToAssetsMigration', () => {
 
     expect(mock.putCollections).toHaveBeenCalledTimes(1)
     expect(mock.putGeneratedAssets).toHaveBeenCalledTimes(1)
-    expect(journal.get('legacy-favorites-to-assets-v1').status).toBe('completed')
+    expect(journal.get('legacy-favorites-to-assets-v1')!.status).toBe('completed')
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BookOpenCheckIcon as BookOpenCheck,
   ChevronDownIcon as ChevronDown,
@@ -131,6 +131,8 @@ export default function StrategyEditor({
   onManageSopLibrary?: () => void
 }) {
   const normalizedStrategy = useMemo(() => (strategy ? normalizeStrategyAsset(strategy) : null), [strategy])
+  const normalizedStrategyRef = useRef(normalizedStrategy)
+  normalizedStrategyRef.current = normalizedStrategy
   const [draft, setDraft] = useState<StrategyAsset | null>(normalizedStrategy)
   const [testQuantity, setTestQuantity] = useState(normalizedStrategy?.quantity ?? 10)
   const [message, setMessage] = useState('')
@@ -139,8 +141,9 @@ export default function StrategyEditor({
   const [showSopPicker, setShowSopPicker] = useState(false)
 
   useEffect(() => {
-    setDraft(normalizedStrategy)
-    setTestQuantity(normalizedStrategy?.quantity ?? 10)
+    const currentStrategy = normalizedStrategyRef.current
+    setDraft(currentStrategy)
+    setTestQuantity(currentStrategy?.quantity ?? 10)
     setMessage('')
     setShowSopPicker(false)
   }, [normalizedStrategy?.id, normalizedStrategy?.updatedAt])

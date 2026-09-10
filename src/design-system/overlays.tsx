@@ -41,6 +41,8 @@ export function Dialog({
   const descriptionId = useId()
   const dialogRef = useRef<HTMLDivElement>(null)
   const overlayIdRef = useRef<number | null>(null)
+  const onOpenChangeRef = useRef(onOpenChange)
+  onOpenChangeRef.current = onOpenChange
 
   useEffect(() => {
     if (!open) {
@@ -54,7 +56,7 @@ export function Dialog({
 
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const id = registerOverlay({
-      onEscape: () => onOpenChange(false),
+      onEscape: () => onOpenChangeRef.current(false),
       returnFocus,
       containerRef: dialogRef,
       initialFocusRef: null,
@@ -68,7 +70,7 @@ export function Dialog({
         overlayIdRef.current = null
       }
     }
-  }, [open, onOpenChange])
+  }, [open])
 
   if (!open) return null
 
@@ -218,7 +220,7 @@ export function Menu({ className, label, onKeyDown, ...props }: MenuProps) {
           event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'),
         )
         const index = items.indexOf(document.activeElement as HTMLButtonElement)
-        let next = index
+        let next: number
         if (event.key === 'ArrowDown') next = (index + 1) % items.length
         else if (event.key === 'ArrowUp') next = (index - 1 + items.length) % items.length
         else if (event.key === 'Home') next = 0

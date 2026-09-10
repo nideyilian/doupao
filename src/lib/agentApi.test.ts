@@ -3,6 +3,7 @@ import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
 import {
   callAgentApi,
+  callAgentChatCompletionsApi,
   callAgentConversationTitleApi,
   callAgentResponsesApi,
   generateDerivedWordEntries,
@@ -17,6 +18,7 @@ import {
 describe('callAgentResponsesApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('streams Agent text and requests configured partial images', async () => {
@@ -375,6 +377,65 @@ describe('callAgentResponsesApi', () => {
     ).rejects.toMatchObject({ name: 'AbortError' })
 
     expect(textDeltas).toEqual(['Hel'])
+  })
+
+  it('reports a Responses Agent timeout instead of leaking AbortError', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          })
+        }),
+    )
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      apiMode: 'responses',
+      timeout: 1,
+    })
+
+    const promise = callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'prompt' }] }],
+    })
+    const assertion = expect(promise).rejects.toThrow(
+      'Agent 请求超时：超过 1 秒仍未完成，请稍后重试或提高 Agent 超时时间。',
+    )
+    await vi.advanceTimersByTimeAsync(1000)
+
+    await assertion
+  })
+
+  it('reports a Chat Completions Agent timeout instead of leaking AbortError', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          })
+        }),
+    )
+    const profile = createDefaultOpenAIProfile({
+      apiKey: 'test-key',
+      timeout: 1,
+    })
+
+    const promise = callAgentChatCompletionsApi({
+      settings: { ...DEFAULT_SETTINGS, agentApiConfigMode: 'hybrid' },
+      profile,
+      params: DEFAULT_PARAMS,
+      input: [{ role: 'user', content: 'prompt' }],
+    })
+    const assertion = expect(promise).rejects.toThrow(
+      'Agent 请求超时：超过 1 秒仍未完成，请稍后重试或提高 Agent 超时时间。',
+    )
+    await vi.advanceTimersByTimeAsync(1000)
+
+    await assertion
   })
 
   it('generates a short conversation title without image tools', async () => {

@@ -1137,6 +1137,23 @@ export default function GallerySopBatchModal({
     await toggleRunPinned(run)
   }
 
+  const openActiveRunContextMenu = async (event: ReactMouseEvent) => {
+    const point = { x: event.clientX, y: event.clientY }
+    event.preventDefault()
+    event.stopPropagation()
+    await flushPromptRunSnapshot()
+    const run =
+      (await getSopBatchSnapshot(activeRunIdRef.current)) ??
+      buildPromptRunSnapshot(activeRunIdRef.current, prompts, sources, 'ready')
+    if (!run) {
+      showToast('当前提示词集还没有可操作的内容', 'info')
+      return
+    }
+    await putSopBatchSnapshot(run)
+    updateRecentRun(run)
+    setLibraryContextMenu({ ...point, run })
+  }
+
   const duplicatePromptRun = async (run: SopBatchSnapshot, openAfterCopy = false) => {
     if (run.id === activeRunIdRef.current) await flushPromptRunSnapshot()
     try {
@@ -2705,7 +2722,7 @@ export default function GallerySopBatchModal({
                   type="button"
                   onMouseDown={stopPromptActionPropagation}
                   onClick={() => void toggleActiveRunPinned()}
-                  disabled={running || !activeRun}
+                  disabled={running}
                   aria-label={activeRun?.pinned ? '取消收藏当前提示词集' : '收藏当前提示词集'}
                   aria-pressed={Boolean(activeRun?.pinned)}
                   title={activeRun?.pinned ? '取消收藏' : '收藏'}
@@ -2727,8 +2744,8 @@ export default function GallerySopBatchModal({
                 <button
                   type="button"
                   onMouseDown={stopPromptActionPropagation}
-                  onClick={(event) => activeRun && openLibraryContextMenu(event, activeRun)}
-                  disabled={running || !activeRun}
+                  onClick={(event) => void openActiveRunContextMenu(event)}
+                  disabled={running}
                   aria-label="更多提示词集操作"
                   title="更多操作"
                   className="sop-prompt-browser-icon-action"
@@ -2955,84 +2972,67 @@ export default function GallerySopBatchModal({
                 </div>
 
                 {selectedSop && (
-                  <details className="group relative shrink-0" open>
-                    <summary
-                      aria-label="打开批次设置"
-                      className="flex h-ds-control-sm cursor-pointer list-none items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2.5 text-xs text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary [&::-webkit-details-marker]:hidden"
-                    >
-                      <span>批次</span>
-                      <span className="font-semibold text-ds-text">
-                        {targetCount} × {targetImagesPerPrompt}
-                      </span>
-                      <ChevronDown size={12} className="transition-transform group-open:rotate-180" />
-                    </summary>
-                    <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-ds-lg border border-ds-border bg-ds-surface p-3 shadow-ds-md">
-                      <div className="mb-3 flex items-center justify-between">
-                        <span className="text-xs font-semibold">批次设置</span>
-                        <span className="text-xs text-ds-muted">预计 {totalImageCount} 张</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <label className="rounded-lg border border-ds-border p-2.5">
-                          <span className="block text-xs text-ds-muted">提示词数量</span>
-                          <input
-                            type="number"
-                            min={1}
-                            value={targetCount}
-                            onChange={(event) => event.target.value && setPromptCount(Number(event.target.value))}
-                            disabled={running}
-                            aria-label="SOP 提示词数量"
-                            className="mt-1 w-full bg-transparent text-base font-semibold outline-none disabled:opacity-50"
-                          />
-                        </label>
-                        <label className="rounded-lg border border-ds-border p-2.5">
-                          <span className="block text-xs text-ds-muted">每条图片数</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={MAX_SOP_IMAGES_PER_PROMPT}
-                            value={targetImagesPerPrompt}
-                            onChange={(event) => event.target.value && setImagesPerPrompt(Number(event.target.value))}
-                            disabled={running}
-                            aria-label="每条提示词生成图片数"
-                            className="mt-1 w-full bg-transparent text-base font-semibold outline-none disabled:opacity-50"
-                          />
-                        </label>
-                      </div>
-                      <label className="mt-2 flex h-ds-control-md items-center justify-between rounded-lg border border-ds-border px-2.5">
-                        <span className="text-xs text-ds-muted">信息流审核规则</span>
-                        <select
-                          value={params.adNegativeRuleId}
-                          onChange={(event) => setParams({ adNegativeRuleId: event.target.value })}
-                          disabled={running}
-                          aria-label="选择信息流审核规则"
-                          className="max-w-36 cursor-pointer bg-transparent text-xs font-semibold outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {adNegativeRuleProfiles.map((rule) => (
-                            <option key={rule.id} value={rule.id}>
-                              {rule.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <Switch
-                        checked={autoGenerate}
-                        onCheckedChange={toggleAutoGenerate}
+                  <div className="flex flex-wrap items-center gap-2" aria-label="批次设置">
+                    <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
+                      提示词
+                      <input
+                        type="number"
+                        min={1}
+                        value={targetCount}
+                        onChange={(event) => event.target.value && setPromptCount(Number(event.target.value))}
                         disabled={running}
-                        aria-label="每生成一条提示词立即发送生图"
-                        label={<span className="text-xs">生成提示词后自动生图</span>}
-                        className="mt-2 flex h-ds-control-md w-full justify-between rounded-lg px-2"
+                        aria-label="SOP 提示词数量"
+                        className="w-10 bg-transparent text-center font-semibold text-ds-text outline-none disabled:opacity-50"
                       />
-                      <Switch
-                        checked={secondReference}
-                        onCheckedChange={toggleSecondReference}
+                    </label>
+                    <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
+                      每条图片
+                      <input
+                        type="number"
+                        min={1}
+                        max={MAX_SOP_IMAGES_PER_PROMPT}
+                        value={targetImagesPerPrompt}
+                        onChange={(event) => event.target.value && setImagesPerPrompt(Number(event.target.value))}
                         disabled={running}
-                        aria-label="实际生图时再次使用输入区参考图"
-                        title="开启后，参考图先用于生成提示词，并在实际生图时再次传入"
-                        label={<span className="text-xs">生图时再次使用参考图</span>}
-                        className="flex h-ds-control-md w-full justify-between rounded-lg px-2"
+                        aria-label="每条提示词生成图片数"
+                        className="w-8 bg-transparent text-center font-semibold text-ds-text outline-none disabled:opacity-50"
                       />
-                    </div>
-                  </details>
+                    </label>
+                    <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
+                      审核规则
+                      <select
+                        value={params.adNegativeRuleId}
+                        onChange={(event) => setParams({ adNegativeRuleId: event.target.value })}
+                        disabled={running}
+                        aria-label="选择信息流审核规则"
+                        className="max-w-32 cursor-pointer bg-transparent font-semibold text-ds-text outline-none disabled:opacity-50"
+                      >
+                        {adNegativeRuleProfiles.map((rule) => (
+                          <option key={rule.id} value={rule.id}>
+                            {rule.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <Switch
+                      checked={autoGenerate}
+                      onCheckedChange={toggleAutoGenerate}
+                      disabled={running}
+                      aria-label="每生成一条提示词立即发送生图"
+                      label={<span className="text-xs">自动生图</span>}
+                      className="h-ds-control-sm gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2"
+                    />
+                    <Switch
+                      checked={secondReference}
+                      onCheckedChange={toggleSecondReference}
+                      disabled={running}
+                      aria-label="实际生图时再次使用输入区参考图"
+                      title="开启后，参考图先用于生成提示词，并在实际生图时再次传入"
+                      label={<span className="text-xs">二次参考</span>}
+                      className="h-ds-control-sm gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2"
+                    />
+                    <span className="text-xs tabular-nums text-ds-muted">预计 {totalImageCount} 张</span>
+                  </div>
                 )}
 
                 <div className="flex shrink-0 items-center gap-2">
@@ -3281,7 +3281,7 @@ export default function GallerySopBatchModal({
                           <button
                             type="button"
                             onClick={() => void toggleActiveRunPinned()}
-                            disabled={running || !activeRun}
+                            disabled={running}
                             aria-label={activeRun?.pinned ? '取消收藏当前提示词集' : '收藏当前提示词集'}
                             aria-pressed={Boolean(activeRun?.pinned)}
                             title={activeRun?.pinned ? '取消收藏' : '收藏'}
@@ -3301,8 +3301,8 @@ export default function GallerySopBatchModal({
                           </button>
                           <button
                             type="button"
-                            onClick={(event) => activeRun && openLibraryContextMenu(event, activeRun)}
-                            disabled={running || !activeRun}
+                            onClick={(event) => void openActiveRunContextMenu(event)}
+                            disabled={running}
                             aria-label="更多提示词集操作"
                             title="更多操作"
                             className="flex h-ds-control-md w-ds-control-md items-center justify-center rounded-lg text-ds-muted transition-colors hover:bg-ds-subtle hover:text-ds-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-primary disabled:cursor-not-allowed disabled:opacity-30"

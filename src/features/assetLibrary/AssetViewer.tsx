@@ -37,6 +37,8 @@ function AssetViewerInner() {
   const setViewerAsset = useAssetLibraryStore((state) => state.setViewerAsset)
 
   const asset = viewerAssetId ? assetsById[viewerAssetId] : undefined
+  const assetId = asset?.id
+  const imageId = asset?.imageId
   const [src, setSrc] = useState('')
   const [similarAssets, setSimilarAssets] = useState<GeneratedAsset[]>([])
   const [infoOpen, setInfoOpen] = useState(true)
@@ -68,7 +70,7 @@ function AssetViewerInner() {
 
   // 图片加载 + 重置变换
   useEffect(() => {
-    if (!asset) {
+    if (!imageId) {
       setSrc('')
       return
     }
@@ -77,7 +79,7 @@ function AssetViewerInner() {
     scaleRef.current = 1
     txRef.current = 0
     tyRef.current = 0
-    ensureImageCached(asset.imageId)
+    ensureImageCached(imageId)
       .then((dataUrl) => {
         if (!cancelled && dataUrl) setSrc(dataUrl)
       })
@@ -85,26 +87,26 @@ function AssetViewerInner() {
     return () => {
       cancelled = true
     }
-  }, [asset, asset?.imageId])
+  }, [imageId])
 
   // 类似图 strip
   useEffect(() => {
-    if (!asset) {
+    if (!assetId) {
       setSimilarAssets([])
       return
     }
     let active = true
     setSimilarAssets([])
     void assetCommands
-      .recommend({ similarToAssetId: asset.id, limit: 12 })
+      .recommend({ similarToAssetId: assetId, limit: 12 })
       .then((items) => {
-        if (!active) setSimilarAssets(items.map((item) => item.asset))
+        if (active) setSimilarAssets(items.map((item) => item.asset))
       })
       .catch(() => {})
     return () => {
       active = false
     }
-  }, [asset, asset?.id])
+  }, [assetId])
 
   const currentIndex = viewerAssetId ? viewerAssetIds.indexOf(viewerAssetId) : -1
   const total = viewerAssetIds.length
@@ -187,7 +189,7 @@ function AssetViewerInner() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [assetsById, closeViewer, navigate, patchAssets, viewerAssetId])
+  }, [assetsById, closeViewer, navigate, patchAssets, setViewerAsset, viewerAssetId])
 
   // 滚轮缩放 + 拖拽平移
   useEffect(() => {

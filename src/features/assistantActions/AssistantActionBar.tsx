@@ -259,6 +259,7 @@ export default function AssistantActionBar({
   const runningControllerRef = useRef<AbortController | null>(null)
 
   const runningActionId = feedback.type === 'loading' ? feedback.action.id : null
+  const loadingStartedAt = feedback.type === 'loading' ? feedback.startedAt : null
   const isBusy = runningActionId != null
   const elapsedLabel = feedback.type === 'loading' ? formatAssistantElapsed(now - feedback.startedAt) : null
   const updatePreferences = (next: AssistantActionPreferences) => onUpdatePreferences?.(next)
@@ -268,7 +269,7 @@ export default function AssistantActionBar({
     setNow(Date.now())
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [feedback.type, feedback.type === 'loading' ? feedback.startedAt : null])
+  }, [feedback.type, loadingStartedAt])
 
   useEffect(
     () => () => {

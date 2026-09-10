@@ -72,7 +72,7 @@ function formatSelectedLines(
 }
 
 export function findSopTextMatches(value: string, query: string): number[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const normalizedQuery = query.toLocaleLowerCase()
   if (!normalizedQuery) return []
 
   const source = value.toLocaleLowerCase()
@@ -138,6 +138,8 @@ export default function SopTextEditor({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const findReplaceRef = useRef<HTMLDivElement>(null)
   const aiAbortRef = useRef<AbortController | null>(null)
+  const valueRef = useRef(value)
+  valueRef.current = value
   const historyRef = useRef<string[]>([value])
   const historyIndexRef = useRef(0)
   const settings = useStore((state) => state.settings)
@@ -185,8 +187,9 @@ export default function SopTextEditor({
   const agentProfile = useMemo(() => getAgentTextApiProfile(settings), [settings])
 
   useEffect(() => {
+    const currentValue = valueRef.current
     aiAbortRef.current?.abort()
-    historyRef.current = [value]
+    historyRef.current = [currentValue]
     historyIndexRef.current = 0
     setHistoryState({ canUndo: false, canRedo: false })
     setReplaceQuery('')
@@ -260,9 +263,9 @@ export default function SopTextEditor({
 
   /** 定位到第 matchIndex 处匹配：选中 + 精确滚动到可视区 + 更新提示；focusTextarea 时聚焦编辑区（选择高亮）。 */
   function locateSearchMatch(matchIndex: number, focusTextarea: boolean) {
-    const query = searchQuery.trim()
+    const query = searchQuery
     const matchStart = searchMatches[matchIndex]
-    if (!query || matchStart === undefined) return
+    if (!query.trim() || matchStart === undefined) return
     setActiveSearchMatchStart(matchStart)
     setSearchMessage(`已定位第 ${matchIndex + 1} 处，共 ${searchMatches.length} 处`)
     const textarea = textareaRef.current
@@ -276,8 +279,8 @@ export default function SopTextEditor({
 
   // 输入即定位：查询变化后自动跳转到第一处匹配（不抢占搜索框焦点，可继续输入细化）
   useEffect(() => {
-    const query = searchQuery.trim()
-    if (!query) {
+    const query = searchQuery
+    if (!query.trim()) {
       setActiveSearchMatchStart(null)
       setSearchMessage('')
       return
@@ -292,8 +295,8 @@ export default function SopTextEditor({
   }, [searchQuery])
 
   function findNext() {
-    const query = searchQuery.trim()
-    if (!query) {
+    const query = searchQuery
+    if (!query.trim()) {
       searchInputRef.current?.focus()
       setSearchMessage('请输入查找内容')
       return
@@ -316,8 +319,8 @@ export default function SopTextEditor({
   }
 
   function findPrev() {
-    const query = searchQuery.trim()
-    if (!query) {
+    const query = searchQuery
+    if (!query.trim()) {
       searchInputRef.current?.focus()
       setSearchMessage('请输入查找内容')
       return
@@ -344,8 +347,8 @@ export default function SopTextEditor({
   }
 
   function replaceCurrentMatch() {
-    const query = searchQuery.trim()
-    if (!query) {
+    const query = searchQuery
+    if (!query.trim()) {
       searchInputRef.current?.focus()
       setSearchMessage('请输入查找内容')
       return
@@ -368,8 +371,8 @@ export default function SopTextEditor({
   }
 
   function replaceAllMatches() {
-    const query = searchQuery.trim()
-    if (!query) {
+    const query = searchQuery
+    if (!query.trim()) {
       searchInputRef.current?.focus()
       setSearchMessage('请输入查找内容')
       return

@@ -33,6 +33,8 @@ export interface ZipFileHandle {
 const EOCD_SIGNATURE = 0x06054b50
 const CENTRAL_SIGNATURE = 0x02014b50
 const LOCAL_SIGNATURE = 0x04034b50
+const ZIP64_U16_SENTINEL = 0xffff
+const ZIP64_U32_SENTINEL = 0xffffffff
 
 const MAX_CENTRAL_DIRECTORY_BYTES = 128 * 1024 * 1024
 const MAX_ENTRY_COMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
@@ -55,10 +57,16 @@ export function findEndOfCentralDirectory(buffer: Uint8Array): {
   const min = Math.max(0, buffer.length - 65557)
   for (let index = buffer.length - 22; index >= min; index--) {
     if (readU32(buffer, index) === EOCD_SIGNATURE) {
+      const entriesTotal = readU16(buffer, index + 10)
+      const cdOffset = readU32(buffer, index + 16)
+      const cdSize = readU32(buffer, index + 12)
+      if (entriesTotal === ZIP64_U16_SENTINEL || cdOffset === ZIP64_U32_SENTINEL || cdSize === ZIP64_U32_SENTINEL) {
+        throw new Error('暂不支持 ZIP64 备份文件')
+      }
       return {
-        entriesTotal: readU16(buffer, index + 10),
-        cdOffset: readU32(buffer, index + 16),
-        cdSize: readU32(buffer, index + 12),
+        entriesTotal,
+        cdOffset,
+        cdSize,
       }
     }
   }
@@ -88,15 +96,25 @@ export function parseCentralDirectory(buffer: Uint8Array): ZipDirectoryEntry[] {
     const commentLength = readU16(buffer, offset + 32)
     const entrySize = 46 + nameLength + extraLength + commentLength
     if (offset + entrySize > buffer.length) throw new Error('中央目录记录越界')
+    const compressedSize = readU32(buffer, offset + 20)
+    const uncompressedSize = readU32(buffer, offset + 24)
+    const localOffset = readU32(buffer, offset + 42)
+    if (
+      compressedSize === ZIP64_U32_SENTINEL ||
+      uncompressedSize === ZIP64_U32_SENTINEL ||
+      localOffset === ZIP64_U32_SENTINEL
+    ) {
+      throw new Error('暂不支持 ZIP64 备份文件')
+    }
     const archivePath = new TextDecoder().decode(buffer.subarray(offset + 46, offset + 46 + nameLength))
     assertSafeZipPath(archivePath)
     entries.push({
       archivePath,
       method: readU16(buffer, offset + 10),
-      compressedSize: readU32(buffer, offset + 20),
-      uncompressedSize: readU32(buffer, offset + 24),
+      compressedSize,
+      uncompressedSize,
       crc: readU32(buffer, offset + 16),
-      localOffset: readU32(buffer, offset + 42),
+      localOffset,
     })
     offset += entrySize
   }

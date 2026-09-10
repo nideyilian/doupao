@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GeneratedAsset } from '../types'
+import type { AssetCollection, AssetTag, GeneratedAsset, TaskRecord } from '../types'
 import {
   batchGetCompositeAssets,
   batchGetImages,
@@ -19,12 +19,31 @@ import {
   putImage,
 } from './db'
 
+type MutableRequest<T = unknown> = {
+  result?: T
+  error?: Error | null
+  onsuccess?: () => void
+  onerror?: () => void
+}
+
+type TestCursor<T> = {
+  readonly value: T
+  update?: (value: unknown) => void
+  continue: () => void
+}
+
 describe('database transaction completion', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('rejects when a write request succeeds but its transaction aborts', async () => {
-    const putRequest: any = {}
-    const tx: any = {
+    const putRequest: MutableRequest = {}
+    const tx: {
+      error: Error | null
+      objectStore: () => { put: () => MutableRequest }
+      oncomplete: (() => void) | null
+      onerror: (() => void) | null
+      onabort: (() => void) | null
+    } = {
       error: null,
       objectStore: () => ({ put: () => putRequest }),
       oncomplete: null,
@@ -67,7 +86,7 @@ describe('database transaction completion', () => {
     await commitImportedRecords({
       images: [{ id: 'image-a', dataUrl: 'data:image/png;base64,a' }],
       thumbnails: [{ id: 'image-a', thumbnailDataUrl: 'data:image/webp;base64,a' }],
-      tasks: [{ id: 'task-a' } as any],
+      tasks: [{ id: 'task-a' } as TaskRecord],
     })
 
     expect(transaction).toHaveBeenCalledWith(['images', 'thumbnails', 'tasks'], 'readwrite')
@@ -165,8 +184,8 @@ describe('getLegacyImageBatch', () => {
       { id: 'legacy-c', dataUrl: 'data:image/png;base64,Yw==' },
     ]
     let index = 0
-    const request: any = {}
-    const cursor = {
+    const request: MutableRequest<TestCursor<(typeof values)[number]> | null> = {}
+    const cursor: TestCursor<(typeof values)[number]> = {
       get value() {
         return values[index]
       },
@@ -206,9 +225,9 @@ describe('loadTasksIncrementally', () => {
     ]
     const updated: unknown[] = []
     let index = 0
-    const request: any = {}
+    const request: MutableRequest<TestCursor<(typeof values)[number]> | null> = {}
     let complete: (() => void) | null = null
-    const cursor: any = {
+    const cursor: TestCursor<(typeof values)[number]> = {
       get value() {
         return values[index]
       },
@@ -244,10 +263,13 @@ describe('loadTasksIncrementally', () => {
       open: () => requestWithResult({ transaction: () => tx }),
     })
 
-    const result = await loadTasksIncrementally((task: any) => ({
-      ...task,
-      payload: undefined,
-    }))
+    const result = await loadTasksIncrementally(
+      (task) =>
+        ({
+          ...task,
+          payload: undefined,
+        }) as TaskRecord,
+    )
 
     expect(result).toEqual([
       { id: 'task-a', payload: undefined },
@@ -404,8 +426,26 @@ describe('generated asset library stores', () => {
       open: () => requestWithResult({ transaction }),
     })
 
-    await putAssetCollections([{ id: 'c1', name: 'x' } as any])
-    await putAssetTags([{ id: 't1', name: 'y' } as any])
+    const collection: AssetCollection = {
+      id: 'c1',
+      name: 'x',
+      normalizedName: 'x',
+      parentId: null,
+      order: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const tag: AssetTag = {
+      id: 't1',
+      name: 'y',
+      normalizedName: 'y',
+      parentId: null,
+      order: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    await putAssetCollections([collection])
+    await putAssetTags([tag])
     await putAssetTombstones([{ id: 'tomb-1', imageId: 'hash-a', purgedAt: 1, lastOriginOccurredAt: 1 }])
 
     expect(usedStores).toEqual(['assetCollections', 'assetTags', 'assetTombstones'])

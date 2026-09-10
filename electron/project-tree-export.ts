@@ -46,13 +46,14 @@ export function exportProjectTreeCopies(
   let copied = 0
 
   for (const entry of entries) {
-    let safeSource: string | null = null
+    let safeSource: string
     try {
       safeSource = isPathAllowed(entry.sourcePath)
     } catch {
-      safeSource = null
+      failed.push({ targetPath: entry.targetPath, error: '源文件不可读或不在允许目录内' })
+      continue
     }
-    if (!safeSource || !existsSync(safeSource)) {
+    if (!existsSync(safeSource)) {
       failed.push({ targetPath: entry.targetPath, error: '源文件不可读或不在允许目录内' })
       continue
     }

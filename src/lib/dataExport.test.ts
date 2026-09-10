@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_PARAMS, type GeneratedAsset } from '../types'
 import { buildElectronImageExportEntries, buildExportImageRefs, collectReferencedExportImageIds } from './dataExport'
 
 describe('data export planning', () => {
   it('collects referenced IDs once in first-seen order', () => {
-    const tasks: any[] = [
+    const tasks: Array<{
+      inputImageIds: string[]
+      maskImageId: string
+      outputImages: string[]
+      streamPartialImageIds: string[]
+    }> = [
       {
         inputImageIds: ['input-a'],
         maskImageId: 'mask-a',
@@ -11,8 +17,15 @@ describe('data export planning', () => {
         streamPartialImageIds: ['partial-a', 'output-a'],
       },
     ]
-    const conversations: any[] = [{ rounds: [{ inputImageIds: ['agent-a', 'input-a'] }] }]
-    const workspaceTabs: any[] = [
+    const conversations: Array<{ rounds: Array<{ inputImageIds: string[] }>; messages: [] }> = [
+      { rounds: [{ inputImageIds: ['agent-a', 'input-a'] }], messages: [] },
+    ]
+    const workspaceTabs: Array<{
+      inputImages: Array<{ id: string }>
+      inputImageFolder: { imageIds: string[] }
+      maskDraft: { targetImageId: string }
+      maskEditorImageId: string
+    }> = [
       {
         inputImages: [{ id: 'workspace-input-a' }, { id: 'input-a' }],
         inputImageFolder: { imageIds: ['folder-input-a', 'workspace-input-a'] },
@@ -20,12 +33,36 @@ describe('data export planning', () => {
         maskEditorImageId: 'mask-editor-a',
       },
     ]
-    const assets: any[] = [
+    const assets: GeneratedAsset[] = [
       {
+        id: 'asset-a',
         imageId: 'asset-a',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 1,
+        trashedAt: null,
+        favorite: false,
+        rating: 0,
+        collectionIds: [],
+        tagIds: [],
         origins: [
-          { inputImageIds: ['asset-input-a'], maskTargetImageId: 'asset-mask-target', maskImageId: 'asset-mask' },
+          {
+            key: 'asset-a:0',
+            taskId: 'task-a',
+            outputSlot: 0,
+            taskCreatedAt: 1,
+            taskFinishedAt: 1,
+            sourceMode: 'gallery',
+            prompt: '',
+            requestedParams: DEFAULT_PARAMS,
+            inputImageIds: ['asset-input-a'],
+            maskTargetImageId: 'asset-mask-target',
+            maskImageId: 'asset-mask',
+          },
         ],
+        primaryOriginKey: 'asset-a:0',
+        parentAssetIds: [],
+        metadataVersion: 1,
       },
     ]
     expect(collectReferencedExportImageIds(tasks, conversations, workspaceTabs, assets)).toEqual([

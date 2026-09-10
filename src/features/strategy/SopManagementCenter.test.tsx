@@ -755,14 +755,25 @@ describe('SopManagementCenter apply and save actions', () => {
     })
     act(() => findButton(result.renderer.root, '智能生成')!.props.onClick())
 
-    const brief = result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明' })
-    act(() => brief.props.onChange({ target: { value: '生成商品摄影 SOP' } }))
+    const goal = result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明：要解决什么问题' })
+    const output = result.renderer.root.findByProps({
+      'aria-label': 'SOP 生成说明：希望得到什么 - 分步 SOP',
+    })
+    const expectedBrief = [
+      '生成目标：\n标准执行流程',
+      '输入与参考重点：\n文字需求、产品资料、品牌规范',
+      '期望产出：\n分步 SOP、检查清单',
+      '必须遵守：\n可执行步骤、责任归属',
+      '不要出现：\n模糊步骤、信息遗漏',
+    ].join('\n\n')
+    act(() => goal.props.onChange({ target: { value: '标准执行流程' } }))
+    act(() => output.props.onChange(true))
     await act(async () => {
       await findButton(result.renderer.root, '开始生成并保存')!.props.onClick()
     })
 
     expect(onGenerateSop).toHaveBeenCalledWith(
-      '生成商品摄影 SOP',
+      expectedBrief,
       {},
       [],
       'general',
@@ -778,7 +789,7 @@ describe('SopManagementCenter apply and save actions', () => {
     expect(dbMocks.putSopGenerationRecord).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'success',
-        brief: '生成商品摄影 SOP',
+        brief: expectedBrief,
         metaInstruction: expect.objectContaining({ instruction: generalMeta.instruction }),
         result: expect.objectContaining({ name: '多图商品 SOP', content: '# SOP 正文' }),
       }),
@@ -789,9 +800,7 @@ describe('SopManagementCenter apply and save actions', () => {
     expect(
       result.renderer.root.findAll((node) => String(node.props['aria-label']).includes('生成记录详情 多图商品 SOP')),
     ).toHaveLength(1)
-    expect(result.renderer.root.findByProps({ 'aria-label': '生成记录完整生成说明' }).children).toContain(
-      '生成商品摄影 SOP',
-    )
+    expect(result.renderer.root.findByProps({ 'aria-label': '生成记录完整生成说明' }).children).toContain(expectedBrief)
     expect(result.renderer.root.findByProps({ 'aria-label': '生成记录完整元指令' }).children).toContain(
       generalMeta.instruction,
     )
@@ -867,6 +876,31 @@ describe('SopManagementCenter apply and save actions', () => {
     result.renderer.unmount()
   })
 
+  it('keeps free-form guidance editable without immediately normalizing punctuation', () => {
+    let result!: ReturnType<typeof renderCenter>
+    act(() => {
+      result = renderCenter({ metaInstructions: [generalMeta] })
+    })
+    act(() => findButton(result.renderer.root, '智能生成')!.props.onClick())
+
+    act(() =>
+      result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明：会提供哪些输入 - 其他' }).props.onChange(true),
+    )
+    act(() =>
+      result.renderer.root
+        .findByProps({ 'aria-label': 'SOP 生成说明：会提供哪些输入的其他内容' })
+        .props.onChange({ target: { value: '销售数据,' } }),
+    )
+
+    expect(
+      result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明：会提供哪些输入的其他内容' }).props.value,
+    ).toBe('销售数据,')
+    expect(textContent(result.renderer.root.findByProps({ 'aria-label': '发送给 AI 的完整生成说明' }))).toContain(
+      '销售数据',
+    )
+    result.renderer.unmount()
+  })
+
   it('passes an abort signal and cancels a running generation', async () => {
     const onGenerateSop: GenerateSop = vi.fn(
       (_brief, _context, _images, _kind, _instruction, options) =>
@@ -886,7 +920,7 @@ describe('SopManagementCenter apply and save actions', () => {
     act(() => findButton(result.renderer.root, '智能生成')!.props.onClick())
     act(() =>
       result.renderer.root
-        .findByProps({ 'aria-label': 'SOP 生成说明' })
+        .findByProps({ 'aria-label': 'SOP 生成说明：要解决什么问题' })
         .props.onChange({ target: { value: '生成商品 SOP' } }),
     )
 
@@ -1199,7 +1233,10 @@ describe('SopManagementCenter apply and save actions', () => {
 
     act(() => result.renderer.root.findByProps({ 'aria-label': '编辑生成记录 详情页 SOP' }).props.onClick())
 
-    expect(result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明' }).props.value).toBe('生成详情页 SOP')
+    expect(result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明：要解决什么问题' }).props.value).toBe('其他')
+    expect(result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明：自定义生成目标' }).props.value).toBe(
+      '生成详情页 SOP',
+    )
     expect(result.renderer.root.findAllByType('img')).toHaveLength(2)
     expect(textContent(result.renderer.root)).toContain('生成状态')
     expect(imageStoreMocks.showToast).toHaveBeenCalledWith(expect.stringContaining('已载入生成记录'), 'success')
@@ -1354,7 +1391,10 @@ describe('SopManagementCenter apply and save actions', () => {
       findButton(result.renderer.root, '编辑输入')!.props.onClick()
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
-    expect(result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明' }).props.value).toBe('失败的一次生成')
+    expect(result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明：要解决什么问题' }).props.value).toBe('其他')
+    expect(result.renderer.root.findByProps({ 'aria-label': 'SOP 生成说明：自定义生成目标' }).props.value).toBe(
+      '失败的一次生成',
+    )
     result.renderer.unmount()
   })
 })

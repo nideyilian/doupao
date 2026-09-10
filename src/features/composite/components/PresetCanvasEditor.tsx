@@ -102,6 +102,8 @@ export function PresetCanvasEditor(props: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const renderVersionRef = useRef(0)
   const dragRef = useRef<{ id: string; x: number; y: number } | null>(null)
+  const canvasWidth = preset?.baseCanvas.width
+  const canvasHeight = preset?.baseCanvas.height
   const visibleLayers = useMemo(() => preset?.layers.filter((layer) => layer.visible) ?? [], [preset])
   const editingTextLayer =
     preset?.layers.find(
@@ -244,21 +246,21 @@ export function PresetCanvasEditor(props: Props) {
   }, [backgroundDataUrl, preset])
 
   useEffect(() => {
-    if (!stageRef.current || !preset) return
+    if (!stageRef.current || canvasWidth === undefined || canvasHeight === undefined) return
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0]
       if (entry) {
         const { width, height } = entry.contentRect
         const availableWidth = Math.max(100, width - 80)
         const availableHeight = Math.max(100, height - 80)
-        const scaleX = availableWidth / preset.baseCanvas.width
-        const scaleY = availableHeight / preset.baseCanvas.height
+        const scaleX = availableWidth / canvasWidth
+        const scaleY = availableHeight / canvasHeight
         setFitScale(Math.min(scaleX, scaleY))
       }
     })
     observer.observe(stageRef.current)
     return () => observer.disconnect()
-  }, [preset?.baseCanvas.width, preset?.baseCanvas.height])
+  }, [canvasHeight, canvasWidth])
 
   useEffect(() => {
     const container = containerRef.current

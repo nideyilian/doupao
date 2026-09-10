@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BookOpenCheckIcon as BookOpenCheck,
   CloseIcon as X,
@@ -304,7 +304,7 @@ export default function StrategyWorkspace() {
     order.units.flatMap((unit) => (unit.taskId ? (taskById.get(unit.taskId)?.outputImages ?? []) : [])),
   )
 
-  const targetHierarchy = () => {
+  const targetHierarchy = useCallback(() => {
     if (selection.kind === 'type' || selection.kind === 'strategy')
       return { productId: selection.productId, materialTypeId: selection.materialTypeId }
     if (selection.kind === 'product')
@@ -316,7 +316,7 @@ export default function StrategyWorkspace() {
       productId: catalog.products.find((item) => !item.archived)?.id ?? '',
       materialTypeId: catalog.materialTypes.find((item) => !item.archived)?.id ?? '',
     }
-  }
+  }, [catalog.materialTypes, catalog.products, selection])
   const handleCreate = () => {
     const target = targetHierarchy()
     if (!target.productId || !target.materialTypeId) return
@@ -326,7 +326,7 @@ export default function StrategyWorkspace() {
       useStore.getState().showToast('策略已创建', 'success')
     }
   }
-  const handlePaste = () => {
+  const handlePaste = useCallback(() => {
     if (!clipboardStrategyId) return
     try {
       const target = targetHierarchy()
@@ -338,7 +338,7 @@ export default function StrategyWorkspace() {
     } catch {
       useStore.getState().showToast('粘贴失败，请重试', 'error')
     }
-  }
+  }, [clipboardStrategyId, duplicateStrategy, targetHierarchy])
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -356,7 +356,7 @@ export default function StrategyWorkspace() {
     }
     window.addEventListener('keydown', handleShortcut)
     return () => window.removeEventListener('keydown', handleShortcut)
-  }, [clipboardStrategyId, selectedStrategyId, selection])
+  }, [clipboardStrategyId, handlePaste, selectedStrategyId])
 
   const importLocalImages = async (multiple = false) => {
     const api = window.electronAPI

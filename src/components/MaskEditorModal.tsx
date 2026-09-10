@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ensureImageCached, useStore } from '../store'
@@ -202,16 +202,16 @@ export default function MaskEditorModal() {
     })
   }
 
-  function commitViewTransform(nextTransform: ViewTransform) {
+  const commitViewTransform = useCallback((nextTransform: ViewTransform) => {
     const frame = baseFrameRef.current
     const clamped = frame
       ? clampViewTransform(nextTransform, { width: frame.clientWidth, height: frame.clientHeight })
       : nextTransform
     viewTransformRef.current = clamped
     setViewTransform(clamped)
-  }
+  }, [])
 
-  function resetViewTransform() {
+  const resetViewTransform = useCallback(() => {
     const frame = baseFrameRef.current
     const stage = stageRef.current
     const isCompactLayout = window.matchMedia('(max-width: 1023px)').matches
@@ -227,7 +227,7 @@ export default function MaskEditorModal() {
         isCompactLayout,
       ),
     )
-  }
+  }, [commitViewTransform])
 
   function cancelActiveStroke() {
     if (activePointerIdRef.current == null) return
@@ -286,7 +286,7 @@ export default function MaskEditorModal() {
     })
   }
 
-  function renderPreviewNow() {
+  const renderPreviewNow = useCallback(() => {
     const maskCanvas = maskCanvasRef.current
     const previewCanvas = previewCanvasRef.current
     if (!maskCanvas || !previewCanvas) return
@@ -303,76 +303,79 @@ export default function MaskEditorModal() {
     previewCtx.globalCompositeOperation = 'destination-out'
     previewCtx.drawImage(maskCanvas, 0, 0)
     previewCtx.restore()
-  }
+  }, [])
 
-  function renderPreview() {
+  const renderPreview = useCallback(() => {
     if (previewFrameRef.current != null) return
     previewFrameRef.current = window.requestAnimationFrame(renderPreviewNow)
-  }
+  }, [renderPreviewNow])
 
-  function updateCursor(point: Point | null) {
-    const cursorCanvas = cursorCanvasRef.current
-    const stage = stageRef.current
-    const frame = baseFrameRef.current
-    const maskCanvas = maskCanvasRef.current
-    const ctx = cursorCanvas?.getContext('2d')
-    if (!cursorCanvas || !ctx || !stage || !frame || !maskCanvas) return
+  const updateCursor = useCallback(
+    (point: Point | null) => {
+      const cursorCanvas = cursorCanvasRef.current
+      const stage = stageRef.current
+      const frame = baseFrameRef.current
+      const maskCanvas = maskCanvasRef.current
+      const ctx = cursorCanvas?.getContext('2d')
+      if (!cursorCanvas || !ctx || !stage || !frame || !maskCanvas) return
 
-    const dpr = window.devicePixelRatio || 1
-    const width = stage.clientWidth
-    const height = stage.clientHeight
-    if (cursorCanvas.width !== Math.round(width * dpr) || cursorCanvas.height !== Math.round(height * dpr)) {
-      cursorCanvas.width = Math.round(width * dpr)
-      cursorCanvas.height = Math.round(height * dpr)
-    }
+      const dpr = window.devicePixelRatio || 1
+      const width = stage.clientWidth
+      const height = stage.clientHeight
+      if (cursorCanvas.width !== Math.round(width * dpr) || cursorCanvas.height !== Math.round(height * dpr)) {
+        cursorCanvas.width = Math.round(width * dpr)
+        cursorCanvas.height = Math.round(height * dpr)
+      }
 
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, width, height)
-    if (!point) return
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.clearRect(0, 0, width, height)
+      if (!point) return
 
-    const scale = viewTransformRef.current.scale
-    const stageRect = stage.getBoundingClientRect()
-    const frameRect = frame.getBoundingClientRect()
-    const frameLeft = frameRect.left - stageRect.left
-    const frameTop = frameRect.top - stageRect.top
-    const x = frameLeft + (point.x / maskCanvas.width) * frame.clientWidth * scale + viewTransformRef.current.x
-    const y = frameTop + (point.y / maskCanvas.height) * frame.clientHeight * scale + viewTransformRef.current.y
-    const radius = (brushSize / 2 / maskCanvas.width) * frame.clientWidth * scale
+      const scale = viewTransformRef.current.scale
+      const stageRect = stage.getBoundingClientRect()
+      const frameRect = frame.getBoundingClientRect()
+      const frameLeft = frameRect.left - stageRect.left
+      const frameTop = frameRect.top - stageRect.top
+      const x = frameLeft + (point.x / maskCanvas.width) * frame.clientWidth * scale + viewTransformRef.current.x
+      const y = frameTop + (point.y / maskCanvas.height) * frame.clientHeight * scale + viewTransformRef.current.y
+      const radius = (brushSize / 2 / maskCanvas.width) * frame.clientWidth * scale
 
-    ctx.save()
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.arc(x, y, radius, 0, Math.PI * 2)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
-    ctx.stroke()
+      ctx.save()
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.arc(x, y, radius, 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
+      ctx.stroke()
 
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)'
-    ctx.beginPath()
-    ctx.arc(x, y, radius + 1, 0, Math.PI * 2)
-    ctx.stroke()
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)'
+      ctx.beginPath()
+      ctx.arc(x, y, radius + 1, 0, Math.PI * 2)
+      ctx.stroke()
 
-    ctx.beginPath()
-    ctx.arc(x, y, Math.max(0, radius - 1), 0, Math.PI * 2)
-    ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(x, y, Math.max(0, radius - 1), 0, Math.PI * 2)
+      ctx.stroke()
 
-    const crosshairSize = 5
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'
-    ctx.beginPath()
-    ctx.moveTo(x - crosshairSize, y)
-    ctx.lineTo(x + crosshairSize, y)
-    ctx.moveTo(x, y - crosshairSize)
-    ctx.lineTo(x, y + crosshairSize)
-    ctx.stroke()
+      const crosshairSize = 5
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'
+      ctx.beginPath()
+      ctx.moveTo(x - crosshairSize, y)
+      ctx.lineTo(x + crosshairSize, y)
+      ctx.moveTo(x, y - crosshairSize)
+      ctx.lineTo(x, y + crosshairSize)
+      ctx.stroke()
 
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)'
-    ctx.beginPath()
-    ctx.moveTo(x - crosshairSize, y)
-    ctx.lineTo(x + crosshairSize, y)
-    ctx.moveTo(x, y - crosshairSize)
-    ctx.lineTo(x, y + crosshairSize)
-    ctx.stroke()
-    ctx.restore()
-  }
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)'
+      ctx.beginPath()
+      ctx.moveTo(x - crosshairSize, y)
+      ctx.lineTo(x + crosshairSize, y)
+      ctx.moveTo(x, y - crosshairSize)
+      ctx.lineTo(x, y + crosshairSize)
+      ctx.stroke()
+      ctx.restore()
+    },
+    [brushSize],
+  )
 
   function getViewportCenterCanvasPoint(): Point | null {
     const frame = baseFrameRef.current
@@ -556,6 +559,7 @@ export default function MaskEditorModal() {
 
     void loadCanvases()
 
+    const pointerPositions = pointerPositionsRef.current
     return () => {
       cancelled = true
       if (previewFrameRef.current != null) {
@@ -564,12 +568,12 @@ export default function MaskEditorModal() {
       }
       activePointerIdRef.current = null
       lastPointRef.current = null
-      pointerPositionsRef.current.clear()
+      pointerPositions.clear()
       pinchGestureRef.current = null
       panGestureRef.current = null
       setIsPanning(false)
     }
-  }, [imageId, maskDraft, setMaskEditorImageId, showToast])
+  }, [imageId, maskDraft, renderPreview, resetViewTransform, setMaskEditorImageId, showToast])
 
   useEffect(() => {
     if (isAltKeyPressed) {
@@ -579,7 +583,16 @@ export default function MaskEditorModal() {
     } else {
       updateCursor(hoverPoint)
     }
-  }, [brushSize, viewTransform, hoverPoint, isPointerOverCanvas, showBrushControls, size, isAltKeyPressed])
+  }, [
+    brushSize,
+    updateCursor,
+    viewTransform,
+    hoverPoint,
+    isPointerOverCanvas,
+    showBrushControls,
+    size,
+    isAltKeyPressed,
+  ])
 
   useEffect(() => {
     if (!imageId) return
@@ -627,7 +640,7 @@ export default function MaskEditorModal() {
     })
     observer.observe(frame)
     return () => observer.disconnect()
-  }, [size])
+  }, [commitViewTransform, size])
 
   if (!imageId) return null
 

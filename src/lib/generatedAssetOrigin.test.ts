@@ -28,12 +28,24 @@ function makeTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
 
 describe('getTaskSourceMode', () => {
   it('detects sop from sopBatch', () => {
-    expect(getTaskSourceMode(makeTask({ sopBatch: { batchId: 'b1' } as any }))).toBe('sop')
+    expect(
+      getTaskSourceMode(
+        makeTask({
+          sopBatch: {
+            batchId: 'b1',
+            sopId: 'sop-1',
+            sopName: '测试 SOP',
+            promptIndex: 0,
+            promptCount: 1,
+          },
+        }),
+      ),
+    ).toBe('sop')
   })
 
   it('detects agent from conversation id or sourceMode', () => {
     expect(getTaskSourceMode(makeTask({ agentConversationId: 'conv-1' }))).toBe('agent')
-    expect(getTaskSourceMode(makeTask({ sourceMode: 'agent' as any }))).toBe('agent')
+    expect(getTaskSourceMode(makeTask({ sourceMode: 'agent' }))).toBe('agent')
   })
 
   it('detects schedule from scheduled output fields', () => {
@@ -42,7 +54,7 @@ describe('getTaskSourceMode', () => {
   })
 
   it('falls back to gallery or unknown', () => {
-    expect(getTaskSourceMode(makeTask({ sourceMode: 'gallery' as any }))).toBe('gallery')
+    expect(getTaskSourceMode(makeTask({ sourceMode: 'gallery' }))).toBe('gallery')
     expect(getTaskSourceMode(makeTask())).toBe('unknown')
   })
 })
@@ -53,7 +65,7 @@ describe('getTaskOutputSlot', () => {
       generationSlots: [
         { index: 0, status: 'done', attempts: 1, outputImageId: 'img-a' },
         { index: 1, status: 'done', attempts: 1, outputImageId: 'img-b' },
-      ] as any,
+      ],
     })
     expect(getTaskOutputSlot(task, 'img-b', 0)).toBe(1)
     expect(getTaskOutputSlot(task, 'img-missing', 3)).toBe(3)
@@ -63,7 +75,7 @@ describe('getTaskOutputSlot', () => {
 describe('buildGeneratedAssetOrigin', () => {
   it('never writes secrets or raw payload', () => {
     const task = makeTask({
-      apiKey: 'SECRET' as any,
+      apiKey: 'SECRET',
       rawResponsePayload: '{ "secret": true }',
       revisedPromptByImage: { 'img-1': 'revised prompt' },
       filenameLabel: '图册',

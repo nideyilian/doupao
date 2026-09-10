@@ -96,7 +96,7 @@ export function WordLibraryQuickPanel({
   useEffect(() => {
     setDerivativeOpen(false)
     setDraftValues(activeEntry?.entries.join('\n') ?? '')
-  }, [activeEntry?.id])
+  }, [activeEntry?.entries, activeEntry?.id])
 
   const draftEntries = parseWordLibraryEntryLines(draftValues)
   const savedValues = activeEntry?.entries.join('\n') ?? ''

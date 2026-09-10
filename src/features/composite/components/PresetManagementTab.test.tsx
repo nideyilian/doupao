@@ -229,7 +229,10 @@ describe('PresetManagementTab', () => {
       .find(
         (node) =>
           node.props['aria-label'] === '应用LOGO' &&
-          node.parent?.parent?.children.some((c: any) => c.props?.title === 'new.png'),
+          node.parent?.parent?.children.some(
+            (child) =>
+              typeof child === 'object' && child !== null && 'props' in child && child.props?.title === 'new.png',
+          ),
       )
     act(() => {
       logoButton?.props.onClick()

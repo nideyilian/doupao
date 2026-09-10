@@ -200,15 +200,10 @@ function hardenWebContents(contents: WebContents) {
   })
   contents.setWindowOpenHandler(({ url }) => {
     // 新窗口一律拒绝；http(s) 链接交给系统浏览器打开。
-    let parsed: URL | null = null
     try {
-      parsed = new URL(url)
-    } catch {
-      parsed = null
-    }
-    if (parsed && (parsed.protocol === 'https:' || parsed.protocol === 'http:')) {
-      void shell.openExternal(url)
-    }
+      const parsed = new URL(url)
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') void shell.openExternal(url)
+    } catch {}
     return { action: 'deny' }
   })
 }

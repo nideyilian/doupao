@@ -393,6 +393,36 @@ describe('SopAiRevisionPanel custom quick instructions', () => {
     expect(loadCustomInstructions()).toEqual([added[1]])
   })
 
+  it('adds a custom instruction through the dialog form', () => {
+    let result!: ReturnType<typeof renderPanel>
+    act(() => {
+      result = renderPanel({ value: '# 普通 SOP\n\n1. 执行' })
+    })
+
+    act(() => result.renderer.root.findByProps({ 'aria-label': '添加自定义快捷指令' }).props.onClick())
+    const labelInput = result.renderer.root.findAllByType('input').find((input) => input.props.value === '')!
+    const instructionInput = result.renderer.root
+      .findAllByType('textarea')
+      .find((textarea) => textarea.props.value === '')!
+
+    act(() => labelInput.props.onChange({ target: { value: '检查红线' } }))
+    act(() => instructionInput.props.onChange({ target: { value: '逐条检查禁止项。' } }))
+
+    const addButton = findButton(result.renderer.root, '添加')!
+    expect(addButton.props.disabled).toBe(false)
+    act(() => addButton.props.onClick())
+
+    expect(loadCustomInstructions()).toEqual([
+      expect.objectContaining({
+        label: '检查红线',
+        instruction: '逐条检查禁止项。',
+        scope: 'all',
+      }),
+    ])
+    expect(result.renderer.root.findAllByProps({ role: 'dialog' })).toHaveLength(0)
+    result.renderer.unmount()
+  })
+
   it('does not silently overwrite an existing draft when a quick instruction is clicked', () => {
     let result!: ReturnType<typeof renderPanel>
     act(() => {

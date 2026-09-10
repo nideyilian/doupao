@@ -99,4 +99,33 @@ describe('apiFetch', () => {
     expect(cancelApiFetch).toHaveBeenCalledOnce()
     expect(emit).toBeTypeOf('function')
   })
+
+  it('normalizes an IPC AbortError when the caller aborts before response headers', async () => {
+    let rejectApiFetch: ((reason?: unknown) => void) | undefined
+    const apiFetchMock = vi.fn(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectApiFetch = reject
+        }),
+    )
+    const cancelApiFetch = vi.fn()
+    window.electronAPI = {
+      ...(originalElectronAPI ?? ({} as NonNullable<typeof window.electronAPI>)),
+      apiFetch: apiFetchMock,
+      cancelApiFetch,
+      isElectron: true,
+    } as NonNullable<typeof window.electronAPI>
+    const abortController = new AbortController()
+
+    const request = apiFetch('https://api.example.com/responses', { signal: abortController.signal })
+    await vi.waitFor(() => expect(rejectApiFetch).toBeTypeOf('function'))
+    abortController.abort()
+    rejectApiFetch?.(new DOMException('The operation was aborted.', 'AbortError'))
+
+    await expect(request).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'This operation was aborted',
+    })
+    expect(cancelApiFetch).toHaveBeenCalledOnce()
+  })
 })

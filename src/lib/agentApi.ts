@@ -807,9 +807,13 @@ export async function callAgentResponsesApi(opts: AgentApiCallOptions): Promise<
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
-  const abortFromCaller = () => controller.abort()
-  if (signal?.aborted) controller.abort()
+  let timedOut = false
+  const timeoutId = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, profile.timeout * 1000)
+  const abortFromCaller = () => controller.abort(signal?.reason)
+  if (signal?.aborted) controller.abort(signal.reason)
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
@@ -860,6 +864,13 @@ export async function callAgentResponsesApi(opts: AgentApiCallOptions): Promise<
       outputItems: payload.output,
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
+  } catch (error) {
+    if (timedOut && !signal?.aborted) {
+      throw new Error(`Agent 请求超时：超过 ${profile.timeout} 秒仍未完成，请稍后重试或提高 Agent 超时时间。`, {
+        cause: error,
+      })
+    }
+    throw error
   } finally {
     clearTimeout(timeoutId)
     signal?.removeEventListener('abort', abortFromCaller)
@@ -1015,7 +1026,11 @@ export async function callAgentChatCompletionsApi(opts: AgentApiCallOptions): Pr
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  let timedOut = false
+  const timeoutId = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, profile.timeout * 1000)
   const abortFromCaller = () => controller.abort(signal?.reason)
   if (signal?.aborted) controller.abort(signal.reason)
   signal?.addEventListener('abort', abortFromCaller, { once: true })
@@ -1102,6 +1117,13 @@ export async function callAgentChatCompletionsApi(opts: AgentApiCallOptions): Pr
       outputItems,
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
+  } catch (error) {
+    if (timedOut && !signal?.aborted) {
+      throw new Error(`Agent 请求超时：超过 ${profile.timeout} 秒仍未完成，请稍后重试或提高 Agent 超时时间。`, {
+        cause: error,
+      })
+    }
+    throw error
   } finally {
     clearTimeout(timeoutId)
     signal?.removeEventListener('abort', abortFromCaller)

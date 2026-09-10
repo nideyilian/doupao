@@ -18,6 +18,15 @@ module.exports = {
   },
   icon: 'public/icon.ico',
   files: ['dist/**/*', 'dist-electron/**/*'],
+  // 在 afterPack 阶段由 electron-builder 翻转 fuses，确保发生在签名和制作安装包之前。
+  electronFuses: {
+    runAsNode: false,
+    enableCookieEncryption: true,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+    enableEmbeddedAsarIntegrityValidation: true,
+    onlyLoadAppFromAsar: true,
+  },
   publish: {
     provider: 'github',
     owner: 'nideyilian',

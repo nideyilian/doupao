@@ -16,7 +16,7 @@ function AssetTagChipsInner({ assetId }: { assetId: string }) {
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const tagIds = asset?.tagIds ?? []
+  const tagIds = useMemo(() => asset?.tagIds ?? [], [asset?.tagIds])
   const currentTags = useMemo(() => tags.filter((tag) => tagIds.includes(tag.id)), [tagIds, tags])
   const suggestions = useMemo(() => {
     const needle = draft.trim().toLocaleLowerCase('zh-CN')

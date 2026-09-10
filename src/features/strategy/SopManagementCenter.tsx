@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import './styles.css'
 import { IconButton, Menu, MenuItem, MenuSeparator, Tabs, Tooltip } from '../../design-system'
 import {
@@ -252,7 +252,8 @@ export default function SopManagementCenter({
   }, [metaInstructions, metaSearch])
   const persistedItem = items.find((item) => item.id === selectedItemId)
   const selectedGeneratorMeta = metaInstructions.find((item) => item.id === generatorMetaId)
-  const isPromptReverseGeneration = selectedGeneratorMeta?.kind === 'prompt-reverse'
+  const generatorKind = selectedGeneratorMeta?.kind ?? generatorMetaFallback?.kind ?? 'general'
+  const isPromptReverseGeneration = generatorKind === 'prompt-reverse'
   const itemDirty = Boolean(
     itemDraft &&
     persistedItem &&
@@ -431,17 +432,20 @@ export default function SopManagementCenter({
 
   const cancelRenameGroup = () => setEditingGroupId(null)
 
-  const saveItemDraftNow = (draft = itemDraft) => {
-    if (!draft?.name.trim() || !draft.content.trim()) return false
-    if (autoSaveTimerRef.current !== null) {
-      window.clearTimeout(autoSaveTimerRef.current)
-      autoSaveTimerRef.current = null
-    }
-    onSaveItem({ ...draft, updatedAt: Date.now() })
-    setAutoSaveState('idle')
-    showToast('修改已保存', 'success')
-    return true
-  }
+  const saveItemDraftNow = useCallback(
+    (draft = itemDraft) => {
+      if (!draft?.name.trim() || !draft.content.trim()) return false
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current)
+        autoSaveTimerRef.current = null
+      }
+      onSaveItem({ ...draft, updatedAt: Date.now() })
+      setAutoSaveState('idle')
+      showToast('修改已保存', 'success')
+      return true
+    },
+    [itemDraft, onSaveItem, showToast],
+  )
 
   const saveMetaDraftNow = (draft = metaDraft) => {
     if (!draft?.name.trim() || !draft.instruction.trim()) return false
@@ -593,7 +597,7 @@ export default function SopManagementCenter({
     }
     window.addEventListener('keydown', handleShortcut)
     return () => window.removeEventListener('keydown', handleShortcut)
-  }, [itemDraft, onSaveItem])
+  }, [itemDraft, saveItemDraftNow])
 
   // Delete/Backspace：删除选中的 SOP（与「删除所选」按钮走同一确认流程；仅 SOP 库标签页生效）
   useEffect(() => {
@@ -1436,6 +1440,7 @@ export default function SopManagementCenter({
           <SopGenerateTab
             metaInstructions={metaInstructions}
             groups={groups}
+            generatorKind={generatorKind}
             isPromptReverseGeneration={isPromptReverseGeneration}
             generatorMetaId={generatorMetaId}
             setGeneratorMetaId={setGeneratorMetaId}

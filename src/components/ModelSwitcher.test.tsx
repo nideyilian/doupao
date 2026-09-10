@@ -162,6 +162,50 @@ describe('ModelSwitcher', () => {
     })
   })
 
+  it('groups image models under their providers', () => {
+    const previousSettings = useStore.getState().settings
+    act(() => {
+      useStore.setState({
+        settings: normalizeSettings({
+          ...previousSettings,
+          customProviders: [
+            ...previousSettings.customProviders,
+            {
+              id: 'custom-provider',
+              name: '自定义服务商',
+              template: 'http-image',
+              submit: { path: 'images/generations' },
+            },
+          ],
+          profiles: [
+            ...previousSettings.profiles,
+            {
+              ...previousSettings.profiles[0],
+              id: 'custom-model',
+              name: '自定义配置',
+              provider: 'custom-provider',
+              model: 'custom-image-model',
+            },
+          ],
+        }),
+      })
+    })
+
+    let renderer!: ReturnType<typeof create>
+    act(() => {
+      renderer = create(<ModelSwitcher />)
+    })
+    act(() => renderer.root.findByProps({ 'aria-haspopup': 'listbox' }).props.onClick())
+
+    const providerGroup = renderer.root.findByProps({ 'data-provider-group': 'custom-provider' })
+    expect(collectText(providerGroup)).toContain('自定义服务商')
+    expect(collectText(providerGroup)).toContain('custom-image-model')
+    expect(renderer.root.findByProps({ 'data-profile-id': 'custom-model' })).toBeTruthy()
+
+    act(() => renderer.unmount())
+    useStore.setState({ settings: previousSettings })
+  })
+
   it('switches the agent text model via manual input', () => {
     const previousSettings = useStore.getState().settings
     act(() => {

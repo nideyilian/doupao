@@ -85,7 +85,7 @@ function dirSizeMb(dir: string): number {
 
 function listIndexedDbEntries(indexedDbDir: string, currentPrefix: string): LegacyIndexedDbEntry[] {
   if (!existsSync(indexedDbDir)) return []
-  let entries: string[] = []
+  let entries: string[]
   try {
     entries = readdirSync(indexedDbDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && entry.name.endsWith('.indexeddb.leveldb'))

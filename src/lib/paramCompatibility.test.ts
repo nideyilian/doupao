@@ -52,7 +52,10 @@ describe('parameter compatibility', () => {
       'all',
     )
     expect(
-      normalizeParamsForSettings({ ...DEFAULT_PARAMS, reference_mode: undefined } as any, settings).reference_mode,
+      normalizeParamsForSettings(
+        { ...DEFAULT_PARAMS, reference_mode: undefined } as unknown as typeof DEFAULT_PARAMS,
+        settings,
+      ).reference_mode,
     ).toBe('cycle')
   })
 

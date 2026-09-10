@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AssetTombstone, TaskParams, TaskRecord } from '../types'
 
+type JsonRecord = Record<string, unknown>
+type IdRecord = JsonRecord & { id: string }
+type AssetRecord = IdRecord & { imageId: string }
+type TombstoneRecord = IdRecord & { imageId: string }
+
 const mock = vi.hoisted(() => {
-  const assets = new Map<string, any>()
-  const collections = new Map<string, any>()
-  const tags = new Map<string, any>()
-  const tombstones = new Map<string, any>()
+  const assets = new Map<string, AssetRecord>()
+  const collections = new Map<string, IdRecord>()
+  const tags = new Map<string, IdRecord>()
+  const tombstones = new Map<string, TombstoneRecord>()
   return {
     assets,
     collections,
@@ -16,6 +21,28 @@ const mock = vi.hoisted(() => {
       collections.clear()
       tags.clear()
       tombstones.clear()
+    },
+  }
+})
+
+const apiMock = vi.hoisted(() => {
+  const assets = new Map<string, JsonRecord>()
+  const collections = new Map<string, JsonRecord>()
+  const tags = new Map<string, JsonRecord>()
+  const tombstones = new Map<string, JsonRecord>()
+  const meta = new Map<string, string>()
+  return {
+    assets,
+    collections,
+    tags,
+    tombstones,
+    meta,
+    reset() {
+      assets.clear()
+      collections.clear()
+      tags.clear()
+      tombstones.clear()
+      meta.clear()
     },
   }
 })
@@ -35,11 +62,11 @@ vi.mock('./db', () => ({
         }),
       ),
     ),
-  putGeneratedAsset: (asset: any) => {
+  putGeneratedAsset: (asset: AssetRecord) => {
     mock.assets.set(asset.id, asset)
     return Promise.resolve(asset.id)
   },
-  putGeneratedAssets: (list: any[]) => {
+  putGeneratedAssets: (list: AssetRecord[]) => {
     for (const asset of list) mock.assets.set(asset.id, asset)
     return Promise.resolve()
   },
@@ -51,11 +78,11 @@ vi.mock('./db', () => ({
   },
   getAllAssetCollections: () => Promise.resolve([...mock.collections.values()]),
   getAssetCollection: (id: string) => Promise.resolve(mock.collections.get(id)),
-  putAssetCollection: (c: any) => {
+  putAssetCollection: (c: IdRecord) => {
     mock.collections.set(c.id, c)
     return Promise.resolve(c.id)
   },
-  putAssetCollections: (list: any[]) => {
+  putAssetCollections: (list: IdRecord[]) => {
     for (const c of list) mock.collections.set(c.id, c)
     return Promise.resolve()
   },
@@ -65,11 +92,11 @@ vi.mock('./db', () => ({
   },
   getAllAssetTags: () => Promise.resolve([...mock.tags.values()]),
   getAssetTag: (id: string) => Promise.resolve(mock.tags.get(id)),
-  putAssetTag: (t: any) => {
+  putAssetTag: (t: IdRecord) => {
     mock.tags.set(t.id, t)
     return Promise.resolve(t.id)
   },
-  putAssetTags: (list: any[]) => {
+  putAssetTags: (list: IdRecord[]) => {
     for (const t of list) mock.tags.set(t.id, t)
     return Promise.resolve()
   },
@@ -88,7 +115,7 @@ vi.mock('./db', () => ({
       ),
     ),
   getAssetTombstone: (id: string) => Promise.resolve(mock.tombstones.get(id)),
-  putAssetTombstones: (list: any[]) => {
+  putAssetTombstones: (list: TombstoneRecord[]) => {
     for (const t of list) mock.tombstones.set(t.id, t)
     return Promise.resolve()
   },
@@ -270,7 +297,7 @@ describe('patchAssets / moveToTrash / restore', () => {
     mock.assets.set('a', { id: 'a', imageId: 'a', origins: [], status: 'trashed', trashedAt: 1, updatedAt: 1 })
     const trashed = await moveToTrash(['a'], 5000)
     expect(trashed).toEqual([])
-    expect(mock.assets.get('a').trashedAt).toBe(1)
+    expect(mock.assets.get('a')!.trashedAt).toBe(1)
   })
 })
 
@@ -354,29 +381,6 @@ describe('asset library import merge', () => {
 })
 
 describe('catalog backend (Electron SQLite authoritative)', () => {
-  type JsonRecord = Record<string, unknown>
-  const apiMock = vi.hoisted(() => {
-    const assets = new Map<string, JsonRecord>()
-    const collections = new Map<string, JsonRecord>()
-    const tags = new Map<string, JsonRecord>()
-    const tombstones = new Map<string, JsonRecord>()
-    const meta = new Map<string, string>()
-    return {
-      assets,
-      collections,
-      tags,
-      tombstones,
-      meta,
-      reset() {
-        assets.clear()
-        collections.clear()
-        tags.clear()
-        tombstones.clear()
-        meta.clear()
-      },
-    }
-  })
-
   function installApi() {
     Object.assign(globalThis, {
       window: {

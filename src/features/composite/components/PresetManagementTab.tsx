@@ -53,6 +53,7 @@ export function PresetManagementTab() {
   const [editingPresetName, setEditingPresetName] = useState('')
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [draggingLibraryPresetId, setDraggingLibraryPresetId] = useState('')
+  const setSelectedPreviewPresetId = useCompositeV2Store((state) => state.setSelectedPreviewPresetId)
 
   const toggleGroup = (groupId: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -146,8 +147,8 @@ export function PresetManagementTab() {
   }, [activePreset, store.customValue, store.outputRuleGroups])
 
   useEffect(() => {
-    if (!activePreset && visiblePresets[0]) store.setSelectedPreviewPresetId(visiblePresets[0].id)
-  }, [activePreset, store.setSelectedPreviewPresetId, visiblePresets])
+    if (!activePreset && visiblePresets[0]) setSelectedPreviewPresetId(visiblePresets[0].id)
+  }, [activePreset, setSelectedPreviewPresetId, visiblePresets])
 
   useEffect(() => {
     if (!activePreset?.layers.some((layer) => layer.id === selectedLayerId)) {

@@ -5,17 +5,18 @@ import type { CompositeV2DistributionConfig } from '../lib/compositeV2Types'
 export function DistributionSettingsPanel() {
   const config = useCompositeV2Store((state) => state.distributionConfig)
   const setConfig = useCompositeV2Store((state) => state.setDistributionConfig)
+  const hasConfig = Boolean(config)
+  const startDate = config?.startDate
 
   // 当组件挂载时，如果本会话还未初始化过日期，或者起始日期为空，则自动填充当前日期
   useEffect(() => {
-    if (config) {
-      const hasInited = sessionStorage.getItem('doupao_distribution_date_inited')
-      if (!hasInited || !config.startDate) {
-        sessionStorage.setItem('doupao_distribution_date_inited', '1')
-        setConfig({ startDate: new Date().toISOString().slice(0, 10).replace(/-/g, '') })
-      }
+    if (!hasConfig) return
+    const hasInited = sessionStorage.getItem('doupao_distribution_date_inited')
+    if (!hasInited || !startDate) {
+      sessionStorage.setItem('doupao_distribution_date_inited', '1')
+      setConfig({ startDate: new Date().toISOString().slice(0, 10).replace(/-/g, '') })
     }
-  }, [config?.startDate, setConfig])
+  }, [hasConfig, setConfig, startDate])
 
   if (!config) return null
 

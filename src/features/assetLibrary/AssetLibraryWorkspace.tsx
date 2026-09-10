@@ -292,6 +292,7 @@ function AssetLibraryWorkspaceInner() {
       sortOrder,
     ],
   )
+  const queryCounts = queryResult.counts
 
   // 相似图片搜索：以某素材为基准，按感知哈希/文本/使用行为排序（Electron 走 SQLite）
   const similarToAssetId = useAssetLibraryStore((state) => state.similarToAssetId)
@@ -336,7 +337,7 @@ function AssetLibraryWorkspaceInner() {
             assets: ranked,
             totalCount: ranked.length,
             nextCursor: null,
-            counts: queryResult.counts,
+            counts: queryCounts,
           })
         })
         .catch(() => {
@@ -397,6 +398,7 @@ function AssetLibraryWorkspaceInner() {
     filterFavorite,
     hydrationStatus,
     queryScope,
+    queryCounts,
     similarToAssetId,
     sortKey,
     sortOrder,

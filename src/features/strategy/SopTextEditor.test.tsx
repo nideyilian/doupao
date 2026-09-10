@@ -84,6 +84,10 @@ describe('findSopTextMatches', () => {
     expect(findSopTextMatches('正文', '')).toEqual([])
     expect(findSopTextMatches('正文', '不存在')).toEqual([])
   })
+
+  it('preserves intentional whitespace in the search query', () => {
+    expect(findSopTextMatches('前缀 步骤 后缀', ' 步骤 ')).toEqual([2])
+  })
 })
 
 describe('scrollSopTextToMatch', () => {
@@ -170,6 +174,24 @@ describe('SopTextEditor chat and fullscreen', () => {
     act(() => renderer.root.findByProps({ 'aria-label': '替换全部匹配' }).props.onClick())
 
     expect(replaceAll).toHaveBeenLastCalledWith('阶段一\n阶段二\n阶段一')
+    renderer.unmount()
+  })
+
+  it('replaces a match without dropping its surrounding spaces', () => {
+    const onChange = vi.fn()
+    let renderer!: ReturnType<typeof create>
+    act(() => {
+      renderer = create(<SopTextEditor documentId="sop-spaces" value="前缀 步骤 后缀" onChange={onChange} />)
+    })
+
+    const searchInput = renderer.root.findByProps({ 'aria-label': '查找正文' })
+    act(() => renderer.root.findByProps({ 'aria-label': '替换操作' }).props.onClick())
+    const replaceInput = renderer.root.findByProps({ 'aria-label': '替换为' })
+    act(() => searchInput.props.onChange({ target: { value: ' 步骤 ' } }))
+    act(() => replaceInput.props.onChange({ target: { value: '阶段' } }))
+    act(() => renderer.root.findByProps({ 'aria-label': '替换当前匹配' }).props.onClick())
+
+    expect(onChange).toHaveBeenLastCalledWith('前缀阶段后缀')
     renderer.unmount()
   })
 

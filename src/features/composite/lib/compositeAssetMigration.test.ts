@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCompositeV2Store } from '../storeV2'
+import type { CompositeV2ImageAssetRef, CompositeV2Layer } from './compositeV2Types'
 import { migrateLegacyCompositeAssets } from './compositeAssetMigration'
 
 describe('composite asset migration', () => {
@@ -17,7 +18,7 @@ describe('composite asset migration', () => {
           ],
         },
       ],
-    } as any)
+    })
     const storeAssets = vi.fn(async (blobs: Blob[]) => blobs.map((_, index) => `asset-${index}`))
 
     const count = await migrateLegacyCompositeAssets({
@@ -28,7 +29,7 @@ describe('composite asset migration', () => {
 
     expect(count).toBe(2)
     expect(store.getState().projectLogos[0]).toEqual({ id: 'logo-a', name: 'A', assetId: 'asset-0' })
-    expect(store.getState().presets[0]!.layers.map((layer: any) => layer.asset)).toEqual([
+    expect(store.getState().presets[0]!.layers.map((layer) => ('asset' in layer ? layer.asset : null))).toEqual([
       { kind: 'stored', assetId: 'asset-1', name: 'B' },
       { kind: 'stored', assetId: 'asset-0', name: 'A' },
     ])
@@ -39,7 +40,7 @@ describe('composite asset migration', () => {
     const store = createCompositeV2Store()
     store.setState({
       projectLogos: [{ id: 'logo-a', name: 'A', dataUrl: 'data:image/png;base64,YQ==' }],
-    } as any)
+    })
     const before = store.getState().projectLogos
 
     await expect(
@@ -56,7 +57,7 @@ describe('composite asset migration', () => {
   })
 })
 
-function mediaLayer(id: string, asset: any) {
+function mediaLayer(id: string, asset: CompositeV2ImageAssetRef): CompositeV2Layer {
   return {
     id,
     type: 'logo' as const,

@@ -632,10 +632,8 @@ async function expandSopVariablePromptOptions(
     })
   }
 
-  let structuredOutputEnabled = true
-  let response = await send(structuredOutputEnabled)
+  let response = await send(true)
   if (!response.ok && (response.status === 400 || response.status === 422)) {
-    structuredOutputEnabled = false
     response = await send(false)
   }
   if (!response.ok) {
@@ -770,10 +768,8 @@ async function requestModelJson(options: {
     })
   }
 
-  let structuredOutputEnabled = true
-  let response = await send(structuredOutputEnabled)
+  let response = await send(true)
   if (!response.ok && (response.status === 400 || response.status === 422)) {
-    structuredOutputEnabled = false
     response = await send(false)
   }
   if (!response.ok) {

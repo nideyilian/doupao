@@ -3,6 +3,7 @@ import type { TaskRecord } from '../types'
 import { ensureImageThumbnailCached, subscribeImageThumbnail, useStore } from '../store'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { Grid } from '../design-system'
+import { getTaskProgressDisplay } from '../lib/taskProgressDisplay'
 
 export type AgentImageGridItem = { task: TaskRecord; taskId: string } | { task: null; taskId: string }
 
@@ -47,6 +48,7 @@ function getEntryAspectRatio(task: TaskRecord | null, imageId: string | null) {
 function AgentImageTile({ entry, imageList }: { entry: AgentImageGridEntry; imageList: string[] }) {
   const [thumbnailSrc, setThumbnailSrc] = useState('')
   const streamPreviewSrc = useRuntimeStore((state) => (entry.task ? state.streamPreviews[entry.task.id] || '' : ''))
+  const liveProgress = useRuntimeStore((state) => (entry.task ? state.taskProgress[entry.task.id] : undefined))
   const setLightboxImageId = useStore((state) => state.setLightboxImageId)
   const imageId = entry.imageId
   const task = entry.task
@@ -78,6 +80,7 @@ function AgentImageTile({ entry, imageList }: { entry: AgentImageGridEntry; imag
   const isError = task?.status === 'error'
   const isDeleted = !task
   const canOpen = Boolean(imageId && src)
+  const taskProgress = task ? getTaskProgressDisplay(task, liveProgress) : null
 
   return (
     <button
@@ -104,13 +107,13 @@ function AgentImageTile({ entry, imageList }: { entry: AgentImageGridEntry; imag
         />
       ) : (
         <div className="flex h-full min-h-[150px] w-full items-center justify-center px-4 text-center text-xs text-ds-muted dark:text-ds-muted">
-          {isDeleted ? '图片已删除' : isError ? '生成失败' : '正在生成图片…'}
+          {isDeleted ? '图片已删除' : (taskProgress?.detailDescription ?? '正在生成图片…')}
         </div>
       )}
 
       {isRunning && (
         <span className="absolute right-2 top-2 rounded-md bg-ds-primary/90 px-2 py-1 text-xs font-medium text-white shadow-sm backdrop-blur">
-          生成中
+          {taskProgress?.cardLabel ?? '生成中'}
         </span>
       )}
       {isError && src && (

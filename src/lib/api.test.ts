@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
-import { callImageApi } from './api'
+import { callImageApi, type CallApiOptions } from './api'
 
 describe('callImageApi', () => {
   afterEach(() => {
@@ -184,7 +184,7 @@ describe('callImageApi', () => {
       params: { ...DEFAULT_PARAMS, size: '720x1280' },
       inputImageDataUrls: [],
       onPartialImage: (partial: { image: string }) => partialImages.push(partial.image),
-    } as any)
+    } satisfies CallApiOptions)
 
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
@@ -239,7 +239,7 @@ describe('callImageApi', () => {
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
-    } as any)
+    } satisfies CallApiOptions)
 
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],
@@ -282,7 +282,7 @@ describe('callImageApi', () => {
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
-    } as any)
+    } satisfies CallApiOptions)
 
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],
@@ -340,7 +340,7 @@ describe('callImageApi', () => {
       params: { ...DEFAULT_PARAMS, n: 2 },
       inputImageDataUrls: [],
       onPartialImage: (partial: { image: string; requestIndex?: number }) => partials.push(partial),
-    } as any)
+    } satisfies CallApiOptions)
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [, init] = fetchMock.mock.calls[0]
@@ -393,7 +393,7 @@ describe('callImageApi', () => {
       params: { ...DEFAULT_PARAMS, size: '720x1280' },
       inputImageDataUrls: [],
       onPartialImage: (partial: { image: string }) => partialImages.push(partial.image),
-    } as any)
+    } satisfies CallApiOptions)
 
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
@@ -477,7 +477,7 @@ describe('callImageApi', () => {
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
-    } as any)
+    } satisfies CallApiOptions)
 
     expect(result).toMatchObject({
       images: ['data:image/png;base64,ZmluYWw='],

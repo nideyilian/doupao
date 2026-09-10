@@ -45,7 +45,7 @@ beforeEach(() => {
       if (tag === 'canvas') return canvas
       return null
     }),
-  } as any
+  } as unknown as Document
 
   class MockFileReader {
     result: string | ArrayBuffer | null = null
@@ -54,11 +54,11 @@ beforeEach(() => {
 
     readAsDataURL(blob: Blob) {
       this.result = `data:${blob.type};base64,encoded`
-      this.onload?.call(this as any, {} as ProgressEvent<FileReader>)
+      this.onload?.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>)
     }
   }
 
-  globalThis.FileReader = MockFileReader as any
+  globalThis.FileReader = MockFileReader as unknown as typeof FileReader
 })
 
 afterEach(() => {
