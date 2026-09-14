@@ -85,6 +85,35 @@ function hasSubDirContaining(parent: string, fragment: string): boolean {
 }
 
 /**
+ * 按名字解析 appData 下真实存在的旧目录路径（大小写不敏感）。
+ *
+ * 不能只靠 path.join(appDataDir, name) + existsSync：那等于把「大小写不敏感」交给文件系统，
+ * 在大小写敏感的文件系统（Linux，以及开启了区分大小写的 Windows 目录）上
+ * 'doupao' 与 'DOUPAO' 是两个不同路径，会漏掉真实存在的旧数据目录，
+ * 导致用户升级后数据「全部消失」。直连失败时枚举父目录、按小写比对，
+ * 返回磁盘上的真实名字。
+ */
+function resolveExistingDir(appDataDir: string, name: string): string | null {
+  const direct = path.join(appDataDir, name)
+  try {
+    if (existsSync(direct) && statSync(direct).isDirectory()) return direct
+  } catch {
+    // 直连不可用，落到目录枚举兜底
+  }
+  const lowered = name.toLowerCase()
+  try {
+    for (const entry of readdirSync(appDataDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.toLowerCase() === lowered) {
+        return path.join(appDataDir, entry.name)
+      }
+    }
+  } catch {
+    // 父目录不可读时视为未找到
+  }
+  return null
+}
+
+/**
  * 在 appData 下查找旧版本 userData 目录：目录名命中 LEGACY_APP_DIR_NAMES、
  * 不是当前 userData、且内含状态文件；多个候选时取状态文件最新者。
  */
@@ -92,13 +121,8 @@ export function findLegacyAppDataDir(appDataDir: string, currentUserData: string
   let best: string | null = null
   let bestMtime = -1
   for (const name of LEGACY_APP_DIR_NAMES) {
-    const candidate = path.join(appDataDir, name)
-    try {
-      if (!existsSync(candidate) || !statSync(candidate).isDirectory()) continue
-    } catch {
-      // 单个候选无法访问（权限/符号链接损坏等）不影响其他候选
-      continue
-    }
+    const candidate = resolveExistingDir(appDataDir, name)
+    if (!candidate) continue
     if (sameDir(candidate, currentUserData)) continue
     const stateFile = path.join(candidate, STATE_FILE)
     if (!existsSync(stateFile)) continue

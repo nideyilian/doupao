@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -81,9 +81,12 @@ describe('findLegacyAppDataDir', () => {
   it('picks the dir with the newest state file', () => {
     const older = makeLegacyUserData('豆泡', 1_000)
     const newer = makeLegacyUserData('gpt-image-playground', 2_000)
+    // 文件系统 mtime 精度差异很大（ext4 / overlayfs 可能只到秒），两次写入可能落到同一时间戳，
+    // 那样「取最新」就退化成「取枚举顺序第一个」；显式设定时间戳保证跨平台确定性
+    utimesSync(path.join(older, STATE_FILE), new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'))
+    utimesSync(path.join(newer, STATE_FILE), new Date('2024-01-01T00:00:00Z'), new Date('2024-01-01T00:00:00Z'))
     const current = makeCurrentUserData()
     expect(findLegacyAppDataDir(mockAppData, current)).toBe(newer)
-    void older
   })
 
   it('excludes the current userData dir even when its name matches a legacy name', () => {
