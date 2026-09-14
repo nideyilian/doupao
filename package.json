@@ -26,7 +26,8 @@
     "electron:preview": "vite build && electron .",
     "asset:mcp": "vite build && electron . --asset-mcp",
     "release": "vite build && electron-builder --publish always",
-    "release:dry": "npm run electron:build -- --publish never"
+    "release:dry": "npm run electron:build -- --publish never",
+    "release:check": "node scripts/check-release-health.mjs"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.0",
