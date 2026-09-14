@@ -6,6 +6,7 @@ import {
   callAgentChatCompletionsApi,
   callAgentConversationTitleApi,
   callAgentResponsesApi,
+  callBatchImageSingle,
   generateDerivedWordEntries,
   parseBatchImageCallArguments,
   parseVariableOptionRevisionResult,
@@ -59,6 +60,12 @@ describe('callAgentResponsesApi', () => {
     expect(body.stream).toBe(true)
     expect(body.tools[0].size).toBe('720x1280')
     expect(body.tools[0].partial_images).toBe(2)
+    expect(body.instructions).toContain('You are a helpful general-purpose assistant')
+    expect(body.instructions).toContain(
+      'Answer normal conversation, questions, analysis, writing, and other non-image requests directly in text.',
+    )
+    expect(body.instructions).toContain('Only generate images when the user explicitly requests')
+    expect(body.tool_choice).toBeUndefined()
     expect(body.instructions).toContain('Information-flow ad negative constraints')
     expect(body.instructions).toContain(
       'Whenever 2 or more images are ready to generate, call generate_image_batch exactly once',
@@ -254,6 +261,12 @@ describe('callAgentResponsesApi', () => {
       ]),
     )
     expect(result.text).toBe('可以。')
+    expect(body.messages[0].content).toContain('You are a helpful general-purpose assistant')
+    expect(body.messages[0].content).toContain(
+      'Answer normal conversation, questions, analysis, writing, and other non-image requests directly in text.',
+    )
+    expect(body.messages[0].content).toContain('Only generate images when the user explicitly requests')
+    expect(body.tool_choice).toBeUndefined()
   })
 
   it('assembles streamed Chat Completions text and tool arguments', async () => {
@@ -1412,5 +1425,66 @@ describe('parseBatchImageCallArguments', () => {
         }),
       ),
     ).toBeNull()
+  })
+})
+
+describe('callBatchImageSingle', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  /** 模拟一个永远不返回、只在 abort 时 reject 的接口。 */
+  function mockHangingFetch() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+      const signal = (init as RequestInit | undefined)?.signal
+      return new Promise<Response>((_resolve, reject) => {
+        const abortError = () => reject(signal?.reason ?? new DOMException('aborted', 'AbortError'))
+        if (signal?.aborted) {
+          abortError()
+          return
+        }
+        signal?.addEventListener('abort', abortError, { once: true })
+      })
+    })
+  }
+
+  it('图片接口无响应时按超时时间报错，而不是误报「请求已取消」', async () => {
+    vi.useFakeTimers()
+    const fetchMock = mockHangingFetch()
+
+    const pending = callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', timeout: 1 }),
+      params: { ...DEFAULT_PARAMS },
+      batchItemId: 'batch-1',
+      prompt: '测试提示词',
+      referenceImageDataUrls: [],
+    })
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await pending
+
+    expect(fetchMock).toHaveBeenCalled()
+    expect(result.image).toBeNull()
+    expect(result.error).toBe('图片请求超时：超过 1 秒仍未完成，请检查图片模型或接口连接，或提高超时时间。')
+  })
+
+  it('用户主动取消时仍然报「请求已取消」', async () => {
+    const fetchMock = mockHangingFetch()
+    const controller = new AbortController()
+
+    const pending = callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', timeout: 600 }),
+      params: { ...DEFAULT_PARAMS },
+      batchItemId: 'batch-1',
+      prompt: '测试提示词',
+      referenceImageDataUrls: [],
+      signal: controller.signal,
+    })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    controller.abort(new DOMException('用户已停止', 'AbortError'))
+    const result = await pending
+
+    expect(result.image).toBeNull()
+    expect(result.error).toBe('请求已取消')
   })
 })

@@ -16,6 +16,7 @@ import {
   getTaskFavoriteCollectionIds,
   useStore,
   submitTask,
+  submitTaskWithData,
   submitAgentMessage,
   stopAgentResponse,
   addImageFromFile,
@@ -82,7 +83,17 @@ import {
 } from '../design-system/icons'
 import { getGallerySopPromptRunStorageKey, type GallerySopRunStatus } from '../features/strategy/adapters/gallerySopRun'
 import { getSopRunCounts, getSopTotalImageCount, MAX_SOP_IMAGES_PER_PROMPT } from '../features/strategy/sopPromptBatch'
-import { generateVariablePromptTwoPhase } from '../features/strategy/adapters/storeSopGeneration'
+import { generateVariablePromptTwoPhase, generateVisualSkill } from '../features/strategy/adapters/storeSopGeneration'
+import {
+  buildVisualSkillBatchPrompt,
+  buildVisualSkillPrompts,
+  getReferenceStyleThemes,
+  parseVisualSkill,
+  readVisualSkills,
+  updateVisualSkill,
+  writeVisualSkills,
+  type VisualSkill,
+} from '../lib/referenceStyleSkill'
 import {
   DEFAULT_DERIVE_COPY_MODE,
   DEFAULT_DERIVE_DIMENSION_POLICY,
@@ -99,7 +110,7 @@ import { normalizePromptVariableMarkers, replaceVariableNameInPrompt } from '../
 import { buildVariableColorMap } from '../lib/promptVariableColors'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
-import { Badge, Switch, useDialogFocusTrap } from '../design-system'
+import { Badge, Button, Switch, useDialogFocusTrap } from '../design-system'
 import { useAssetLibraryStore } from '../features/assetLibrary/store'
 import { APPLY_SOP_TO_GALLERY_EVENT } from '../lib/assetCommands'
 
@@ -755,6 +766,8 @@ export default function InputBar() {
   const [savedSopPromptCount, setSavedSopPromptCount] = useState(0)
   const [gallerySopPromptCountsByTab, setGallerySopPromptCountsByTab] = useState<Record<string, number>>({})
   const [gallerySopImagesPerPromptByTab, setGallerySopImagesPerPromptByTab] = useState<Record<string, number>>({})
+  const [gallerySopSeriesModeByTab, setGallerySopSeriesModeByTab] = useState<Record<string, boolean>>({})
+  const [gallerySopSeriesImageCountByTab, setGallerySopSeriesImageCountByTab] = useState<Record<string, 2 | 3>>({})
   const [gallerySopAutoGenerateByTab, setGallerySopAutoGenerateByTab] = useState<Record<string, boolean>>({})
   /** 输入栏直接修改批次参数时递增，作为 GallerySopBatchModal 的外部同步信号 */
   const [gallerySopCountsNonce, setGallerySopCountsNonce] = useState(0)
@@ -822,15 +835,36 @@ export default function InputBar() {
   const gallerySopId = gallerySopIdsByTab[gallerySopScopeKey] ?? ''
   const gallerySopPromptCount = gallerySopPromptCountsByTab[gallerySopScopeKey] ?? 5
   const gallerySopImagesPerPrompt = gallerySopImagesPerPromptByTab[gallerySopScopeKey] ?? 1
+  const selectedGallerySop = sopItems.find((item) => item.id === gallerySopId)
+  const gallerySopSeriesMode =
+    gallerySopSeriesModeByTab[gallerySopScopeKey] ?? Boolean(selectedGallerySop?.kind === 'series')
+  const gallerySopSeriesImageCount =
+    gallerySopSeriesImageCountByTab[gallerySopScopeKey] ?? selectedGallerySop?.seriesConfig?.imageCount ?? 3
   const gallerySopAutoGenerate = gallerySopAutoGenerateByTab[gallerySopScopeKey] ?? false
   const gallerySopSecondReference = gallerySopSecondReferenceByTab[gallerySopScopeKey] ?? false
-  const gallerySopTotalImages = getSopTotalImageCount(gallerySopPromptCount, gallerySopImagesPerPrompt)
+  const gallerySopTotalImages = getSopTotalImageCount(
+    gallerySopPromptCount * (gallerySopSeriesMode ? gallerySopSeriesImageCount : 1),
+    gallerySopImagesPerPrompt,
+  )
+  const gallerySopCountLabel = gallerySopSeriesMode
+    ? `${gallerySopPromptCount} 组系列图`
+    : `${gallerySopPromptCount} 条提示词`
   const gallerySopRunStatus = gallerySopRunStatusByTab[gallerySopScopeKey]
   const setGallerySopId = useCallback(
     (id: string) => {
       if (id === gallerySopId) return
       window.localStorage.removeItem(getGallerySopPromptRunStorageKey(activeWorkspaceTabId, gallerySopFolderKey))
       setSavedSopPromptCount(0)
+      setGallerySopSeriesModeByTab((current) => {
+        const next = { ...current }
+        delete next[gallerySopScopeKey]
+        return next
+      })
+      setGallerySopSeriesImageCountByTab((current) => {
+        const next = { ...current }
+        delete next[gallerySopScopeKey]
+        return next
+      })
       setGallerySopRunStatusByTab((current) => {
         const next = { ...current }
         delete next[gallerySopScopeKey]
@@ -872,11 +906,25 @@ export default function InputBar() {
 
   /** 提示词管理弹窗内批次参数变化的唯一回写入口：胶囊行只读展示，弹窗是唯一编辑面。 */
   const handleGallerySopCountsChange = useCallback(
-    (counts: { promptCount: number; imagesPerPrompt: number; autoGenerate: boolean; secondReference: boolean }) => {
+    (counts: {
+      promptCount: number
+      imagesPerPrompt: number
+      autoGenerate: boolean
+      secondReference: boolean
+      seriesMode?: boolean
+      seriesImageCount?: 2 | 3
+    }) => {
       setGallerySopPromptCountsByTab((current) => ({ ...current, [gallerySopScopeKey]: counts.promptCount }))
       setGallerySopImagesPerPromptByTab((current) => ({ ...current, [gallerySopScopeKey]: counts.imagesPerPrompt }))
       setGallerySopAutoGenerateByTab((current) => ({ ...current, [gallerySopScopeKey]: counts.autoGenerate }))
       setGallerySopSecondReferenceByTab((current) => ({ ...current, [gallerySopScopeKey]: counts.secondReference }))
+      if (counts.seriesMode !== undefined)
+        setGallerySopSeriesModeByTab((current) => ({ ...current, [gallerySopScopeKey]: counts.seriesMode! }))
+      if (counts.seriesImageCount !== undefined)
+        setGallerySopSeriesImageCountByTab((current) => ({
+          ...current,
+          [gallerySopScopeKey]: counts.seriesImageCount!,
+        }))
     },
     [gallerySopScopeKey],
   )
@@ -1423,6 +1471,69 @@ export default function InputBar() {
   const [oneClickDerivePhase, setOneClickDerivePhase] = useState('')
   // 一键衍生必须由用户显式开启，避免挂图后拦截普通图生图。
   const [oneClickDeriveEnabled, setOneClickDeriveEnabled] = useState(false)
+  const [referenceStyleEnabled, setReferenceStyleEnabled] = useState(false)
+  const [referenceStylePhase, setReferenceStylePhase] = useState('')
+  const [referenceStylePreview, setReferenceStylePreview] = useState<{
+    theme: string
+    chinese: string
+    english: string
+  } | null>(null)
+  const [visualSkills, setVisualSkills] = useState<VisualSkill[]>([])
+  const [activeVisualSkillId, setActiveVisualSkillId] = useState<string | null>(null)
+  const [visualSkillDraftResult, setVisualSkillDraftResult] = useState<VisualSkill | null>(null)
+  const [visualSkillDirections, setVisualSkillDirections] = useState<Record<string, string>>({})
+  const [visualSkillAnalysisOpen, setVisualSkillAnalysisOpen] = useState(false)
+  const [visualSkillEditing, setVisualSkillEditing] = useState(false)
+  const [visualSkillDraft, setVisualSkillDraft] = useState<Pick<
+    VisualSkill,
+    'name' | 'description' | 'chinesePromptTemplate' | 'englishPromptTemplate'
+  > | null>(null)
+  const activeVisualSkill = visualSkills.find((skill) => skill.id === activeVisualSkillId) ?? visualSkills[0]
+  const startVisualSkillEditing = useCallback(() => {
+    if (!activeVisualSkill) return
+    setVisualSkillDraft({
+      name: activeVisualSkill.name,
+      description: activeVisualSkill.description,
+      chinesePromptTemplate: activeVisualSkill.chinesePromptTemplate,
+      englishPromptTemplate: activeVisualSkill.englishPromptTemplate,
+    })
+    setVisualSkillEditing(true)
+  }, [activeVisualSkill])
+  const saveVisualSkillEditing = useCallback(() => {
+    if (!activeVisualSkill || !visualSkillDraft?.name.trim()) {
+      showToast('Skill 名称不能为空', 'error')
+      return
+    }
+    const next = updateVisualSkill(visualSkills, activeVisualSkill.id, {
+      ...visualSkillDraft,
+      name: visualSkillDraft.name.trim(),
+    })
+    writeVisualSkills(next)
+    setVisualSkills(next)
+    setVisualSkillEditing(false)
+    showToast('视觉 Skill 已保存', 'success')
+  }, [activeVisualSkill, showToast, visualSkillDraft, visualSkills])
+  const saveVisualSkillAnalysis = useCallback(() => {
+    if (!activeVisualSkill) return
+    const next = updateVisualSkill(visualSkills, activeVisualSkill.id, activeVisualSkill)
+    writeVisualSkills(next)
+    setVisualSkills(next)
+    showToast('分析表已保存', 'success')
+  }, [activeVisualSkill, showToast, visualSkills])
+  const deleteActiveVisualSkill = useCallback(() => {
+    if (!activeVisualSkill) return
+    const next = visualSkills.filter((skill) => skill.id !== activeVisualSkill.id)
+    writeVisualSkills(next)
+    setVisualSkills(next)
+    setActiveVisualSkillId(next[0]?.id ?? null)
+    setReferenceStylePreview(null)
+    showToast('视觉 Skill 已删除', 'success')
+  }, [activeVisualSkill, showToast, visualSkills])
+  useEffect(() => {
+    const skills = readVisualSkills()
+    setVisualSkills(skills)
+    setActiveVisualSkillId(skills[0]?.id ?? null)
+  }, [])
   useEffect(() => {
     if (inputImages.length === 0) setOneClickDeriveEnabled(false)
   }, [inputImages.length])
@@ -1447,30 +1558,35 @@ export default function InputBar() {
       ? gallerySopIsRunning
         ? '查看 SOP 提示词生成进度'
         : gallerySopAutoGenerate
-          ? `生成 ${gallerySopPromptCount} 条提示词并自动生成 ${gallerySopTotalImages} 张图片`
-          : `生成 ${gallerySopPromptCount} 条 SOP 提示词`
+          ? `生成 ${gallerySopCountLabel}并自动生成 ${gallerySopTotalImages} 张图片`
+          : `生成 ${gallerySopCountLabel}`
       : hasSubmitApiConfig
         ? maskDraft
           ? '遮罩编辑'
-          : oneClickDeriveEnabled && inputImages.length > 0
-            ? '一键衍生'
-            : '生成图像'
+          : referenceStyleEnabled
+            ? '参考图风格复刻'
+            : oneClickDeriveEnabled && inputImages.length > 0
+              ? '一键衍生'
+              : '生成图像'
         : '请先配置 API'
-  const submitButtonText = oneClickDerivePhase
-    ? oneClickDerivePhase
-    : activeAgentIsRunning
-      ? '停止'
-      : gallerySopModeActive
-        ? gallerySopIsRunning
-          ? '查看提示词进度'
-          : gallerySopAutoGenerate
-            ? `自动生成 ${gallerySopTotalImages} 张`
-            : `生成 ${gallerySopPromptCount} 条提示词`
-        : maskDraft
-          ? '遮罩编辑'
-          : oneClickDeriveEnabled && inputImages.length > 0
-            ? '一键衍生'
-            : '生成图像'
+  const submitButtonText =
+    referenceStylePhase || oneClickDerivePhase
+      ? referenceStylePhase || oneClickDerivePhase
+      : activeAgentIsRunning
+        ? '停止'
+        : gallerySopModeActive
+          ? gallerySopIsRunning
+            ? '查看提示词进度'
+            : gallerySopAutoGenerate
+              ? `自动生成 ${gallerySopTotalImages} 张`
+              : `生成 ${gallerySopCountLabel}`
+          : maskDraft
+            ? '遮罩编辑'
+            : referenceStyleEnabled
+              ? '风格复刻'
+              : oneClickDeriveEnabled && inputImages.length > 0
+                ? '一键衍生'
+                : '生成图像'
   const submitTooltipText = activeAgentIsRunning
     ? '停止生成'
     : gallerySopModeActive
@@ -1479,9 +1595,96 @@ export default function InputBar() {
   const showSubmitTooltip = submitHover && (activeAgentIsRunning || (gallerySopModeActive ? true : !hasSubmitApiConfig))
   const promptPlaceholder = gallerySopModeActive
     ? '本次生成要求（可选）：补充本批次的主题、内容和限制；留空则完全按 SOP 执行'
-    : '描述你想生成的图片，可输入 @ 来指定参考图...'
+    : referenceStyleEnabled
+      ? '输入新主题，每行一个；系统会保留参考图的风格与构图并分别生成'
+      : '描述你想生成的图片，可输入 @ 来指定参考图...'
   // 一键衍生防重入：AI 反推模板期间禁止重复点击发送
   const oneClickDeriveRunningRef = useRef(false)
+  const referenceStyleRunningRef = useRef(false)
+  const createVisualSkill = useCallback(async () => {
+    if (inputImages.length === 0) {
+      showToast('请先添加参考图，再创建视觉 Skill', 'error')
+      return
+    }
+    try {
+      setReferenceStylePhase('正在从参考图创建视觉 Skill…')
+      const raw = await generateVisualSkill(
+        inputImages.map((image, index) => ({ name: `图${index + 1}`, dataUrl: image.dataUrl })),
+        prompt,
+      )
+      const skill = parseVisualSkill(
+        raw,
+        inputImages.map((image) => image.id),
+      )
+      setVisualSkillDraftResult(skill)
+      setVisualSkillAnalysisOpen(true)
+      setReferenceStylePreview(null)
+      showToast('视觉 Skill 分析完成，请确认维度后保存', 'success')
+    } catch (error) {
+      showToast(`创建视觉 Skill 失败：${error instanceof Error ? error.message : String(error)}`, 'error')
+    } finally {
+      setReferenceStylePhase('')
+    }
+  }, [inputImages, prompt, showToast])
+
+  const runReferenceStyleGeneration = useCallback(async () => {
+    if (referenceStyleRunningRef.current) return
+    if (!hasSubmitApiConfig) {
+      showToast('请先完善 API 配置', 'error')
+      return
+    }
+    const themes = getReferenceStyleThemes(prompt)
+    if (themes.length === 0) {
+      showToast('请输入至少一个新主题，每行一个主题', 'error')
+      return
+    }
+    referenceStyleRunningRef.current = true
+    try {
+      const state = useStore.getState()
+      const activeTab = state.workspaceTabs.find((tab) => tab.id === state.activeWorkspaceTabId)
+      if (!activeVisualSkill) {
+        showToast('请先创建或选择一个视觉 Skill', 'error')
+        return
+      }
+      const totalCount = state.params.n
+      const batch = buildVisualSkillBatchPrompt(activeVisualSkill, themes, totalCount, visualSkillDirections)
+      setReferenceStylePreview({
+        theme: `${themes.join('、')} · 总计 ${totalCount} 张 · 每主题 ${batch.countPerTheme} 张 · 1 个任务卡`,
+        chinese: batch.prompts.map((item) => `${item.theme}：${item.chinese}`).join('\n'),
+        english: batch.prompts.map((item) => `${item.theme}: ${item.english}`).join('\n'),
+      })
+      setReferenceStylePhase(`正在提交 1 个任务：${themes.length} 个主题，每个 ${batch.countPerTheme} 张…`)
+      const baseData = {
+        inputImages: [],
+        inputImageFolder: null,
+        params: { ...state.params, n: totalCount },
+        maskDraft: null,
+        scheduledOutputPath: state.customOutputPath.trim() ? state.customOutputPath : undefined,
+        scheduledOutputSubFolder: activeTab?.name,
+      }
+      const taskId = await submitTaskWithData({ ...baseData, prompt: batch.prompt }, { silentSuccess: true })
+      if (!taskId) throw new Error('任务未提交，请检查图片 API 配置、模型能力和数量参数')
+      showToast(`已提交 1 个任务：共 ${totalCount} 张，每个主题 ${batch.countPerTheme} 张`, 'success')
+    } catch (error) {
+      console.error('[风格复刻] 提交失败', error)
+      const message =
+        error instanceof Error && error.message.trim() ? error.message : '任务没有成功提交，请查看任务卡错误详情'
+      showToast(`风格复刻失败：${message}`, 'error')
+    } finally {
+      referenceStyleRunningRef.current = false
+      setReferenceStylePhase('')
+    }
+  }, [activeVisualSkill, hasSubmitApiConfig, prompt, showToast, visualSkillDirections])
+
+  const confirmVisualSkillDraft = useCallback(() => {
+    if (!visualSkillDraftResult) return
+    const next = [visualSkillDraftResult, ...visualSkills]
+    writeVisualSkills(next)
+    setVisualSkills(next)
+    setActiveVisualSkillId(visualSkillDraftResult.id)
+    setVisualSkillDraftResult(null)
+    showToast(`已保存视觉 Skill：${visualSkillDraftResult.name}`, 'success')
+  }, [showToast, visualSkillDraftResult, visualSkills])
 
   /** 一键衍生：挂图未选 SOP 时，自动反推变量提示词模板 → 填入输入框 → 自动发送生图 */
   const runOneClickDerive = useCallback(async () => {
@@ -1553,7 +1756,7 @@ export default function InputBar() {
       // 全程可在胶囊条观察进度。未开启则保留原有弹窗行为。
       openGallerySopBatch(true, gallerySopAutoGenerate)
       if (gallerySopAutoGenerate) {
-        showToast(`已在后台生成 ${gallerySopPromptCount} 条提示词并陆续出图`, 'success')
+        showToast(`已在后台生成 ${gallerySopCountLabel}并陆续出图`, 'success')
       }
     } else if (maskDraft) {
       // 遮罩编辑优先：挂图 + 有遮罩草稿时走遮罩流程，不触发一键衍生
@@ -1566,6 +1769,8 @@ export default function InputBar() {
           // 提交失败已由 submitTask 内部 toast 反馈，这里只需吞掉 rejection 避免未处理告警
         },
       )
+    } else if (referenceStyleEnabled) {
+      void runReferenceStyleGeneration()
     } else if (oneClickDeriveEnabled && inputImages.length > 0) {
       // 一键衍生：挂图未选 SOP 时，自动反推变量提示词模板 → 保存为资产 → 自动批量出图
       void runOneClickDerive()
@@ -1584,13 +1789,15 @@ export default function InputBar() {
     activeGallerySop,
     appMode,
     gallerySopAutoGenerate,
+    gallerySopCountLabel,
     gallerySopIsRunning,
     gallerySopModeActive,
-    gallerySopPromptCount,
     gallerySopScopeKey,
     inputImages.length,
     maskDraft,
     oneClickDeriveEnabled,
+    referenceStyleEnabled,
+    runReferenceStyleGeneration,
     openGallerySopBatch,
     revealGallerySopBatch,
     runOneClickDerive,
@@ -3459,19 +3666,55 @@ export default function InputBar() {
             </button>
             <label
               className="inline-flex h-ds-control-md shrink-0 items-center gap-1 rounded-full border border-ds-border/70 bg-ds-surface/55 pl-2.5 pr-2 text-xs font-medium text-ds-muted shadow-sm dark:border-ds-border dark:bg-ds-surface dark:text-ds-muted"
-              title="提示词数量 × 每条图片数（直接修改，实时生效）"
+              title={
+                gallerySopSeriesMode
+                  ? '系列组数 × 每组图片数 × 每张版本数（直接修改，实时生效）'
+                  : '提示词数量 × 每条图片数（直接修改，实时生效）'
+              }
             >
+              <select
+                value={gallerySopSeriesMode ? 'series' : 'single'}
+                onChange={(event) => {
+                  const nextSeries = event.target.value === 'series'
+                  setGallerySopSeriesModeByTab((current) => ({ ...current, [gallerySopScopeKey]: nextSeries }))
+                  setGallerySopCountsNonce((current) => current + 1)
+                }}
+                aria-label="本次 SOP 生成模式"
+                className="bg-transparent font-semibold text-ds-text outline-none dark:text-ds-text-subtle"
+              >
+                <option value="single">普通</option>
+                <option value="series">系列</option>
+              </select>
               <input
                 type="number"
                 min={1}
                 value={gallerySopPromptCountDraft ?? String(gallerySopPromptCount)}
                 onChange={(event) => handleGallerySopPromptCountInput(event.target.value)}
                 onBlur={() => setGallerySopPromptCountDraft(null)}
-                aria-label="提示词数量"
+                aria-label={gallerySopSeriesMode ? '系列组数' : '提示词数量'}
                 className="w-9 bg-transparent text-center font-semibold text-ds-text outline-none dark:text-ds-text-subtle"
               />
-              <span>条</span>
+              <span>{gallerySopSeriesMode ? '组' : '条'}</span>
               <span className="text-ds-muted">×</span>
+              {gallerySopSeriesMode ? (
+                <>
+                  <select
+                    value={gallerySopSeriesImageCount}
+                    onChange={(event) => {
+                      const value = Number(event.target.value) as 2 | 3
+                      setGallerySopSeriesImageCountByTab((current) => ({ ...current, [gallerySopScopeKey]: value }))
+                      setGallerySopCountsNonce((current) => current + 1)
+                    }}
+                    aria-label="每组系列图片数"
+                    className="bg-transparent text-center font-semibold text-ds-text outline-none dark:text-ds-text-subtle"
+                  >
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                  </select>
+                  <span>张</span>
+                  <span className="text-ds-muted">×</span>
+                </>
+              ) : null}
               <input
                 type="number"
                 min={1}
@@ -3479,14 +3722,18 @@ export default function InputBar() {
                 value={gallerySopImagesPerPromptDraft ?? String(gallerySopImagesPerPrompt)}
                 onChange={(event) => handleGallerySopImagesPerPromptInput(event.target.value)}
                 onBlur={() => setGallerySopImagesPerPromptDraft(null)}
-                aria-label="每条提示词生成图片数"
+                aria-label={gallerySopSeriesMode ? '每张系列图生成版本数' : '每条提示词生成图片数'}
                 className="w-9 bg-transparent text-center font-semibold text-ds-text outline-none dark:text-ds-text-subtle"
               />
-              <span>张</span>
+              <span>{gallerySopSeriesMode ? '版' : '张'}</span>
             </label>
             <span
               className="inline-flex h-ds-control-md shrink-0 items-center rounded-full bg-ds-primary-subtle px-3 text-xs font-medium text-ds-primary dark:bg-ds-primary/10 dark:text-ds-primary"
-              title={`${gallerySopPromptCount} 条提示词 × 每条 ${gallerySopImagesPerPrompt} 张`}
+              title={
+                gallerySopSeriesMode
+                  ? `${gallerySopPromptCount} 组 × 每组 ${gallerySopSeriesImageCount} 张 × 每张 ${gallerySopImagesPerPrompt} 版`
+                  : `${gallerySopPromptCount} 条提示词 × 每条 ${gallerySopImagesPerPrompt} 张`
+              }
             >
               预计 {gallerySopTotalImages} 张
             </span>
@@ -3952,7 +4199,7 @@ export default function InputBar() {
         )}
         <div
           ref={cardRef}
-          className="bg-ds-surface/90 dark:bg-ds-scrim/90 backdrop-blur-md border border-white/50 dark:border-ds-border shadow-[0_8px_30px_rgb(0,0,0,0.08)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] rounded-ds-xl sm:rounded-ds-2xl p-3 sm:p-4 ring-1 ring-black/5 dark:ring-white/10"
+          className="relative bg-ds-surface/90 dark:bg-ds-scrim/90 backdrop-blur-md border border-white/50 dark:border-ds-border shadow-[0_8px_30px_rgb(0,0,0,0.08)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] rounded-ds-xl sm:rounded-ds-2xl p-3 sm:p-4 ring-1 ring-black/5 dark:ring-white/10"
         >
           {/* 移动端拖动条 */}
           <div
@@ -4043,19 +4290,44 @@ export default function InputBar() {
 
           {renderReferenceModeControl()}
 
-          {/* 一键衍生设置行：默认关闭，用户显式开启后才接管挂图发送 */}
-          {inputImages.length > 0 && !gallerySopModeActive && !maskDraft && (
+          {/* 参考图风格复刻设置：默认关闭，用户显式开启后才接管挂图发送 */}
+          {!gallerySopModeActive && !maskDraft && (
             <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-1">
-              <Switch
-                checked={oneClickDeriveEnabled}
-                onCheckedChange={setOneClickDeriveEnabled}
-                disabled={Boolean(oneClickDerivePhase)}
-                aria-label="启用一键衍生"
-                title="开启后，挂图发送时先生成变量提示词，再自动出图"
-                label={<span className="text-xs">启用一键衍生</span>}
-                labelPosition="end"
-                className="gap-1.5"
-              />
+              <div className="flex flex-wrap items-center gap-3">
+                <Switch
+                  checked={oneClickDeriveEnabled}
+                  onCheckedChange={(checked) => {
+                    setOneClickDeriveEnabled(checked)
+                    if (checked) setReferenceStyleEnabled(false)
+                  }}
+                  disabled={Boolean(oneClickDerivePhase || referenceStylePhase)}
+                  aria-label="启用一键衍生"
+                  title="开启后，挂图发送时先生成变量提示词，再自动出图"
+                  label={<span className="text-xs">启用一键衍生</span>}
+                  labelPosition="end"
+                  className="gap-1.5"
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  leadingIcon={<SparklesIcon size={15} />}
+                  onClick={() => {
+                    setReferenceStyleEnabled((enabled) => !enabled)
+                    setOneClickDeriveEnabled(false)
+                  }}
+                  disabled={Boolean(oneClickDerivePhase || referenceStylePhase)}
+                  aria-pressed={referenceStyleEnabled}
+                  aria-label="打开参考图风格复刻"
+                  title="打开 Skill 入口，选择视觉 Skill 并输入主题"
+                  className={`min-w-16 rounded-ds-lg border transition-[background-color,border-color,color] duration-150 ${
+                    referenceStyleEnabled
+                      ? 'border-ds-primary/35 bg-ds-primary-subtle text-ds-primary dark:bg-ds-primary/10'
+                      : 'border-transparent text-ds-muted hover:border-ds-border hover:bg-ds-subtle hover:text-ds-text dark:hover:bg-ds-surface'
+                  }`}
+                >
+                  Skill
+                </Button>
+              </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-ds-muted">
                   衍生维度：{DERIVE_DIMENSIONS.filter((dimension) => derivePolicy[dimension] !== 'lock').length}/8
@@ -4077,6 +4349,369 @@ export default function InputBar() {
                 </button>
               </div>
             </div>
+          )}
+          {referenceStyleEnabled && !gallerySopModeActive && !maskDraft && (
+            <>
+              <button
+                type="button"
+                aria-label="关闭 Skill 面板"
+                onClick={() => setReferenceStyleEnabled(false)}
+                className="fixed inset-0 z-overlay cursor-default"
+              />
+              <div className="absolute bottom-full right-0 z-dropdown mb-2 flex max-h-[58vh] w-[min(480px,calc(100vw-24px))] flex-col space-y-2 overflow-y-auto rounded-ds-lg border border-ds-primary/25 bg-ds-surface/95 px-2.5 py-2 shadow-lg backdrop-blur-xl dark:bg-ds-scrim/95">
+                <div className="sticky top-0 z-dropdown -mx-0.5 flex items-center justify-between gap-2 bg-ds-surface/95 py-0.5 dark:bg-ds-scrim/95">
+                  <div>
+                    <div className="text-xs font-semibold text-ds-text">
+                      {activeVisualSkill?.name ?? '选择视觉 Skill'}
+                    </div>
+                  </div>
+                  <span className="shrink-0 text-xs text-ds-muted">
+                    {getReferenceStyleThemes(prompt).length} 个主题 · 总数 {params.n}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 border-b border-ds-border/60 pb-2">
+                  <select
+                    value={activeVisualSkillId ?? ''}
+                    onChange={(event) => {
+                      setActiveVisualSkillId(event.target.value || null)
+                      setReferenceStylePreview(null)
+                      setVisualSkillEditing(false)
+                      setVisualSkillAnalysisOpen(false)
+                    }}
+                    className="min-w-52 rounded-ds-md border border-ds-border bg-ds-surface px-2 py-1.5 text-xs text-ds-text"
+                    aria-label="选择视觉 Skill"
+                  >
+                    <option value="">选择已保存 Skill</option>
+                    {visualSkills.map((skill) => (
+                      <option key={skill.id} value={skill.id}>
+                        {skill.name}
+                      </option>
+                    ))}
+                  </select>
+                  {visualSkills.length === 0 && (
+                    <span className="text-xs text-ds-muted">暂无 Skill，请先创建一个视觉 Skill</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void createVisualSkill()}
+                    disabled={Boolean(referenceStylePhase)}
+                    className="rounded-ds-md border border-ds-primary/40 bg-ds-primary px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+                  >
+                    创建 Skill
+                  </button>
+                  {activeVisualSkill && !visualSkillEditing && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={startVisualSkillEditing}
+                        className="rounded-ds-md border border-ds-border bg-ds-surface px-2.5 py-1.5 text-xs text-ds-text"
+                      >
+                        编辑 Skill
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmDialog({
+                            title: '删除视觉 Skill？',
+                            message: `确定删除「${activeVisualSkill.name}」吗？删除后无法恢复。`,
+                            confirmText: '删除',
+                            cancelText: '取消',
+                            tone: 'danger',
+                            action: deleteActiveVisualSkill,
+                          })
+                        }}
+                        className="rounded-ds-md border border-ds-danger/40 px-2.5 py-1.5 text-xs text-ds-danger"
+                      >
+                        删除 Skill
+                      </button>
+                    </>
+                  )}
+                </div>
+                {visualSkillDraftResult && (
+                  <div className="grid gap-2 rounded-ds-md border border-ds-warning/40 bg-ds-surface/80 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-ds-text">分析完成：确认每个维度是否衍生</div>
+                      <button
+                        type="button"
+                        onClick={() => setVisualSkillDraftResult(null)}
+                        className="text-xs text-ds-muted"
+                      >
+                        放弃
+                      </button>
+                    </div>
+                    <div className="max-h-44 overflow-auto rounded-ds-md border border-ds-border">
+                      <table className="w-full border-collapse text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-ds-border text-ds-muted">
+                            <th className="px-2 py-1.5">维度</th>
+                            <th className="px-2 py-1.5">原图分析</th>
+                            <th className="px-2 py-1.5">行为</th>
+                            <th className="px-2 py-1.5">衍生方向（可选）</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {visualSkillDraftResult.keywordTable.map((item, index) => (
+                            <tr key={`${item.dimension}-${index}`} className="border-b border-ds-border/60 align-top">
+                              <td className="px-2 py-1.5 font-medium">{item.dimension}</td>
+                              <td className="px-2 py-1.5 text-ds-muted">
+                                {item.chinese}
+                                <br />
+                                <span className="text-ds-text-subtle">{item.english}</span>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <select
+                                  value={item.deriveEnabled ? 'derive' : 'keep'}
+                                  onChange={(event) =>
+                                    setVisualSkillDraftResult({
+                                      ...visualSkillDraftResult,
+                                      keywordTable: visualSkillDraftResult.keywordTable.map((entry, entryIndex) =>
+                                        entryIndex === index
+                                          ? {
+                                              ...entry,
+                                              deriveEnabled: event.target.value === 'derive',
+                                              locked: event.target.value !== 'derive',
+                                            }
+                                          : entry,
+                                      ),
+                                    })
+                                  }
+                                  className="rounded border border-ds-border bg-ds-surface px-1.5 py-1"
+                                >
+                                  <option value="keep">保持原图</option>
+                                  <option value="derive">允许衍生</option>
+                                </select>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  value={item.deriveDirection}
+                                  onChange={(event) =>
+                                    setVisualSkillDraftResult({
+                                      ...visualSkillDraftResult,
+                                      keywordTable: visualSkillDraftResult.keywordTable.map((entry, entryIndex) =>
+                                        entryIndex === index
+                                          ? { ...entry, deriveDirection: event.target.value }
+                                          : entry,
+                                      ),
+                                    })
+                                  }
+                                  disabled={!item.deriveEnabled}
+                                  placeholder="留空则自动发散"
+                                  className="w-full min-w-32 rounded border border-ds-border bg-ds-surface px-1.5 py-1 disabled:opacity-50"
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={confirmVisualSkillDraft}
+                      className="justify-self-start rounded-ds-md bg-ds-primary px-3 py-1.5 text-xs font-medium text-white"
+                    >
+                      确认并保存 Skill
+                    </button>
+                  </div>
+                )}
+                {activeVisualSkill && !visualSkillDraftResult && (
+                  <details
+                    open={visualSkillAnalysisOpen}
+                    onToggle={(event) => setVisualSkillAnalysisOpen(event.currentTarget.open)}
+                    className="rounded-ds-md border border-ds-border/70 bg-ds-surface/50 px-2 py-1.5"
+                  >
+                    <summary className="cursor-pointer text-xs font-medium text-ds-text">查看分析与衍生表</summary>
+                    <div className="mt-2 max-h-44 overflow-auto rounded-ds-md border border-ds-border">
+                      <table className="w-full border-collapse text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-ds-border text-ds-muted">
+                            <th className="px-2 py-1.5">维度</th>
+                            <th className="px-2 py-1.5">原图分析</th>
+                            <th className="px-2 py-1.5">行为</th>
+                            <th className="px-2 py-1.5">衍生方向</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeVisualSkill.keywordTable.map((item, index) => (
+                            <tr key={`${item.dimension}-${index}`} className="border-b border-ds-border/60 align-top">
+                              <td className="px-2 py-1.5 font-medium">{item.dimension}</td>
+                              <td className="px-2 py-1.5 text-ds-muted">
+                                {item.chinese}
+                                <br />
+                                <span className="text-ds-text-subtle">{item.english}</span>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <select
+                                  value={item.deriveEnabled ? 'derive' : 'keep'}
+                                  onChange={(event) => {
+                                    const next = updateVisualSkill(visualSkills, activeVisualSkill.id, {
+                                      keywordTable: activeVisualSkill.keywordTable.map((entry, entryIndex) =>
+                                        entryIndex === index
+                                          ? {
+                                              ...entry,
+                                              deriveEnabled: event.target.value === 'derive',
+                                              locked: event.target.value !== 'derive',
+                                            }
+                                          : entry,
+                                      ),
+                                    })
+                                    setVisualSkills(next)
+                                  }}
+                                  className="rounded border border-ds-border bg-ds-surface px-1.5 py-1"
+                                >
+                                  <option value="keep">保持原图</option>
+                                  <option value="derive">允许衍生</option>
+                                </select>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  value={item.deriveDirection}
+                                  onChange={(event) => {
+                                    const next = updateVisualSkill(visualSkills, activeVisualSkill.id, {
+                                      keywordTable: activeVisualSkill.keywordTable.map((entry, entryIndex) =>
+                                        entryIndex === index
+                                          ? { ...entry, deriveDirection: event.target.value }
+                                          : entry,
+                                      ),
+                                    })
+                                    setVisualSkills(next)
+                                  }}
+                                  disabled={!item.deriveEnabled}
+                                  placeholder={item.deriveEnabled ? '留空则自动发散' : '保持原图'}
+                                  className="w-full min-w-32 rounded border border-ds-border bg-ds-surface px-1.5 py-1 disabled:opacity-50"
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={saveVisualSkillAnalysis}
+                      className="mt-2 justify-self-start rounded-ds-md bg-ds-primary px-3 py-1.5 text-xs font-medium text-white"
+                    >
+                      保存分析表修改
+                    </button>
+                  </details>
+                )}
+                {activeVisualSkill && (
+                  <details className="rounded-ds-md border border-ds-border/70 bg-ds-surface/50 px-2 py-1.5">
+                    <summary className="cursor-pointer text-xs text-ds-muted">使用时的衍生方向（留空自动发散）</summary>
+                    <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                      {activeVisualSkill.keywordTable
+                        .filter((item) => item.deriveEnabled)
+                        .map((item) => (
+                          <label key={item.dimension} className="grid gap-1 text-xs text-ds-muted">
+                            <span>{item.dimension}</span>
+                            <input
+                              value={visualSkillDirections[item.dimension] ?? ''}
+                              onChange={(event) =>
+                                setVisualSkillDirections({
+                                  ...visualSkillDirections,
+                                  [item.dimension]: event.target.value,
+                                })
+                              }
+                              placeholder={item.deriveDirection || '留空则自动发散'}
+                              className="h-8 rounded-md border border-ds-border bg-ds-surface px-2 text-xs text-ds-text"
+                            />
+                          </label>
+                        ))}
+                    </div>
+                  </details>
+                )}
+                {visualSkillEditing && visualSkillDraft && (
+                  <div className="grid gap-2 rounded-ds-md border border-ds-border bg-ds-surface/70 p-2">
+                    <input
+                      value={visualSkillDraft.name}
+                      onChange={(event) => setVisualSkillDraft({ ...visualSkillDraft, name: event.target.value })}
+                      aria-label="Skill 名称"
+                      className="h-ds-control-md rounded-ds-md border border-ds-border bg-ds-surface px-2 text-xs text-ds-text"
+                    />
+                    <input
+                      value={visualSkillDraft.description}
+                      onChange={(event) =>
+                        setVisualSkillDraft({ ...visualSkillDraft, description: event.target.value })
+                      }
+                      aria-label="Skill 说明"
+                      className="h-ds-control-md rounded-ds-md border border-ds-border bg-ds-surface px-2 text-xs text-ds-text"
+                    />
+                    <textarea
+                      value={visualSkillDraft.chinesePromptTemplate}
+                      onChange={(event) =>
+                        setVisualSkillDraft({ ...visualSkillDraft, chinesePromptTemplate: event.target.value })
+                      }
+                      aria-label="中文提示词模板"
+                      className="min-h-20 rounded-ds-md border border-ds-border bg-ds-surface p-2 text-xs text-ds-text"
+                    />
+                    <textarea
+                      value={visualSkillDraft.englishPromptTemplate}
+                      onChange={(event) =>
+                        setVisualSkillDraft({ ...visualSkillDraft, englishPromptTemplate: event.target.value })
+                      }
+                      aria-label="英文提示词模板"
+                      className="min-h-20 rounded-ds-md border border-ds-border bg-ds-surface p-2 text-xs text-ds-text"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={saveVisualSkillEditing}
+                        className="rounded-ds-md bg-ds-primary px-2.5 py-1.5 text-xs font-medium text-white"
+                      >
+                        保存修改
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVisualSkillEditing(false)}
+                        className="rounded-ds-md border border-ds-border bg-ds-surface px-2.5 py-1.5 text-xs text-ds-muted"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {referenceStylePreview && (
+                  <details className="rounded-ds-md border border-ds-border/70 bg-ds-surface/70 px-2.5 py-2">
+                    <summary className="cursor-pointer text-xs font-medium text-ds-text">查看本次生成预览</summary>
+                    <div className="mt-2 grid gap-2 text-xs">
+                      <div className="whitespace-pre-wrap">
+                        <span className="font-medium text-ds-muted">主题：</span>
+                        {referenceStylePreview.theme}
+                      </div>
+                      <div className="whitespace-pre-wrap">
+                        <span className="font-medium text-ds-muted">中文提示词：</span>
+                        {referenceStylePreview.chinese}
+                      </div>
+                      <div>
+                        <span className="font-medium text-ds-muted">English prompt：</span>
+                        {referenceStylePreview.english}
+                      </div>
+                      <div>
+                        <span className="font-medium text-ds-muted">保留规则：</span>
+                        {activeVisualSkill?.preservedRules.join('；')}
+                      </div>
+                      <table className="w-full border-collapse text-left">
+                        <thead>
+                          <tr className="border-b border-ds-border text-ds-muted">
+                            <th className="px-1 py-1">维度</th>
+                            <th className="px-1 py-1">关键词</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(activeVisualSkill?.keywordTable ?? []).map((item) => (
+                            <tr key={item.dimension} className="border-b border-ds-border/60">
+                              <td className="px-1 py-1 font-medium">{item.dimension}</td>
+                              <td className="px-1 py-1 text-ds-muted">
+                                {item.chinese} / {item.english}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                )}
+              </div>
+            </>
           )}
           {derivePolicyOpen && (
             <DerivePolicyModal
@@ -4732,12 +5367,28 @@ export default function InputBar() {
               initialSopId={gallerySopIdsByTab[scopeKey] ?? ''}
               initialPromptCount={gallerySopPromptCountsByTab[scopeKey] ?? 5}
               initialImagesPerPrompt={gallerySopImagesPerPromptByTab[scopeKey] ?? 1}
+              initialSeriesMode={
+                gallerySopSeriesModeByTab[scopeKey] ??
+                Boolean(sopItems.find((item) => item.id === gallerySopIdsByTab[scopeKey])?.kind === 'series')
+              }
+              initialSeriesImageCount={
+                gallerySopSeriesImageCountByTab[scopeKey] ??
+                sopItems.find((item) => item.id === gallerySopIdsByTab[scopeKey])?.seriesConfig?.imageCount ??
+                3
+              }
               syncInitialGenerationCounts
               initialBrief={prompt}
               initialAutoGenerate={gallerySopAutoGenerateByTab[scopeKey] ?? false}
               countsSync={{
                 promptCount: gallerySopPromptCountsByTab[scopeKey] ?? 5,
                 imagesPerPrompt: gallerySopImagesPerPromptByTab[scopeKey] ?? 1,
+                seriesMode:
+                  gallerySopSeriesModeByTab[scopeKey] ??
+                  Boolean(sopItems.find((item) => item.id === gallerySopIdsByTab[scopeKey])?.kind === 'series'),
+                seriesImageCount:
+                  gallerySopSeriesImageCountByTab[scopeKey] ??
+                  sopItems.find((item) => item.id === gallerySopIdsByTab[scopeKey])?.seriesConfig?.imageCount ??
+                  3,
                 autoGenerate: gallerySopAutoGenerateByTab[scopeKey] ?? false,
                 secondReference: gallerySopSecondReferenceByTab[scopeKey] ?? false,
                 nonce: gallerySopCountsNonce,

@@ -321,6 +321,15 @@ export default function SopLibraryTab({
                   }}
                   title="单击编辑；Ctrl/⌘ 点击切换多选；Shift 点击连续选择；拖到左侧分组移动；双击选择封面"
                 />
+                {item.kind === 'series' && (
+                  <Badge
+                    tone="info"
+                    title={`系列 SOP · ${item.seriesConfig?.imageCount ?? 3} 图`}
+                    className="sop-center-sop-series-badge"
+                  >
+                    系列 {item.seriesConfig?.imageCount ?? 3} 图
+                  </Badge>
+                )}
                 <button
                   type="button"
                   onClick={(event) => selectItemWithModifiers(item, event)}

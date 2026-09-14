@@ -30,4 +30,26 @@ describe('SettingsModal Agent model selection', () => {
     act(() => renderer!.root.findByProps({ title: 'gpt-5.6-sol' }).props.onClick())
     expect(onSelectModel).toHaveBeenCalledWith('gpt-5.6-sol')
   })
+
+  it('renders every available model', () => {
+    const models = Array.from({ length: 10 }, (_, index) => ({
+      id: `model-${index + 1}`,
+      type: 'text' as const,
+    }))
+    let renderer: ReturnType<typeof create>
+
+    act(() => {
+      renderer = create(
+        <ApiConnectionPanel
+          loading={false}
+          feedback={{ type: 'success', message: '连接正常' }}
+          models={models}
+          onInspect={vi.fn()}
+          onSelectModel={vi.fn()}
+        />,
+      )
+    })
+
+    expect(renderer!.root.findByProps({ title: 'model-10' })).toBeDefined()
+  })
 })

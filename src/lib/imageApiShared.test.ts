@@ -40,4 +40,12 @@ describe('retryTransientRequest', () => {
 
     expect(message).toBe('HTTP 503: upstream overloaded')
   })
+
+  it('returns a concise message for gateway request-size failures', async () => {
+    const message = await getApiErrorMessage(
+      new Response('<html><body><h1>413 Request Entity Too Large</h1></body></html>', { status: 413 }),
+    )
+
+    expect(message).toBe('HTTP 413：请求体过大，请减少参考图数量或图片尺寸后重试')
+  })
 })

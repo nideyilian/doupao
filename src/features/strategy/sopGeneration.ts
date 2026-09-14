@@ -1,5 +1,6 @@
 import { IMAGE_GENERATION_STRATEGY_SKILL_META_INSTRUCTION } from './skillMetaInstructions'
 import { compressSopReferenceImageIfNeeded } from '../../lib/sopReferenceImageCompression'
+import type { SopKind, SopSeriesConfig } from './types'
 
 const GENERAL_SOP_GENERATOR_INSTRUCTION = `你是“标准作业程序（SOP）编译器”和 AI 视觉生产流程专家。你的任务是根据用户提供的自然语言需求和参考图片，编译成一套可直接作为模型核心指令使用的专业 SOP。
 
@@ -13,10 +14,14 @@ const GENERAL_SOP_GENERATOR_INSTRUCTION = `你是“标准作业程序（SOP）�
 7. 收到参考图片时，先综合分析全部图片的共同规律和关键差异，包括构图、主体、层级、文案区域、色彩、光影、材质、镜头、风格和视觉约束，再把观察结果转换成可重复执行的步骤；不要把某张图片的偶然细节误当成通用规则。
 8. 只有图片、没有文字需求时，也要基于图片推断其视觉生产流程，并把无法确认的业务信息标为待输入变量。
 
+系列图需求识别规则：当用户明确要求系列图、组图、连图、成套图片，或要求同组图片保持统一而只改变主体、背景等指定内容时，将 sopKind 设置为 series；否则设置为 single。系列图片数量只能是 2 或 3，未指定时默认 3。系列 SOP 必须在正文中明确组内固定维度和允许变化维度。
+
 只返回一个合法 JSON 对象，不要 Markdown 代码围栏，不要解释。格式必须为：
 {
   "name": "专业、清晰、可识别用途的 SOP 名称",
   "description": "一到两句话说明该 SOP 的用途、输入和产出",
+  "sopKind": "single 或 series",
+  "seriesConfig": {"imageCount": 3, "fixedDimensions": ["视觉风格", "排版方式"], "variableDimensions": ["主体", "背景"]},
   "sop": "完整 SOP 正文，使用 Markdown 标题和编号组织，可直接作为系统指令"
 }`
 
@@ -228,6 +233,8 @@ export interface GeneratedSop {
   name: string
   description: string
   sop: string
+  kind?: SopKind
+  seriesConfig?: SopSeriesConfig
 }
 
 export interface SopReferenceImage {
@@ -408,7 +415,36 @@ export function parseGeneratedSop(text: string): GeneratedSop {
   const description = String(
     record.description ?? record.summary ?? '由 AI 根据生成说明和参考图片编译的可执行 SOP。',
   ).trim()
-  return { name, description, sop }
+  const parsedKind = record.sopKind === 'series' ? 'series' : undefined
+  const rawConfig = record.seriesConfig
+  const seriesConfig =
+    parsedKind === 'series' && rawConfig && typeof rawConfig === 'object'
+      ? normalizeSeriesConfig(rawConfig as Record<string, unknown>)
+      : undefined
+  return { name, description, sop, ...(parsedKind ? { kind: parsedKind, seriesConfig } : {}) }
+}
+
+function normalizeSeriesConfig(value: Record<string, unknown>): SopSeriesConfig {
+  const imageCount = value.imageCount === 2 ? 2 : 3
+  const toDimensions = (input: unknown, fallback: string[]) =>
+    Array.isArray(input)
+      ? input
+          .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+          .map((item) => item.trim())
+      : fallback
+  return {
+    imageCount,
+    fixedDimensions: toDimensions(value.fixedDimensions, [
+      '视觉风格',
+      '构图方式',
+      '排版方式',
+      '文案结构',
+      '色彩体系',
+      '光线',
+      '镜头语言',
+    ]),
+    variableDimensions: toDimensions(value.variableDimensions, ['主体', '背景']),
+  }
 }
 
 /**

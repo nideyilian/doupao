@@ -262,7 +262,9 @@ export default function SopManagementCenter({
       itemDraft.content !== persistedItem.content ||
       itemDraft.groupId !== persistedItem.groupId ||
       itemDraft.coverImageId !== persistedItem.coverImageId ||
-      JSON.stringify(itemDraft.variableMeta ?? null) !== JSON.stringify(persistedItem.variableMeta ?? null)),
+      JSON.stringify(itemDraft.variableMeta ?? null) !== JSON.stringify(persistedItem.variableMeta ?? null) ||
+      itemDraft.kind !== persistedItem.kind ||
+      JSON.stringify(itemDraft.seriesConfig ?? null) !== JSON.stringify(persistedItem.seriesConfig ?? null)),
   )
   const itemDraftValid = Boolean(itemDraft?.name.trim() && itemDraft?.content.trim())
   const persistedMeta = metaInstructions.find((item) => item.id === selectedMetaId)
@@ -829,6 +831,8 @@ export default function SopManagementCenter({
           name: item.name.trim() || '未命名 SOP',
           description: typeof item.description === 'string' ? item.description : '',
           content: item.content,
+          kind: item.kind === 'series' ? 'series' : undefined,
+          seriesConfig: item.kind === 'series' ? item.seriesConfig : undefined,
           source: 'manual',
           createdBy: currentUserId,
           createdAt: Date.now(),
@@ -1154,6 +1158,8 @@ export default function SopManagementCenter({
         name: generated.name,
         description: generated.description,
         content: generated.sop,
+        kind: generated.kind,
+        seriesConfig: generated.seriesConfig,
         source: 'generated',
         metaInstructionId: meta.id,
         executionMode: meta.kind === 'variable-prompt-skill' ? 'variable-prompt' : 'prompt-generator',

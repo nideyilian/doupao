@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   generateSopFromStore,
+  generatePromptsFromSopStore,
   generateVariablePromptTwoPhase,
   generateVariablePromptsFromSopStore,
   getSopPromptGenerationModelFromStore,
+  resolveTextRequestTimeoutMs,
   testSopRevisionFromStore,
 } from './storeSopGeneration'
 import {
@@ -15,16 +17,20 @@ import {
 const storeMocks = vi.hoisted(() => ({
   submitTaskWithData: vi.fn(),
   showToast: vi.fn(),
+  textModel: 'gpt-test',
+  textTimeout: 600,
 }))
 
 vi.mock('../../../lib/apiProfiles', () => ({
+  DEFAULT_API_TIMEOUT: 600,
   getAgentTextApiProfile: () => ({
     provider: 'openai',
     apiMode: 'responses',
     name: 'Agent 测试',
     apiKey: 'test-key',
     baseUrl: 'https://api.example.com/v1',
-    model: 'gpt-test',
+    model: storeMocks.textModel,
+    timeout: storeMocks.textTimeout,
     apiProxy: false,
   }),
   getAgentTextProtocol: () => 'responses',
@@ -69,8 +75,11 @@ function mockResponse(text: string) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.clearAllMocks()
+  storeMocks.textModel = 'gpt-test'
+  storeMocks.textTimeout = 600
 })
 
 describe('store SOP generation', () => {
@@ -111,6 +120,75 @@ describe('store SOP generation', () => {
       ]),
     )
     expect(progress).toEqual(['validate', 'prepare', 'request', 'parse'])
+  })
+
+  it('uses plain JSON output for non-OpenAI text models before generating SOP prompts', async () => {
+    storeMocks.textModel = 'gemini-3.8-flash'
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse('{"prompts":["测试提示词"]}'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      generatePromptsFromSopStore(
+        {
+          id: 'sop-1',
+          name: '测试 SOP',
+          description: '测试说明',
+          content: '生成商品图。',
+          source: 'manual',
+          createdBy: 'user-1',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        1,
+      ),
+    ).resolves.toEqual(['测试提示词'])
+
+    const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(request.text?.format).toBeUndefined()
+  })
+
+  it('文本模型无响应时按 Agent 超时中断请求，直接报错而不重复等待', async () => {
+    vi.useFakeTimers()
+    storeMocks.textTimeout = 1
+    let aborted = false
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            aborted = true
+            reject(init.signal?.reason ?? new DOMException('已取消', 'AbortError'))
+          })
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = generatePromptsFromSopStore(
+      {
+        id: 'sop-1',
+        name: '测试 SOP',
+        description: '测试说明',
+        content: '生成商品图。',
+        source: 'manual',
+        createdBy: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      1,
+    )
+    const assertion = expect(pending).rejects.toThrow(/SOP 提示词生成超时：超过 1 秒/)
+    await vi.advanceTimersByTimeAsync(1500)
+    await assertion
+
+    expect(aborted).toBe(true)
+    // 超时属于「再等一次也一样」的错误：不重试，避免把卡住的时间成倍拉长
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('解析 Agent 超时配置：非法值回退到默认超时', () => {
+    expect(resolveTextRequestTimeoutMs(600)).toBe(600_000)
+    expect(resolveTextRequestTimeoutMs(undefined)).toBe(600_000)
+    expect(resolveTextRequestTimeoutMs(0)).toBe(600_000)
+    expect(resolveTextRequestTimeoutMs(Number.NaN)).toBe(600_000)
   })
 
   it('automatically retries an incomplete model response before surfacing an error', async () => {

@@ -100,6 +100,7 @@ type PromptDraft = {
   origin: 'ai' | 'manual'
   edited?: boolean
   deleted?: boolean
+  series?: { groupIndex: number; seriesIndex: number; seriesCount: number }
 }
 
 type PersistedSopPromptRun = {
@@ -378,6 +379,8 @@ export default function GallerySopBatchModal({
   initialQuantity,
   initialPromptCount = initialQuantity ?? 5,
   initialImagesPerPrompt = 1,
+  initialSeriesMode = false,
+  initialSeriesImageCount = 3,
   syncInitialGenerationCounts = false,
   initialBrief = '',
   initialAutoGenerate = false,
@@ -398,6 +401,8 @@ export default function GallerySopBatchModal({
   initialQuantity?: number
   initialPromptCount?: number
   initialImagesPerPrompt?: number
+  initialSeriesMode?: boolean
+  initialSeriesImageCount?: 2 | 3
   syncInitialGenerationCounts?: boolean
   initialBrief?: string
   initialAutoGenerate?: boolean
@@ -424,6 +429,8 @@ export default function GallerySopBatchModal({
     imagesPerPrompt: number
     autoGenerate: boolean
     secondReference: boolean
+    seriesMode: boolean
+    seriesImageCount: 2 | 3
   }) => void
   /**
    * 输入栏胶囊的批次参数外部同步信号：nonce 每次变化时把批次设置合入弹窗内部状态，
@@ -434,6 +441,8 @@ export default function GallerySopBatchModal({
     imagesPerPrompt: number
     autoGenerate: boolean
     secondReference: boolean
+    seriesMode: boolean
+    seriesImageCount: 2 | 3
     nonce: number
   }
 }) {
@@ -458,6 +467,8 @@ export default function GallerySopBatchModal({
   const selectedSopId = initialSopId
   const [promptCount, setPromptCount] = useState(initialPromptCount)
   const [imagesPerPrompt, setImagesPerPrompt] = useState(initialImagesPerPrompt)
+  const [seriesMode, setSeriesMode] = useState(initialSeriesMode)
+  const [seriesImageCount, setSeriesImageCount] = useState<2 | 3>(initialSeriesImageCount)
   const [brief, setBrief] = useState(initialBrief)
   const [autoGenerate, setAutoGenerate] = useState(initialAutoGenerate)
   const [secondReference, setSecondReference] = useState(initialSecondReference)
@@ -510,6 +521,7 @@ export default function GallerySopBatchModal({
   }
 
   const selectedSop = items.find((item) => item.id === selectedSopId)
+  const activeSeriesMode = Boolean(selectedSop && (seriesMode || selectedSop.kind === 'series'))
   const promptGenerationActive = status === 'generating' || status === 'paused'
   const running = promptGenerationActive || status === 'submitting'
   const targetWorkspaceTabId = workspaceTabId ?? activeWorkspaceTabId
@@ -551,20 +563,36 @@ export default function GallerySopBatchModal({
   const normalizedCounts = getSopRunCounts(promptCount, imagesPerPrompt)
   const targetCount = normalizedCounts.promptCount
   const targetImagesPerPrompt = normalizedCounts.imagesPerPrompt
+  const seriesCount = activeSeriesMode ? (selectedSop?.seriesConfig?.imageCount ?? seriesImageCount) : 1
+  const effectivePromptTarget = targetCount * seriesCount
+  /** 系列模式下进度单位是「组内画面」而非「提示词」，文案需随之切换。 */
+  const promptUnitLabel = activeSeriesMode ? '个画面' : '条'
   const normalizedInitialCounts = getSopRunCounts(initialPromptCount, initialImagesPerPrompt)
   const initialGenerationCountsPending =
     syncInitialGenerationCounts &&
     restoreComplete &&
     (targetCount !== normalizedInitialCounts.promptCount ||
       targetImagesPerPrompt !== normalizedInitialCounts.imagesPerPrompt)
-  const totalImageCount = getSopTotalImageCount(targetCount, targetImagesPerPrompt)
+  const totalImageCount = getSopTotalImageCount(effectivePromptTarget, targetImagesPerPrompt)
+
+  useEffect(() => {
+    const configured = selectedSop?.kind === 'series'
+    setSeriesMode(initialSeriesMode || configured)
+    setSeriesImageCount(selectedSop?.seriesConfig?.imageCount ?? initialSeriesImageCount)
+  }, [
+    initialSeriesImageCount,
+    initialSeriesMode,
+    selectedSop?.id,
+    selectedSop?.kind,
+    selectedSop?.seriesConfig?.imageCount,
+  ])
   const selectedSources = useMemo(
     () => selectSopPromptSources(allSources, targetCount, effectiveBrief),
     [allSources, effectiveBrief, targetCount],
   )
   const editablePrompts = useMemo(() => prompts.filter((item) => !item.deleted), [prompts])
   const visiblePrompts = useMemo(() => editablePrompts.filter((item) => item.promptText.trim()), [editablePrompts])
-  const missingCount = Math.max(0, targetCount - visiblePrompts.length)
+  const missingCount = Math.max(0, effectivePromptTarget - visiblePrompts.length)
   const activeRun = recentRuns.find((run) => run.id === activeRunId)
   const activePromptImageLinks = useMemo<PromptRunImageLink[]>(
     () => (activeRun ? getPromptRunImageLinks(activeRun, tasks) : []),
@@ -781,6 +809,7 @@ export default function GallerySopBatchModal({
         sourceId: item.sourceId,
         referenceImageIds: item.referenceImageIds,
         deleted: Boolean(item.deleted),
+        series: item.series,
       })),
       params: { ...params, n: targetImagesPerPrompt, reference_mode: 'cycle' },
       ...patch,
@@ -1044,8 +1073,8 @@ export default function GallerySopBatchModal({
 
   // 批次参数单一数据源：弹窗内任何调整（含恢复历史运行）都上报宿主同步，输入栏胶囊只作状态展示。
   useEffect(() => {
-    onCountsChange?.({ promptCount, imagesPerPrompt, autoGenerate, secondReference })
-  }, [autoGenerate, imagesPerPrompt, onCountsChange, promptCount, secondReference])
+    onCountsChange?.({ promptCount, imagesPerPrompt, autoGenerate, secondReference, seriesMode, seriesImageCount })
+  }, [autoGenerate, imagesPerPrompt, onCountsChange, promptCount, secondReference, seriesImageCount, seriesMode])
 
   useEffect(
     () => () => {
@@ -1073,6 +1102,8 @@ export default function GallerySopBatchModal({
     setAutoGenerate(countsSync.autoGenerate)
     secondReferenceRef.current = countsSync.secondReference
     setSecondReference(countsSync.secondReference)
+    setSeriesMode(countsSync.seriesMode)
+    setSeriesImageCount(countsSync.seriesImageCount)
     writeRunPointer(
       activeRunIdRef.current,
       prompts,
@@ -1518,8 +1549,17 @@ export default function GallerySopBatchModal({
               sopName: selectedSop.name,
               promptId: item.id,
               promptIndex: index + 1,
-              promptCount: usablePrompts.length,
+              promptCount: activeSeriesMode ? Math.ceil(usablePrompts.length / seriesCount) : usablePrompts.length,
               imagesPerPrompt: targetImagesPerPrompt,
+              series: item.series
+                ? {
+                    seriesId: `${snapshotId}-${item.series.groupIndex}`,
+                    groupIndex: item.series.groupIndex + 1,
+                    groupCount: Math.ceil(usablePrompts.length / item.series.seriesCount),
+                    seriesIndex: item.series.seriesIndex + 1,
+                    seriesCount: item.series.seriesCount,
+                  }
+                : undefined,
             },
           },
           { silentSuccess: true },
@@ -1579,7 +1619,7 @@ export default function GallerySopBatchModal({
     generationAbortRef.current = generationController
     generationPausedRef.current = false
     releasePauseWaiters()
-    const allocations = allocateSopPromptCounts(targetCount, selectedSources.length)
+    const allocations = allocateSopPromptCounts(effectivePromptTarget, selectedSources.length)
     const retrySource = retrySourceId
       ? currentSources.find((entry) => entry.source.id === retrySourceId)?.source
       : undefined
@@ -1697,6 +1737,7 @@ export default function GallerySopBatchModal({
         (item) => !item.deleted && item.promptText.trim() && promptBelongsToSource(item, sourceRun.source),
       )
       const deficit = Math.max(0, sourceRun.requestedCount - existingForSource.length)
+      const generationCount = activeSeriesMode ? Math.ceil(deficit / seriesCount) : deficit
       if (deficit === 0) {
         nextSources[sourceIndex] = { ...nextSources[sourceIndex], status: 'completed', error: undefined }
         continue
@@ -1717,6 +1758,13 @@ export default function GallerySopBatchModal({
             sourceIndex: sourceImage ? sourcePosition : undefined,
             sourceCount: sourceImage ? plannedSources.length : undefined,
             totalPromptCount: targetCount,
+            seriesConfig: activeSeriesMode
+              ? (selectedSop.seriesConfig ?? {
+                  imageCount: seriesImageCount,
+                  fixedDimensions: ['视觉风格', '构图方式', '排版方式', '文案结构', '色彩体系'],
+                  variableDimensions: ['主体', '背景'],
+                })
+              : undefined,
           },
           referenceImages: sourceImage ? [{ name: sourceRun.source.label, dataUrl: sourceImage.dataUrl }] : undefined,
           exact: false,
@@ -1732,18 +1780,34 @@ export default function GallerySopBatchModal({
                   ? generationController.signal.reason
                   : new DOMException('提示词生成已取消', 'AbortError')
               }
+              const promptSeriesCount = activeSeriesMode ? seriesCount : 1
               const item: PromptDraft = {
                 id: promptItemId(sourceRun.source.id),
                 sourceId: sourceRun.source.id,
                 referenceImageIds,
                 promptText: prompt,
                 origin: 'ai',
+                series:
+                  promptSeriesCount > 1
+                    ? {
+                        groupIndex: Math.floor(
+                          nextPrompts.filter((entry) => !entry.deleted && entry.promptText.trim()).length /
+                            promptSeriesCount,
+                        ),
+                        seriesIndex:
+                          nextPrompts.filter((entry) => !entry.deleted && entry.promptText.trim()).length %
+                          promptSeriesCount,
+                        seriesCount: promptSeriesCount,
+                      }
+                    : undefined,
               }
               nextPrompts.push(item)
               setPrompts([...nextPrompts])
               const promptIndex = nextPrompts.filter((entry) => !entry.deleted && entry.promptText.trim()).length
               if (progressiveDispatch) {
-                setStatusMessage(`已生成提示词 ${promptIndex}/${targetCount}，正在发送第 ${promptIndex} 条生图任务`)
+                setStatusMessage(
+                  `已生成系列成员 ${promptIndex}/${effectivePromptTarget}，正在发送第 ${promptIndex} 条生图任务`,
+                )
                 await saveProgressiveSnapshot('generating')
                 let dispatched = false
                 try {
@@ -1767,6 +1831,15 @@ export default function GallerySopBatchModal({
                         promptIndex,
                         promptCount: targetCount,
                         imagesPerPrompt: targetImagesPerPrompt,
+                        series: item.series
+                          ? {
+                              seriesId: `${progressiveSnapshotId}-${item.series.groupIndex}`,
+                              groupIndex: item.series.groupIndex + 1,
+                              groupCount: Math.ceil(targetCount / item.series.seriesCount),
+                              seriesIndex: item.series.seriesIndex + 1,
+                              seriesCount: item.series.seriesCount,
+                            }
+                          : undefined,
                       },
                     },
                     { silentSuccess: true },
@@ -1798,8 +1871,8 @@ export default function GallerySopBatchModal({
                 persistPromptRun([...nextPrompts], nextSources, autoGenerate, 'generating')
                 setStatusMessage(
                   generationPausedRef.current
-                    ? `提示词生成已暂停，当前可用 ${promptIndex}/${targetCount} 条`
-                    : `正在生成提示词 ${promptIndex}/${targetCount}`,
+                    ? `提示词生成已暂停，当前可用 ${promptIndex}/${effectivePromptTarget} ${promptUnitLabel}`
+                    : `正在生成提示词 ${promptIndex}/${effectivePromptTarget}`,
                 )
               }
             }
@@ -1808,20 +1881,24 @@ export default function GallerySopBatchModal({
             if (!progressiveDispatch) {
               const completedCount = Math.min(
                 nextPrompts.filter((item) => !item.deleted && item.promptText.trim()).length,
-                targetCount,
+                effectivePromptTarget,
               )
-              const totalCount = Math.min(completedCount + Math.max(0, total - completed), targetCount)
+              // completed/total 是「批次单位」（系列模式下为组），换算成画面数再展示
+              const totalCount = Math.min(
+                completedCount + Math.max(0, total - completed) * seriesCount,
+                effectivePromptTarget,
+              )
               setStatusMessage(
                 generationPausedRef.current
-                  ? `提示词生成已暂停，当前可用 ${completedCount}/${totalCount} 条`
+                  ? `提示词生成已暂停，当前可用 ${completedCount}/${totalCount} ${promptUnitLabel}`
                   : `正在参考 ${sourceRun.source.label} 生成提示词 ${completedCount}/${totalCount}`,
               )
             }
           },
         }
         const generated = isVariablePromptSop
-          ? await generateVariablePromptsFromSopStore(selectedSop, deficit, effectiveBrief, generationOptions)
-          : await generatePromptsFromSopStore(selectedSop, deficit, effectiveBrief, generationOptions)
+          ? await generateVariablePromptsFromSopStore(selectedSop, generationCount, effectiveBrief, generationOptions)
+          : await generatePromptsFromSopStore(selectedSop, generationCount, effectiveBrief, generationOptions)
         if (generationController.signal.aborted) {
           throw generationController.signal.reason instanceof Error
             ? generationController.signal.reason
@@ -1884,7 +1961,7 @@ export default function GallerySopBatchModal({
     setSources(nextSources)
     const available = nextPrompts.filter((item) => !item.deleted && item.promptText.trim()).length
     const failed = nextSources.filter((item) => item.status === 'failed').length
-    const missing = Math.max(0, targetCount - available)
+    const missing = Math.max(0, effectivePromptTarget - available)
     if (generationAbortRef.current === generationController) generationAbortRef.current = null
     generationPausedRef.current = false
     releasePauseWaiters()
@@ -2034,6 +2111,13 @@ export default function GallerySopBatchModal({
               : undefined,
           sourceCount: sourceImage ? selectedSources.length : undefined,
           totalPromptCount: targetCount,
+          seriesConfig: activeSeriesMode
+            ? (selectedSop.seriesConfig ?? {
+                imageCount: seriesImageCount,
+                fixedDimensions: ['视觉风格', '构图方式', '排版方式', '文案结构', '色彩体系'],
+                variableDimensions: ['主体', '背景'],
+              })
+            : undefined,
         },
         referenceImages: sourceImage ? [{ name: source?.label ?? '参考图', dataUrl: sourceImage.dataUrl }] : undefined,
         exact: true,
@@ -2073,17 +2157,17 @@ export default function GallerySopBatchModal({
       workspaceTabId: targetWorkspaceTabId,
       phase: status,
       message: statusMessage,
-      promptCount: targetCount,
+      promptCount: effectivePromptTarget,
       availablePrompts: visiblePrompts.length,
       totalImages: totalImageCount,
       failed: sources.some((source) => source.status === 'failed') || status === 'error' ? 1 : 0,
     })
   }, [
     onStatusChange,
+    effectivePromptTarget,
     sources,
     status,
     statusMessage,
-    targetCount,
     targetWorkspaceTabId,
     totalImageCount,
     visiblePrompts.length,
@@ -2965,7 +3049,7 @@ export default function GallerySopBatchModal({
                     <p className="truncate text-xs font-medium leading-5">{statusMessage}</p>
                     <p className={`text-xs leading-4 ${statusMetaClass}`}>
                       {selectedSop
-                        ? `${visiblePrompts.length}/${targetCount} 条就绪 · 预计 ${totalImageCount} 张图片${missingCount ? ` · 还缺 ${missingCount} 条` : ''}`
+                        ? `${activeSeriesMode ? `${targetCount} 组` : `${targetCount} 条提示词`} · ${visiblePrompts.length}/${effectivePromptTarget} 个画面就绪 · 预计 ${totalImageCount} 张图片${missingCount ? ` · 还缺 ${missingCount} 个画面` : ''}`
                         : `已保存 ${recentRuns.length} 个提示词集`}
                     </p>
                   </div>
@@ -2974,19 +3058,19 @@ export default function GallerySopBatchModal({
                 {selectedSop && (
                   <div className="flex flex-wrap items-center gap-2" aria-label="批次设置">
                     <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
-                      提示词
+                      {activeSeriesMode ? '组数' : '提示词'}
                       <input
                         type="number"
                         min={1}
                         value={targetCount}
                         onChange={(event) => event.target.value && setPromptCount(Number(event.target.value))}
                         disabled={running}
-                        aria-label="SOP 提示词数量"
+                        aria-label={activeSeriesMode ? 'SOP 系列组数' : 'SOP 提示词数量'}
                         className="w-10 bg-transparent text-center font-semibold text-ds-text outline-none disabled:opacity-50"
                       />
                     </label>
                     <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
-                      每条图片
+                      {activeSeriesMode ? '每张版本' : '每条图片'}
                       <input
                         type="number"
                         min={1}
@@ -2998,6 +3082,34 @@ export default function GallerySopBatchModal({
                         className="w-8 bg-transparent text-center font-semibold text-ds-text outline-none disabled:opacity-50"
                       />
                     </label>
+                    <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
+                      <span>模式</span>
+                      <select
+                        value={activeSeriesMode ? 'series' : 'single'}
+                        onChange={(event) => setSeriesMode(event.target.value === 'series')}
+                        disabled={running}
+                        aria-label="选择 SOP 生成模式"
+                        className="cursor-pointer bg-transparent font-semibold text-ds-text outline-none disabled:opacity-50"
+                      >
+                        <option value="single">普通</option>
+                        <option value="series">系列组图</option>
+                      </select>
+                    </label>
+                    {activeSeriesMode && !selectedSop.seriesConfig && (
+                      <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
+                        <span>组图</span>
+                        <select
+                          value={seriesImageCount}
+                          onChange={(event) => setSeriesImageCount(Number(event.target.value) as 2 | 3)}
+                          disabled={running}
+                          aria-label="选择系列组图数量"
+                          className="cursor-pointer bg-transparent font-semibold text-ds-text outline-none disabled:opacity-50"
+                        >
+                          <option value={2}>2 张</option>
+                          <option value={3}>3 张</option>
+                        </select>
+                      </label>
+                    )}
                     <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
                       审核规则
                       <select

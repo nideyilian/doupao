@@ -104,6 +104,14 @@ export interface SopGroup {
   updatedAt: number
 }
 
+export type SopKind = 'single' | 'series'
+
+export interface SopSeriesConfig {
+  imageCount: 2 | 3
+  fixedDimensions: string[]
+  variableDimensions: string[]
+}
+
 export interface SopLibraryItem {
   id: string
   groupId?: string
@@ -111,6 +119,9 @@ export interface SopLibraryItem {
   name: string
   description: string
   content: string
+  /** 旧 SOP 缺省为 single；series SOP 的每组提示词遵循组内固定规则。 */
+  kind?: SopKind
+  seriesConfig?: SopSeriesConfig
   source: 'manual' | 'generated' | 'legacy-preset'
   metaInstructionId?: string
   /** 变量提示词资产：content 为可被 parseVariablePrompt 解析的模板，可展开批量生图 */

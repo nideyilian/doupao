@@ -1,4 +1,4 @@
-import type { SopLibraryItem } from './types'
+import type { SopLibraryItem, SopSeriesConfig } from './types'
 
 export const MAX_SOP_PROMPTS_PER_MODEL_REQUEST = 10
 export const SOP_PROMPT_BATCH_MAX_ATTEMPTS = 2
@@ -15,6 +15,7 @@ export interface SopPromptBatchContext {
   sourceCount?: number
   totalPromptCount?: number
   existingPrompts?: string[]
+  seriesConfig?: SopSeriesConfig
 }
 
 export const SOP_PROMPT_GENERATOR_INSTRUCTION = `你是图像生成提示词编排专家，也是可靠的 SOP 执行器。
@@ -262,17 +263,23 @@ export async function generateSopPromptBatches(
     onBatch?: (prompts: string[], completed: number, total: number) => void | Promise<void>
     beforeBatch?: () => void | Promise<void>
     signal?: AbortSignal
+    outputUnitSize?: number
+    /** 判定错误是否值得重试；超时这类「再等一次也一样」的错误应返回 false，避免等待时间成倍拉长。 */
+    isRetryable?: (error: unknown) => boolean
   } = {},
 ) {
   const expected = normalizeSopPromptCount(totalPromptCount)
+  const outputUnitSize = Math.max(1, Math.trunc(options.outputUnitSize ?? 1))
   const batchSize = getSopPromptBatchSizes(expected, options.maxBatchSize)[0]
   const maxAttempts = Math.max(1, Math.trunc(options.maxAttempts ?? SOP_PROMPT_BATCH_MAX_ATTEMPTS))
   const generated: string[] = []
 
-  while (generated.length < expected) {
-    const quantity = Math.min(batchSize, expected - generated.length)
+  while (generated.length / outputUnitSize < expected) {
+    const completedUnits = generated.length / outputUnitSize
+    const quantity = Math.min(batchSize, expected - completedUnits)
     let batch: string[] = []
     let lastError: unknown
+    let stoppedEarly = false
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       await options.beforeBatch?.()
@@ -281,27 +288,34 @@ export async function generateSopPromptBatches(
       try {
         const candidates = await generateBatch(quantity, existingPrompts)
         throwIfSopPromptGenerationAborted(options.signal)
-        batch = normalizeSopPromptCandidates(candidates, quantity, existingPrompts)
+        batch = normalizeSopPromptCandidates(candidates, quantity * outputUnitSize, existingPrompts)
         if (!batch.length) throw new Error('模型未返回新的可用提示词')
         break
       } catch (error) {
         throwIfSopPromptGenerationAborted(options.signal)
         lastError = error
+        if (options.isRetryable && !options.isRetryable(error)) {
+          stoppedEarly = true
+          break
+        }
       }
     }
 
     if (!batch.length) {
       if (options.exact === false && generated.length > 0) break
+      // 不可重试的错误直接抛出原始原因，避免「已自动尝试 N 次」造成误导
+      if (stoppedEarly) throw lastError
       const message = lastError instanceof Error ? lastError.message : '提示词生成失败'
       throw new Error(`提示词批次生成失败，已自动尝试 ${maxAttempts} 次：${message}`)
     }
     generated.push(...batch)
-    await options.onBatch?.([...batch], generated.length, expected)
-    options.onProgress?.(generated.length, expected)
+    const completedOutputUnits = generated.length / outputUnitSize
+    await options.onBatch?.([...batch], completedOutputUnits, expected)
+    options.onProgress?.(completedOutputUnits, expected)
   }
 
-  if (options.exact !== false && generated.length !== expected) {
-    throw new Error(`模型应返回 ${expected} 条提示词，实际返回 ${generated.length} 条，请重试`)
+  if (options.exact !== false && generated.length !== expected * outputUnitSize) {
+    throw new Error(`模型应返回 ${expected} 组提示词，实际返回 ${generated.length / outputUnitSize} 组，请重试`)
   }
   return generated
 }
@@ -318,6 +332,15 @@ export function buildSopPromptBatchRequest(
     comparisonPrompts.length <= 12
       ? comparisonPrompts
       : [...comparisonPrompts.slice(0, 3), ...comparisonPrompts.slice(-9)]
+  const seriesInstruction = context.seriesConfig
+    ? [
+        `当前 SOP 是系列组图模式：每组必须输出 ${context.seriesConfig.imageCount} 条完整提示词。`,
+        `同组固定维度：${context.seriesConfig.fixedDimensions.join('、')}。`,
+        `同组允许变化维度：${context.seriesConfig.variableDimensions.join('、')}。`,
+        '先为本组确定固定规则，再输出组内每张图的完整提示词；禁止使用“同上”“保持一致”等省略表达。',
+        `只返回合法 JSON：{"series":[{"fixed":"本组固定规则","prompts":["系列图1完整提示词","系列图2完整提示词"${context.seriesConfig.imageCount === 3 ? ',"系列图3完整提示词"' : ''}]}]}`,
+      ].join('\n')
+    : ''
   return [
     `任务：依据 SOP 生成 ${count} 条彼此不同、可直接用于图片生成模型的提示词。`,
     context.totalPromptCount
@@ -333,6 +356,7 @@ export function buildSopPromptBatchRequest(
     '3. 提示词的语言、详略、结构和画面要素以 SOP 为准；不要强行补写 SOP 不需要的字段，也不要擅自添加模型专用参数。',
     '4. 批次内应在 SOP 允许的维度形成有意义的差异；若 SOP 本身要求固定或相近的结果，优先遵循 SOP。',
     '5. SOP 内若自带 JSON、编号或其他输出示例，只提取其中对提示词内容的要求；最终仍使用本请求末尾规定的 JSON 传输封装。',
+    seriesInstruction,
     brief.trim()
       ? `本批补充要求：
 <BRIEF>
@@ -353,7 +377,9 @@ ${JSON.stringify(boundedComparisonPrompts)}
     '</SOP>',
     '',
     '输出前逐条自检：SOP 明确硬约束无遗漏、禁止项未违反、事实未臆造、每条都能脱离上下文独立使用。',
-    `只返回合法 JSON：{"prompts":["完整提示词 1","完整提示词 2","共严格 ${count} 条"]}`,
+    context.seriesConfig
+      ? `严格生成 ${count} 组系列图，每组 ${context.seriesConfig.imageCount} 条成员提示词。`
+      : `只返回合法 JSON：{"prompts":["完整提示词 1","完整提示词 2","共严格 ${count} 条"]}`,
     '禁止 Markdown 代码围栏、解释、标题和列表编号；禁止使用“同上”“保持一致”等省略表达。',
   ]
     .filter(Boolean)
@@ -374,4 +400,49 @@ export function parseSopPromptBatchResponse(
     throw new Error(`模型应返回 ${expected} 条提示词，实际返回 ${normalized.length} 条，请重试`)
   if (options.exact === false && normalized.length === 0) throw new Error('模型未返回可用提示词，请重试')
   return normalized
+}
+
+export function parseSopSeriesPromptBatchResponse(text: string, groupCount: number, seriesCount: number) {
+  const expectedGroups = normalizeSopPromptCount(groupCount)
+  const membersPerGroup = normalizeSopPromptCount(seriesCount)
+  const source = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+  const start = source.indexOf('{')
+  const end = source.lastIndexOf('}')
+  if (start < 0 || end <= start) throw new Error('系列提示词返回格式不正确')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(source.slice(start, end + 1))
+  } catch {
+    throw new Error('系列提示词 JSON 格式不正确')
+  }
+  const series =
+    parsed && typeof parsed === 'object' && Array.isArray((parsed as { series?: unknown }).series)
+      ? (parsed as { series: unknown[] }).series
+      : []
+  if (!series.length) throw new Error('系列提示词没有返回内容')
+
+  // 不支持 json_schema 的模型可能给出偏差的组数或组内条数：组数多则截断到目标组数，
+  // 少则留给批次循环补缺口；组内不足的组直接丢弃，保证每组都是完整的一组画面，
+  // 批次单位换算（outputUnitSize）才不会错位。
+  const groups: Array<{ groupIndex: number; fixed: string; prompts: string[] }> = []
+  for (let index = 0; index < series.length && groups.length < expectedGroups; index += 1) {
+    const entry = series[index]
+    const record = entry && typeof entry === 'object' ? (entry as { fixed?: unknown; prompts?: unknown }) : {}
+    const prompts = Array.isArray(record.prompts)
+      ? record.prompts
+          .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+          .map((item) => item.trim())
+      : []
+    if (prompts.length < membersPerGroup) continue
+    groups.push({
+      groupIndex: index,
+      fixed: typeof record.fixed === 'string' ? record.fixed.trim() : '',
+      prompts: prompts.slice(0, membersPerGroup),
+    })
+  }
+  if (!groups.length) throw new Error(`模型未返回完整的一组系列提示词，每组需要 ${membersPerGroup} 条`)
+  return groups
 }

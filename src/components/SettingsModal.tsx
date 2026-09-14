@@ -215,8 +215,8 @@ export function ApiConnectionPanel({
             <span className="text-xs font-medium text-ds-muted dark:text-ds-muted">已发现 {models.length} 个模型</span>
             <span className="text-xs text-ds-muted">点击即可设为当前模型</span>
           </div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {models.slice(0, 8).map((model) => {
+          <div className="custom-scrollbar mt-2 flex max-h-56 flex-wrap gap-1.5 overflow-y-auto overscroll-contain pr-1">
+            {models.map((model) => {
               const selected = model.id === selectedModelId
               return (
                 <button

@@ -1,4 +1,9 @@
-import { getAgentTextApiProfile, getAgentTextProtocol, validateApiProfile } from '../../../lib/apiProfiles'
+import {
+  DEFAULT_API_TIMEOUT,
+  getAgentTextApiProfile,
+  getAgentTextProtocol,
+  validateApiProfile,
+} from '../../../lib/apiProfiles'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from '../../../lib/devProxy'
 import { submitTaskWithData, useStore } from '../../../store'
 import {
@@ -22,6 +27,7 @@ import {
   buildSopPromptBatchRequest,
   generateSopPromptBatches,
   parseSopPromptBatchResponse,
+  parseSopSeriesPromptBatchResponse,
   SOP_PROMPT_GENERATOR_INSTRUCTION,
   type SopPromptBatchContext,
 } from '../sopPromptBatch'
@@ -29,6 +35,62 @@ import { IMAGE_GENERATION_STRATEGY_SKILL_META_INSTRUCTION } from '../skillMetaIn
 import { DERIVE_DIMENSIONS, validateVariablePromptTemplate, type DeriveDimensionPolicy } from '../derivePolicy'
 import { VISUAL_PROFILE_INSTRUCTION, buildProfileSummary, parseVisualProfiles } from '../visualProfile'
 import type { SopLibraryItem } from '../types'
+
+/** Agent 配置未提供有效超时时的兜底值（秒）。 */
+const TEXT_REQUEST_TIMEOUT_FALLBACK_SECONDS = DEFAULT_API_TIMEOUT
+
+/** 把 Agent 配置的超时（秒）换算成请求用的毫秒值；缺失或非法时回退到默认值。 */
+export function resolveTextRequestTimeoutMs(timeoutSeconds?: number) {
+  const seconds =
+    typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+      ? timeoutSeconds
+      : TEXT_REQUEST_TIMEOUT_FALLBACK_SECONDS
+  return Math.round(seconds * 1000)
+}
+
+/** 超时错误：调用方据此跳过重试，避免把等待时间成倍拉长。 */
+export function isTextRequestTimeoutError(error: unknown) {
+  return error instanceof Error && error.name === 'TimeoutError'
+}
+
+function createTextRequestTimeoutError(label: string, timeoutMs: number, cause: unknown) {
+  const error = new Error(
+    `${label}超时：超过 ${Math.round(timeoutMs / 1000)} 秒仍未完成，请检查文本模型或接口连接，或提高 Agent 配置中的超时时间。`,
+    { cause },
+  )
+  error.name = 'TimeoutError'
+  return error
+}
+
+/**
+ * 文本模型请求的统一超时保护。没有超时时，接口不响应会让界面永久停在「正在生成提示词」，
+ * 既不报错也无法自动恢复。超时与用户主动取消严格区分：取消抛原信号原因，超时抛 TimeoutError。
+ */
+async function fetchTextModelWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  options: { signal?: AbortSignal; timeoutMs: number; label: string },
+) {
+  const { signal, timeoutMs, label } = options
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort(new DOMException(`${label}超时`, 'TimeoutError'))
+  }, timeoutMs)
+  const abortFromExternal = () => controller.abort(signal?.reason)
+  signal?.addEventListener('abort', abortFromExternal, { once: true })
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error
+    if (timedOut) throw createTextRequestTimeoutError(label, timeoutMs, error)
+    throw error
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abortFromExternal)
+  }
+}
 import type { ApiProfile, AppSettings } from '../../../types'
 
 const SOP_GENERATION_TEXT_FORMAT = {
@@ -87,6 +149,35 @@ function buildSopPromptTextFormat(quantity: number) {
         },
       },
       required: ['prompts'],
+      additionalProperties: false,
+    },
+  } as const
+}
+
+function buildSeriesPromptTextFormat(quantity: number, seriesCount: number) {
+  return {
+    type: 'json_schema',
+    name: 'sop_series_prompt_batch',
+    strict: true,
+    schema: {
+      type: 'object',
+      properties: {
+        series: {
+          type: 'array',
+          minItems: quantity,
+          maxItems: quantity,
+          items: {
+            type: 'object',
+            properties: {
+              fixed: { type: 'string' },
+              prompts: { type: 'array', minItems: seriesCount, maxItems: seriesCount, items: { type: 'string' } },
+            },
+            required: ['fixed', 'prompts'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['series'],
       additionalProperties: false,
     },
   } as const
@@ -199,16 +290,19 @@ export const generateSopFromStore: GenerateSop = async (
           max_output_tokens: 8000,
           ...(useStructuredOutput ? { text: { format: responseFormat } } : {}),
         }
-    return fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${profile.apiKey}`,
-        'Content-Type': 'application/json',
+    return fetchTextModelWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${profile.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify(body),
       },
-      signal: options?.signal,
-      cache: 'no-store',
-      body: JSON.stringify(body),
-    })
+      { signal: options?.signal, timeoutMs: resolveTextRequestTimeoutMs(profile.timeout), label: 'SOP 生成' },
+    )
   }
 
   options?.onProgress?.({
@@ -304,17 +398,23 @@ export async function generatePromptsFromSopStore(
     proxy,
     shouldUseApiProxy(profile.apiProxy, proxy),
   )
-  let structuredOutputEnabled = true
-
+  const textModel = (profile.model || settings.model || '').trim()
+  let structuredOutputEnabled = !/\b(gemini|deepseek|glm|kimi|claude|qwen)\b/i.test(textModel)
+  const timeoutMs = resolveTextRequestTimeoutMs(profile.timeout)
+  const seriesCount = options.context?.seriesConfig?.imageCount ?? 1
   return generateSopPromptBatches(
     quantity,
     async (batchQuantity, existingPrompts) => {
-      const requestText = buildSopPromptBatchRequest(sop, batchQuantity, brief, {
+      const requestQuantity = batchQuantity
+      const requestText = buildSopPromptBatchRequest(sop, requestQuantity, brief, {
         ...options.context,
         existingPrompts,
       })
+      const seriesConfig = options.context?.seriesConfig
       const send = (useStructuredOutput: boolean) => {
-        const textFormat = buildSopPromptTextFormat(batchQuantity)
+        const textFormat = seriesConfig
+          ? buildSeriesPromptTextFormat(requestQuantity, seriesCount)
+          : buildSopPromptTextFormat(batchQuantity)
         const body = useChatCompletions
           ? {
               model: profile.model || settings.model,
@@ -363,19 +463,36 @@ export async function generatePromptsFromSopStore(
               max_output_tokens: 12000,
               ...(useStructuredOutput ? { text: { format: textFormat } } : {}),
             }
-        return fetch(url, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${profile.apiKey}`,
-            'Content-Type': 'application/json',
+        return fetchTextModelWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${profile.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            cache: 'no-store',
+            body: JSON.stringify(body),
           },
-          signal: options.signal,
-          cache: 'no-store',
-          body: JSON.stringify(body),
-        })
+          { signal: options.signal, timeoutMs, label: 'SOP 提示词生成' },
+        )
       }
 
-      let response = await send(structuredOutputEnabled)
+      let response: Response
+      try {
+        response = await send(structuredOutputEnabled)
+      } catch (error) {
+        if (options.signal?.aborted) throw error
+        // 超时说明接口大概率不可用：既不重试无结构化输出，也不进入批次重试，直接给出可读错误。
+        if (isTextRequestTimeoutError(error)) throw error
+        if (!structuredOutputEnabled) {
+          throw new Error(`提示词生成失败：${error instanceof Error ? error.message : '文本模型未返回结果'}`, {
+            cause: error,
+          })
+        }
+        structuredOutputEnabled = false
+        response = await send(false)
+      }
       if (!response.ok && structuredOutputEnabled && (response.status === 400 || response.status === 422)) {
         structuredOutputEnabled = false
         response = await send(false)
@@ -386,10 +503,11 @@ export async function generatePromptsFromSopStore(
       }
       const payload = await response.json()
       const resultText = useChatCompletions ? extractChatCompletionsText(payload) : extractResponseText(payload)
-      return parseSopPromptBatchResponse(resultText, batchQuantity, {
-        exact: false,
-        existingPrompts,
-      })
+      if (seriesConfig) {
+        const groups = parseSopSeriesPromptBatchResponse(resultText, requestQuantity, seriesCount)
+        return groups.flatMap((group) => group.prompts)
+      }
+      return parseSopPromptBatchResponse(resultText, batchQuantity, { exact: false, existingPrompts })
     },
     {
       exact: options.exact,
@@ -398,7 +516,9 @@ export async function generatePromptsFromSopStore(
       maxBatchSize: options.maxBatchSize,
       onBatch: options.onBatch,
       beforeBatch: options.beforeBatch,
+      outputUnitSize: seriesCount,
       signal: options.signal,
+      isRetryable: (error) => !isTextRequestTimeoutError(error),
     },
   )
 }
@@ -620,16 +740,19 @@ async function expandSopVariablePromptOptions(
           max_output_tokens: 8000,
           ...(useStructuredOutput ? { text: { format: VARIABLE_EXPANSION_TEXT_FORMAT } } : {}),
         }
-    return fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${profile.apiKey}`,
-        'Content-Type': 'application/json',
+    return fetchTextModelWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${profile.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify(body),
       },
-      signal: context.signal,
-      cache: 'no-store',
-      body: JSON.stringify(body),
-    })
+      { signal: context.signal, timeoutMs: resolveTextRequestTimeoutMs(profile.timeout), label: '扩词条' },
+    )
   }
 
   let response = await send(true)
@@ -705,15 +828,78 @@ const VISUAL_PROFILE_TEXT_FORMAT = {
   },
 } as const
 
+const REFERENCE_STYLE_PROMPT_FORMAT = {
+  type: 'json_schema',
+  name: 'reference_style_prompt',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: { prompt: { type: 'string' } },
+    required: ['prompt'],
+    additionalProperties: false,
+  },
+} as const
+
+const VISUAL_SKILL_FORMAT = {
+  type: 'json_schema',
+  name: 'visual_skill',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      description: { type: 'string' },
+      visualAnalysis: { type: 'object', additionalProperties: { type: 'string' } },
+      preservedRules: { type: 'array', items: { type: 'string' } },
+      replaceableElements: { type: 'array', items: { type: 'string' } },
+      textRules: { type: 'array', items: { type: 'string' } },
+      chinesePromptTemplate: { type: 'string' },
+      englishPromptTemplate: { type: 'string' },
+      keywordTable: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            dimension: { type: 'string' },
+            chinese: { type: 'string' },
+            english: { type: 'string' },
+            locked: { type: 'boolean' },
+          },
+          required: ['dimension', 'chinese', 'english', 'locked'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: [
+      'name',
+      'description',
+      'visualAnalysis',
+      'preservedRules',
+      'replaceableElements',
+      'textRules',
+      'chinesePromptTemplate',
+      'englishPromptTemplate',
+      'keywordTable',
+    ],
+    additionalProperties: false,
+  },
+} as const
+
 async function requestModelJson(options: {
   settings: AppSettings
   profile: ApiProfile
   instructions: string
   userContent: unknown
-  responseFormat: typeof VISUAL_PROFILE_TEXT_FORMAT | typeof VARIABLE_PROMPT_GENERATION_TEXT_FORMAT
+  responseFormat:
+    | typeof VISUAL_PROFILE_TEXT_FORMAT
+    | typeof VARIABLE_PROMPT_GENERATION_TEXT_FORMAT
+    | typeof REFERENCE_STYLE_PROMPT_FORMAT
+    | typeof VISUAL_SKILL_FORMAT
   signal?: AbortSignal
+  /** 超时提示里展示的业务名，便于用户判断卡在哪一步。 */
+  timeoutLabel?: string
 }): Promise<string> {
-  const { settings, profile, instructions, userContent, responseFormat, signal } = options
+  const { settings, profile, instructions, userContent, responseFormat, signal, timeoutLabel = '模型请求' } = options
   const proxy = readClientDevProxyConfig()
   const useChatCompletions = getAgentTextProtocol(settings, profile) === 'chat-completions'
   const url = buildApiUrl(
@@ -756,16 +942,19 @@ async function requestModelJson(options: {
           max_output_tokens: 12000,
           ...(useStructuredOutput ? { text: { format: responseFormat } } : {}),
         }
-    return fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${profile.apiKey}`,
-        'Content-Type': 'application/json',
+    return fetchTextModelWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${profile.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify(body),
       },
-      signal,
-      cache: 'no-store',
-      body: JSON.stringify(body),
-    })
+      { signal, timeoutMs: resolveTextRequestTimeoutMs(profile.timeout), label: timeoutLabel },
+    )
   }
 
   let response = await send(true)
@@ -825,6 +1014,7 @@ export async function generateVariablePromptTwoPhase(
     userContent: imageContent,
     responseFormat: VISUAL_PROFILE_TEXT_FORMAT,
     signal: options.signal,
+    timeoutLabel: '参考图视觉分析',
   })
 
   options.onProgress?.('summarize', '正在整理视觉档案…')
@@ -886,6 +1076,7 @@ export async function generateVariablePromptTwoPhase(
       ],
       responseFormat: VARIABLE_PROMPT_GENERATION_TEXT_FORMAT,
       signal: options.signal,
+      timeoutLabel: '变量提示词模板生成',
     })
     return parseGeneratedVariablePrompt(text)
   }
@@ -910,6 +1101,73 @@ export async function generateVariablePromptTwoPhase(
     }
   }
   return generated
+}
+
+/** 独立的参考图风格复刻：只返回普通生图提示词，不生成变量模板。 */
+export async function generateReferenceStylePrompt(
+  theme: string,
+  referenceImages: Array<{ name: string; dataUrl: string }>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const settings = useStore.getState().settings
+  const profile = getAgentTextApiProfile(settings)
+  const validationError = validateApiProfile(profile)
+  if (validationError || profile.provider !== 'openai') {
+    throw new Error(
+      validationError
+        ? `请先完善 Agent 配置：${validationError}`
+        : '参考图风格复刻需要配置 OpenAI 兼容的 Agent 文本模型',
+    )
+  }
+  if (!theme.trim()) throw new Error('请输入至少一个新主题')
+  if (referenceImages.length === 0) throw new Error('参考图风格复刻至少需要一张参考图')
+  const content: Array<Record<string, string>> = [{ type: 'input_text', text: `新主题：${theme.trim()}` }]
+  referenceImages.forEach((image, index) => {
+    content.push({ type: 'input_text', text: `参考图 ${index + 1}：${image.name}` })
+    content.push({ type: 'input_image', image_url: image.dataUrl })
+  })
+  const text = await requestModelJson({
+    settings,
+    profile,
+    instructions: `你是参考图风格复刻提示词生成器。分析参考图后，为用户的新主题生成一条可直接用于图片生成模型的完整提示词。
+必须保留参考图的构图、视角、主体比例、材质、色彩关系、光照、背景处理和整体视觉风格；只替换主体主题。
+不要输出变量、占位符、可变项列表、JSON 以外的解释、Markdown 或多个方案。prompt 必须是普通完整提示词。`,
+    userContent: content,
+    responseFormat: REFERENCE_STYLE_PROMPT_FORMAT,
+    signal,
+    timeoutLabel: '参考图风格复刻',
+  })
+  const parsed = JSON.parse(text) as { prompt?: unknown }
+  if (typeof parsed.prompt !== 'string' || !parsed.prompt.trim()) throw new Error('模型没有返回有效的风格复刻提示词')
+  return parsed.prompt.trim()
+}
+
+export async function generateVisualSkill(
+  referenceImages: Array<{ name: string; dataUrl: string }>,
+  description = '',
+): Promise<string> {
+  const settings = useStore.getState().settings
+  const profile = getAgentTextApiProfile(settings)
+  const validationError = validateApiProfile(profile)
+  if (validationError || profile.provider !== 'openai')
+    throw new Error(validationError || '创建视觉 Skill 需要 OpenAI 兼容的 Agent 文本模型')
+  const content: Array<Record<string, string>> = [
+    { type: 'input_text', text: description || '请根据参考图创建可复用的视觉 Skill' },
+  ]
+  referenceImages.forEach((image, index) => {
+    content.push({ type: 'input_text', text: `参考图 ${index + 1}：${image.name}` })
+    content.push({ type: 'input_image', image_url: image.dataUrl })
+  })
+  const text = await requestModelJson({
+    settings,
+    profile,
+    instructions:
+      '分析参考图并生成可复用视觉 Skill。只替换主体主题，保留视觉风格、构图、材质、色彩、光影和背景。所有提示词模板必须使用 {theme} 作为唯一主题占位符。只返回 JSON。',
+    userContent: content,
+    responseFormat: VISUAL_SKILL_FORMAT,
+    timeoutLabel: '视觉 Skill 创建',
+  })
+  return text
 }
 
 /** 从维度策略指令反解出策略对象（用于质量校验）；解析失败返回 null。 */

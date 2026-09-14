@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   allocateSopPromptCounts,
   buildSopPromptBatchRequest,
@@ -8,6 +8,7 @@ import {
   getSopPromptBatchSizes,
   getSopTotalImageCount,
   parseSopPromptBatchResponse,
+  parseSopSeriesPromptBatchResponse,
   selectSopPromptSources,
   SOP_PROMPT_GENERATOR_INSTRUCTION,
 } from './sopPromptBatch'
@@ -83,6 +84,31 @@ describe('SOP prompt batch', () => {
     expect(requests).toEqual([10, 10, 2])
     expect(prompts).toHaveLength(12)
     expect(new Set(prompts).size).toBe(12)
+  })
+
+  it('skips retrying when the caller marks the error as non-retryable', async () => {
+    const timeoutError = Object.assign(new Error('SOP 提示词生成超时：超过 600 秒仍未完成'), {
+      name: 'TimeoutError',
+    })
+    const generateBatch = vi.fn().mockRejectedValue(timeoutError)
+
+    await expect(
+      generateSopPromptBatches(2, generateBatch, {
+        isRetryable: (error) => !(error instanceof Error && error.name === 'TimeoutError'),
+      }),
+    ).rejects.toThrow('SOP 提示词生成超时：超过 600 秒仍未完成')
+
+    expect(generateBatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries twice by default when the caller does not classify the error', async () => {
+    const generateBatch = vi.fn().mockRejectedValue(new Error('模型未返回新的可用提示词'))
+
+    await expect(generateSopPromptBatches(1, generateBatch)).rejects.toThrow(
+      '提示词批次生成失败，已自动尝试 2 次：模型未返回新的可用提示词',
+    )
+
+    expect(generateBatch).toHaveBeenCalledTimes(2)
   })
 
   it('keeps requesting the remaining deficit when a model returns a partial batch', async () => {
@@ -291,5 +317,49 @@ describe('SOP prompt batch', () => {
         existingPrompts: ['1. 蓝色背景、白色产品'],
       }),
     ).toEqual(['红色背景，白色产品'])
+  })
+
+  it('parses a series batch that matches the requested group and member counts', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"蓝色背景","prompts":["图1","图2","图3"]},{"fixed":"红色背景","prompts":["图4","图5","图6"]}]}',
+      2,
+      3,
+    )
+
+    expect(groups.map((group) => group.groupIndex)).toEqual([0, 1])
+    expect(groups.flatMap((group) => group.prompts)).toEqual(['图1', '图2', '图3', '图4', '图5', '图6'])
+    expect(groups[0].fixed).toBe('蓝色背景')
+  })
+
+  it('keeps fewer series groups than requested so the batch loop can fill the deficit', () => {
+    const groups = parseSopSeriesPromptBatchResponse('{"series":[{"fixed":"蓝","prompts":["图1","图2","图3"]}]}', 2, 3)
+
+    expect(groups.flatMap((group) => group.prompts)).toEqual(['图1', '图2', '图3'])
+  })
+
+  it('truncates extra series groups and drops groups with too few members', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      JSON.stringify({
+        series: [
+          { fixed: 'A', prompts: ['图1', '图2', '图3'] },
+          { fixed: 'B', prompts: ['图4', '图5'] },
+          { fixed: 'C', prompts: ['图6', '图7', '图8'] },
+          { fixed: 'D', prompts: ['图9', '图10', '图11'] },
+        ],
+      }),
+      2,
+      3,
+    )
+
+    expect(groups.map((group) => group.fixed)).toEqual(['A', 'C'])
+    expect(groups.map((group) => group.groupIndex)).toEqual([0, 2])
+  })
+
+  it('rejects a series batch without a complete group', () => {
+    expect(() => parseSopSeriesPromptBatchResponse('{"series":[{"fixed":"A","prompts":["图1"]}]}', 2, 3)).toThrow(
+      '模型未返回完整的一组系列提示词，每组需要 3 条',
+    )
+    expect(() => parseSopSeriesPromptBatchResponse('{"prompts":["图1"]}', 1, 2)).toThrow('系列提示词没有返回内容')
+    expect(() => parseSopSeriesPromptBatchResponse('不是 JSON', 1, 2)).toThrow('系列提示词返回格式不正确')
   })
 })

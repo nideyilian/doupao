@@ -526,59 +526,85 @@ export default function SopBatchDetailModal({
             )}
             {viewMode === 'grouped' ? (
               <div data-testid="sop-batch-results-grid" style={imageGridStyle} className="grid items-start gap-3">
-                {currentTasks.map((task) => {
-                  const results = getTaskResultItems(task)
-                  const promptIndex = task.sopBatch?.promptIndex ?? 1
-                  const promptCopied = copiedPromptId === task.id
+                {Array.from(
+                  currentTasks
+                    .reduce((groups, task) => {
+                      const key = task.sopBatch?.series?.seriesId ?? `prompt-${task.id}`
+                      const list = groups.get(key) ?? []
+                      list.push(task)
+                      groups.set(key, list)
+                      return groups
+                    }, new Map<string, TaskRecord[]>())
+                    .values(),
+                ).map((group) => {
+                  const series = group[0]?.sopBatch?.series
                   return (
-                    <article key={task.id} className="rounded-ds-xl border border-ds-border p-3 dark:border-ds-border">
-                      <div className="mb-3 flex items-start gap-2.5">
-                        <span className="flex h-ds-control-sm min-w-7 shrink-0 items-center justify-center rounded-lg bg-ds-primary-subtle px-2 text-xs font-semibold text-ds-primary dark:bg-ds-primary/30 dark:text-ds-primary">
-                          {promptIndex}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <PromptPreview prompt={task.prompt} promptIndex={promptIndex} />
-                          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                            <span className="text-xs tabular-nums text-ds-muted">
-                              {task.outputImages.length}/{task.params.n ?? 1} 张
-                            </span>
-                            <div className="flex items-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => void copyPrompt(task)}
-                                aria-label={
-                                  promptCopied ? `第 ${promptIndex} 条提示词已复制` : `复制第 ${promptIndex} 条提示词`
-                                }
-                                title={promptCopied ? '已复制' : '复制完整提示词'}
-                                className={`flex h-ds-control-sm shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-focus ${promptCopied ? 'bg-ds-success-subtle text-ds-success dark:bg-ds-success/10 dark:text-ds-success' : 'text-ds-muted hover:bg-ds-subtle hover:text-ds-text dark:text-ds-muted dark:hover:bg-ds-surface dark:hover:text-ds-text'}`}
-                              >
-                                {promptCopied ? <Check size={12} /> : <Copy size={12} />}
-                                {promptCopied ? '已复制' : '复制'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void retryTask(task)}
-                                disabled={task.status === 'running' || task.falRecoverable || task.customRecoverable}
-                                aria-label={`再次生成第 ${promptIndex} 条提示词`}
-                                className="flex h-ds-control-sm shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium text-ds-primary transition hover:bg-ds-primary-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-focus disabled:cursor-not-allowed disabled:opacity-40 dark:text-ds-primary dark:hover:bg-ds-primary/30"
-                              >
-                                <RefreshCw size={12} />
-                                再次生成
-                              </button>
+                    <section key={series?.seriesId ?? group[0].id} className="contents">
+                      {group.map((task) => {
+                        const results = getTaskResultItems(task)
+                        const promptIndex = task.sopBatch?.promptIndex ?? 1
+                        const promptCopied = copiedPromptId === task.id
+                        return (
+                          <article
+                            key={task.id}
+                            className="rounded-ds-xl border border-ds-border p-3 dark:border-ds-border"
+                          >
+                            <div className="mb-3 flex items-start gap-2.5">
+                              <span className="flex h-ds-control-sm min-w-7 shrink-0 items-center justify-center rounded-lg bg-ds-primary-subtle px-2 text-xs font-semibold text-ds-primary dark:bg-ds-primary/30 dark:text-ds-primary">
+                                {promptIndex}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <PromptPreview prompt={task.prompt} promptIndex={promptIndex} />
+                                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-xs tabular-nums text-ds-muted">
+                                    {task.outputImages.length}/{task.params.n ?? 1} 张
+                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => void copyPrompt(task)}
+                                      aria-label={
+                                        promptCopied
+                                          ? `第 ${promptIndex} 条提示词已复制`
+                                          : `复制第 ${promptIndex} 条提示词`
+                                      }
+                                      title={promptCopied ? '已复制' : '复制完整提示词'}
+                                      className={`flex h-ds-control-sm shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-focus ${promptCopied ? 'bg-ds-success-subtle text-ds-success dark:bg-ds-success/10 dark:text-ds-success' : 'text-ds-muted hover:bg-ds-subtle hover:text-ds-text dark:text-ds-muted dark:hover:bg-ds-surface dark:hover:text-ds-text'}`}
+                                    >
+                                      {promptCopied ? <Check size={12} /> : <Copy size={12} />}
+                                      {promptCopied ? '已复制' : '复制'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void retryTask(task)}
+                                      disabled={
+                                        task.status === 'running' || task.falRecoverable || task.customRecoverable
+                                      }
+                                      aria-label={`再次生成第 ${promptIndex} 条提示词`}
+                                      className="flex h-ds-control-sm shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium text-ds-primary transition hover:bg-ds-primary-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-focus disabled:cursor-not-allowed disabled:opacity-40 dark:text-ds-primary dark:hover:bg-ds-primary/30"
+                                    >
+                                      <RefreshCw size={12} />
+                                      再次生成
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        </div>
-                      </div>
-                      {results.length > 0 ? (
-                        <div className={`grid items-start gap-2 ${results.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                          {results.map((item) => renderPreview(item))}
-                        </div>
-                      ) : (
-                        <div className="flex h-24 items-center justify-center rounded-ds-lg bg-ds-surface text-xs text-ds-muted dark:bg-ds-subtle/60">
-                          暂无可用结果
-                        </div>
-                      )}
-                    </article>
+                            {results.length > 0 ? (
+                              <div
+                                className={`grid items-start gap-2 ${results.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}
+                              >
+                                {results.map((item) => renderPreview(item))}
+                              </div>
+                            ) : (
+                              <div className="flex h-24 items-center justify-center rounded-ds-lg bg-ds-surface text-xs text-ds-muted dark:bg-ds-subtle/60">
+                                暂无可用结果
+                              </div>
+                            )}
+                          </article>
+                        )
+                      })}
+                    </section>
                   )
                 })}
               </div>

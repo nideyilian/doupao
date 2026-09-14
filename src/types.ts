@@ -381,6 +381,14 @@ export interface SopBatchTaskMeta {
   promptIndex: number
   promptCount: number
   imagesPerPrompt?: number
+  /** 系列 SOP 的组内位置；旧任务没有此字段时按普通 SOP 处理。 */
+  series?: {
+    seriesId: string
+    groupIndex: number
+    groupCount: number
+    seriesIndex: number
+    seriesCount: number
+  }
 }
 
 export interface SopBatchSnapshot {
@@ -424,6 +432,7 @@ export interface SopBatchSnapshot {
     sourceId?: string
     referenceImageIds?: string[]
     deleted?: boolean
+    series?: { groupIndex: number; seriesIndex: number; seriesCount: number }
   }>
   params: TaskParams
 }

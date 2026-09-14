@@ -20,6 +20,7 @@ import {
 import { getAdNegativeRule } from './adNegativeRules'
 import { apiFetch as fetch } from './desktopApiFetch'
 import { getAgentTextProtocol, isGeminiModel, normalizeSettings } from './apiProfiles'
+import { prepareAgentImageDataUrls, prepareAgentInputImages } from './agentRequestImages'
 
 export interface AgentApiMessage {
   role: 'user' | 'assistant'
@@ -49,7 +50,9 @@ export interface AgentApiResult {
 }
 
 const AGENT_IMAGE_INSTRUCTIONS = [
-  'You are an image-generation assistant in a multi-turn gallery app.',
+  'You are a helpful general-purpose assistant in a multi-turn gallery app.',
+  'Answer normal conversation, questions, analysis, writing, and other non-image requests directly in text.',
+  'Only generate images when the user explicitly requests image generation, editing, or visual output.',
   '',
   '## Progressive Batch Generation',
   'For multi-image requests, use a progressive batching strategy to ensure consistency:',
@@ -817,10 +820,11 @@ export async function callAgentResponsesApi(opts: AgentApiCallOptions): Promise<
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
+    const requestInput = await prepareAgentInputImages(input, { signal: controller.signal })
     const body: Record<string, unknown> = {
       model: profile.model || settings.model,
       instructions: createAgentInstructions(settings, params),
-      input,
+      input: requestInput,
       tools: createAgentTools(params, profile, settings, maskDataUrl),
     }
     if (profile.streamImages) {
@@ -1036,11 +1040,12 @@ export async function callAgentChatCompletionsApi(opts: AgentApiCallOptions): Pr
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
+    const requestInput = await prepareAgentInputImages(input, { signal: controller.signal })
     const body: Record<string, unknown> = {
       model: profile.model || settings.model,
       messages: [
         { role: 'system', content: createAgentInstructions(settings, params) },
-        ...toChatCompletionMessages(input),
+        ...toChatCompletionMessages(requestInput),
       ],
       tools: createChatCompletionTools(params, profile, settings),
     }
@@ -2069,27 +2074,39 @@ export async function callBatchImageSingle(opts: {
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
-  const abortFromCaller = () => controller.abort()
-  if (signal?.aborted) controller.abort()
+  let timedOut = false
+  const timeoutId = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, profile.timeout * 1000)
+  const abortFromCaller = () => controller.abort(signal?.reason)
+  if (signal?.aborted) controller.abort(signal.reason)
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
+    const preparedReferenceImageDataUrls = await prepareAgentImageDataUrls(referenceImageDataUrls, {
+      signal: controller.signal,
+    })
+    if (preparedReferenceImageDataUrls.some((dataUrl) => !dataUrl)) {
+      throw new Error('Agent 参考图片总大小超过请求上限，请减少参考图数量或尺寸后重试')
+    }
+    const requestReferenceImageDataUrls = preparedReferenceImageDataUrls as string[]
+
     // Build input: reference id mapping + prompt-rewrite guard + reference images.
     const referenceMapping =
-      referenceImageDataUrls.length > 0
+      requestReferenceImageDataUrls.length > 0
         ? `Attached reference images correspond to these ids, in order: ${(referenceIds ?? []).map((id) => `<ref id="${id}" />`).join(', ') || 'reference images'}.`
         : ''
     const promptText = allowPromptRewrite ? prompt : `${PROMPT_REWRITE_GUARD_PREFIX}\n${prompt}`
     const guardedPrompt = [referenceMapping, promptText].filter(Boolean).join('\n\n')
     let input: unknown
-    if (referenceImageDataUrls.length > 0) {
+    if (requestReferenceImageDataUrls.length > 0) {
       input = [
         {
           role: 'user',
           content: [
             { type: 'input_text', text: guardedPrompt },
-            ...referenceImageDataUrls.map((dataUrl) => ({
+            ...requestReferenceImageDataUrls.map((dataUrl) => ({
               type: 'input_image',
               image_url: dataUrl,
             })),
@@ -2103,10 +2120,10 @@ export async function callBatchImageSingle(opts: {
     // Build image_generation tool with current params
     const tool: Record<string, unknown> = {
       type: 'image_generation',
-      action: referenceImageDataUrls.length > 0 ? 'auto' : 'generate',
+      action: requestReferenceImageDataUrls.length > 0 ? 'auto' : 'generate',
       // 带参考图的编辑请求统一使用 size=auto：输出尺寸跟随参考图比例，
       // 避免部分兼容中转站对非 auto 尺寸的编辑请求挂起/拒绝。
-      size: referenceImageDataUrls.length > 0 ? 'auto' : params.size,
+      size: requestReferenceImageDataUrls.length > 0 ? 'auto' : params.size,
       output_format: params.output_format,
       moderation: params.moderation,
       quality: params.quality,
@@ -2211,6 +2228,14 @@ export async function callBatchImageSingle(opts: {
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
   } catch (err) {
+    // 超时与用户主动取消都会 abort，必须区分，否则超时会被误报成「请求已取消」
+    if (timedOut && !signal?.aborted) {
+      return {
+        batchItemId,
+        image: null,
+        error: `图片请求超时：超过 ${profile.timeout} 秒仍未完成，请检查图片模型或接口连接，或提高超时时间。`,
+      }
+    }
     if (controller.signal.aborted || signal?.aborted) {
       return { batchItemId, image: null, error: '请求已取消' }
     }

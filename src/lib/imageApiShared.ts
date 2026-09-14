@@ -168,6 +168,7 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
 
 export async function getApiErrorMessage(response: Response): Promise<string> {
   const statusLabel = `HTTP ${response.status}`
+  if (response.status === 413) return `${statusLabel}：请求体过大，请减少参考图数量或图片尺寸后重试`
   let errorMsg = ''
   try {
     const rawText = await response.text()
