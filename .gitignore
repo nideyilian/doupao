@@ -7,6 +7,9 @@ dev-proxy.config.json
 release/
 release_new/
 release-v2/
+# 带版本号的打包输出目录（release/ 匹配不到 release-0.8.14/ 这种名字）
+release-*/
+dist-verify/
 *.exe
 *.blockmap
 *.nupkg
