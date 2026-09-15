@@ -48,3 +48,27 @@ jobs:
           EP_DRAFT: false
           EP_PRE_RELEASE: false
         run: npx electron-builder --publish always --win
+
+      # latest.yml 是 electron-updater 判断「有没有新版本」的唯一入口，缺了它所有存量用户
+      # 都收不到更新，而构建本身仍然显示 success（v0.8.15 就是这么坏的：自动更新与安装包
+      # 下载同时失效）。这里做一次端到端校验，让坏发布直接失败而不是静默通过。
+      - name: Verify release assets are downloadable
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag.StartsWith('v')) { $tag = 'v' + (node -p "require('./package.json').version") }
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/latest.yml"
+          for ($i = 1; $i -le 5; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri $url -UseBasicParsing -ErrorAction Stop
+              if ($r.StatusCode -eq 200 -and $r.Content -match 'version:') {
+                Write-Host "OK: $url"
+                exit 0
+              }
+              Write-Host "unexpected content on attempt ${i}"
+            } catch {
+              Write-Host "attempt ${i} failed: $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw "latest.yml 无法下载，发布不完整（安装包与自动更新均会失效）：$url"
