@@ -14,7 +14,7 @@ const GENERAL_SOP_GENERATOR_INSTRUCTION = `你是“标准作业程序（SOP）�
 7. 收到参考图片时，先综合分析全部图片的共同规律和关键差异，包括构图、主体、层级、文案区域、色彩、光影、材质、镜头、风格和视觉约束，再把观察结果转换成可重复执行的步骤；不要把某张图片的偶然细节误当成通用规则。
 8. 只有图片、没有文字需求时，也要基于图片推断其视觉生产流程，并把无法确认的业务信息标为待输入变量。
 
-系列图需求识别规则：当用户明确要求系列图、组图、连图、成套图片，或要求同组图片保持统一而只改变主体、背景等指定内容时，将 sopKind 设置为 series；否则设置为 single。系列图片数量只能是 2 或 3，未指定时默认 3。系列 SOP 必须在正文中明确组内固定维度和允许变化维度。
+系列图需求识别规则：当用户明确要求系列图、组图、连图、成套图片，或要求同组图片保持统一而只改变主体、背景等指定内容时，将 sopKind 设置为 series；否则设置为 single。系列图片数量只能是 2 或 3，未指定时默认 3。系列 SOP 必须单列「组内固定视觉常量」一节，把画风、构图骨架、排版结构、色彩体系、光线与文字规则写成可逐字复用的具体规则（不得只写“保持一致”“风格统一”这类空话），并单列「组内可变维度」一节写明允许变化的范围。
 
 只返回一个合法 JSON 对象，不要 Markdown 代码围栏，不要解释。格式必须为：
 {
@@ -424,14 +424,23 @@ export function parseGeneratedSop(text: string): GeneratedSop {
   return { name, description, sop, ...(parsedKind ? { kind: parsedKind, seriesConfig } : {}) }
 }
 
-function normalizeSeriesConfig(value: Record<string, unknown>): SopSeriesConfig {
+/**
+ * 归一化系列配置。AI 解析与「SOP 管理中心」的手工编辑共用同一套默认值，
+ * 空数组视为未填写并回落到默认维度，避免生成出「固定块内容为的完整视觉规则」这类空规则。
+ */
+export function normalizeSeriesConfig(value: {
+  imageCount?: unknown
+  fixedDimensions?: unknown
+  variableDimensions?: unknown
+}): SopSeriesConfig {
   const imageCount = value.imageCount === 2 ? 2 : 3
-  const toDimensions = (input: unknown, fallback: string[]) =>
-    Array.isArray(input)
-      ? input
-          .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
-          .map((item) => item.trim())
-      : fallback
+  const toDimensions = (input: unknown, fallback: string[]) => {
+    if (!Array.isArray(input)) return fallback
+    const dimensions = input
+      .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+      .map((item) => item.trim())
+    return dimensions.length ? dimensions : fallback
+  }
   return {
     imageCount,
     fixedDimensions: toDimensions(value.fixedDimensions, [

@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { act, create } from 'react-test-renderer'
 import { DEFAULT_PARAMS, type SopBatchSnapshot, type TaskRecord } from '../../../types'
 import GallerySopBatchModal, { getGallerySopPromptRunStorageKey } from './GallerySopBatchModal'
+import { SOP_SERIES_ANCHOR_INSTRUCTION } from '../../../lib/sopSeriesAnchor'
 
 const generateMocks = vi.hoisted(() => ({
   generatePromptsFromSopStore: vi.fn(),
@@ -44,6 +45,18 @@ const requirementState = vi.hoisted(() => ({
       createdAt: 2,
       updatedAt: 2,
     },
+    {
+      id: 'sop-series',
+      name: '系列海报 SOP',
+      description: '同组统一视觉规范',
+      content: '同组保持同一视觉规范，只改主体与背景。',
+      kind: 'series' as const,
+      seriesConfig: { imageCount: 3 as const, fixedDimensions: ['视觉风格'], variableDimensions: ['主体', '背景'] },
+      source: 'manual',
+      createdBy: 'user-1',
+      createdAt: 3,
+      updatedAt: 3,
+    },
   ],
 }))
 const storeState = vi.hoisted(() => ({
@@ -80,7 +93,9 @@ vi.mock('../../../store', () => ({
   ensureImageThumbnailCached: storeMocks.ensureImageThumbnailCached,
   submitTaskWithData: storeMocks.submitTaskWithData,
   subscribeImageThumbnail: storeMocks.subscribeImageThumbnail,
-  useStore: (selector: (state: typeof storeState) => unknown) => selector(storeState),
+  useStore: Object.assign((selector: (state: typeof storeState) => unknown) => selector(storeState), {
+    getState: () => storeState,
+  }),
 }))
 vi.mock('../../../lib/db', () => ({
   deleteSopBatchSnapshot: dbMocks.deleteSopBatchSnapshot,
@@ -1658,5 +1673,73 @@ describe('GallerySopBatchModal folder isolation', () => {
       selectedSopId: 'sop-1',
       availablePrompts: 1,
     })
+  })
+
+  it('anchors the remaining series members to the first picture of their group', async () => {
+    generateMocks.generatePromptsFromSopStore.mockImplementation(async (_sop, _quantity, _brief, options) => {
+      const prompts = [
+        '系列统一规范（非画面文字）：蓝色背景\n本张画面：咖啡杯',
+        '系列统一规范（非画面文字）：蓝色背景\n本张画面：茶杯',
+        '系列统一规范（非画面文字）：蓝色背景\n本张画面：水壶',
+      ]
+      await options.onBatch?.(prompts, 1, 1)
+      return prompts
+    })
+    storeMocks.ensureImageCached.mockResolvedValue('data:image/png;base64,anchor')
+    storeMocks.submitTaskWithData.mockImplementation(
+      async (data: { prompt: string; sopBatch?: TaskRecord['sopBatch'] }) => {
+        // 首图出图后，同组其余画面才拿得到锚定参考图
+        if (data.sopBatch?.series?.seriesIndex === 1) {
+          storeState.tasks = [
+            {
+              id: 'task-anchor',
+              prompt: data.prompt,
+              params: { ...DEFAULT_PARAMS },
+              inputImageIds: [],
+              outputImages: ['image-anchor'],
+              sopBatch: data.sopBatch,
+              status: 'done',
+              error: null,
+              createdAt: 10,
+              finishedAt: 20,
+              elapsed: 10,
+            } as TaskRecord,
+          ]
+          return 'task-anchor'
+        }
+        return 'task-member'
+      },
+    )
+
+    let renderer: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <GallerySopBatchModal
+          workspaceTabId="tab-a"
+          initialSopId="sop-series"
+          initialPromptCount={1}
+          initialSeriesMode
+          autoStart
+          onAutoStartConsumed={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    mountedRenderers.push(renderer!)
+
+    await act(async () => {
+      renderer!.root.findAllByProps({ 'aria-label': '生成 3 张图片' })[0].props.onClick()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(storeMocks.submitTaskWithData).toHaveBeenCalledTimes(3)
+    const calls = storeMocks.submitTaskWithData.mock.calls.map(([data]) => data)
+    expect(calls[0].inputImages).toEqual([])
+    expect(calls[0].prompt).not.toContain(SOP_SERIES_ANCHOR_INSTRUCTION)
+    for (const call of calls.slice(1)) {
+      expect(call.inputImages).toEqual([{ id: 'image-anchor', dataUrl: 'data:image/png;base64,anchor' }])
+      expect(call.prompt.startsWith(SOP_SERIES_ANCHOR_INSTRUCTION)).toBe(true)
+    }
   })
 })

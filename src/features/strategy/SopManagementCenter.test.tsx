@@ -119,6 +119,11 @@ function openMoreSopActions(root: ReactTestInstance) {
   act(() => root.findByProps({ 'aria-label': '更多 SOP 操作' }).props.onClick())
 }
 
+/** 「系列图」开关的宿主 input：Switch 是组合组件，按 props 找会同时命中组件与 input。 */
+function seriesKindSwitch(root: ReactTestInstance) {
+  return root.findAllByType('input').find((input) => input.props['aria-label'] === '把该 SOP 标记为系列图')
+}
+
 function renderCenter(
   options: {
     selectedSopId?: string
@@ -231,6 +236,78 @@ describe('SopManagementCenter apply and save actions', () => {
 
     expect(result.onSaveItem).toHaveBeenCalledWith(expect.objectContaining({ id: item.id, name: '新版商品图 SOP' }))
     expect(result.onApply).not.toHaveBeenCalled()
+    result.renderer.unmount()
+  })
+
+  it('marks an SOP as a series and persists the default series config', () => {
+    let result!: ReturnType<typeof renderCenter>
+    act(() => {
+      result = renderCenter()
+    })
+
+    expect(seriesKindSwitch(result.renderer.root)).toBeTruthy()
+    expect(findButton(result.renderer.root, '保存修改')?.props.disabled).toBe(true)
+
+    act(() => seriesKindSwitch(result.renderer.root)!.props.onChange({ target: { checked: true } }))
+
+    const saveButton = findButton(result.renderer.root, '保存修改')
+    expect(saveButton?.props.disabled).toBe(false)
+    act(() => saveButton!.props.onClick())
+
+    expect(result.onSaveItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: item.id,
+        kind: 'series',
+        seriesConfig: {
+          imageCount: 3,
+          fixedDimensions: ['视觉风格', '构图方式', '排版方式', '文案结构', '色彩体系', '光线', '镜头语言'],
+          variableDimensions: ['主体', '背景'],
+        },
+      }),
+    )
+    result.renderer.unmount()
+  })
+
+  it('edits the series group size and dimensions and drops them when switched off', () => {
+    let result!: ReturnType<typeof renderCenter>
+    act(() => {
+      result = renderCenter()
+    })
+
+    act(() => seriesKindSwitch(result.renderer.root)!.props.onChange({ target: { checked: true } }))
+
+    const fixedInput = result.renderer.root
+      .findAllByType('input')
+      .find((input) => typeof input.props.value === 'string' && input.props.value.includes('视觉风格'))
+    expect(fixedInput).toBeTruthy()
+    // 末尾顿号必须保留在输入框里，否则无法继续输入下一个维度
+    act(() => fixedInput!.props.onChange({ target: { value: '视觉风格、排版方式、' } }))
+    expect(fixedInput!.props.value).toBe('视觉风格、排版方式、')
+
+    const imageCountSelect = result.renderer.root.findAllByType('select').find((select) => select.props.value === '3')
+    act(() => imageCountSelect!.props.onChange({ target: { value: '2' } }))
+
+    act(() => findButton(result.renderer.root, '保存修改')!.props.onClick())
+
+    expect(result.onSaveItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: item.id,
+        kind: 'series',
+        seriesConfig: expect.objectContaining({
+          imageCount: 2,
+          fixedDimensions: ['视觉风格', '排版方式'],
+        }),
+      }),
+    )
+
+    // 关掉系列图后 kind 与 seriesConfig 一并清除，不留孤儿字段
+    result.onSaveItem.mockClear()
+    act(() => seriesKindSwitch(result.renderer.root)!.props.onChange({ target: { checked: false } }))
+    act(() => findButton(result.renderer.root, '保存修改')!.props.onClick())
+
+    expect(result.onSaveItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: item.id, kind: undefined, seriesConfig: undefined }),
+    )
     result.renderer.unmount()
   })
 
@@ -1082,7 +1159,9 @@ describe('SopManagementCenter apply and save actions', () => {
       result = renderCenter({ items: [item, item2] })
     })
 
-    expect(result.renderer.root.findAllByProps({ type: 'checkbox' })).toHaveLength(0)
+    const rows = result.renderer.root.findAllByProps({ role: 'listitem' })
+    // 列表行靠 Ctrl/Cmd 多选，不使用复选框；编辑面板的「系列图」开关由 checkbox 实现，不在列表内
+    expect(rows.flatMap((row) => row.findAllByProps({ type: 'checkbox' }))).toHaveLength(0)
 
     act(() =>
       result.renderer.root.findByProps({ title: item.name }).props.onClick({
@@ -1099,7 +1178,6 @@ describe('SopManagementCenter apply and save actions', () => {
       }),
     )
 
-    const rows = result.renderer.root.findAllByProps({ role: 'listitem' })
     const data = new Map<string, string>()
     const dataTransfer = {
       effectAllowed: '',

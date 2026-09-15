@@ -401,7 +401,10 @@ export async function generatePromptsFromSopStore(
   const textModel = (profile.model || settings.model || '').trim()
   let structuredOutputEnabled = !/\b(gemini|deepseek|glm|kimi|claude|qwen)\b/i.test(textModel)
   const timeoutMs = resolveTextRequestTimeoutMs(profile.timeout)
-  const seriesCount = options.context?.seriesConfig?.imageCount ?? 1
+  const seriesConfig = options.context?.seriesConfig
+  // 单成员重生成只请求组内一条提示词：批次单位与组内条数都按 1 计算，
+  // 否则会为了重生成一张画面而多生成并丢弃整组提示词。
+  const seriesCount = seriesConfig ? (options.context?.seriesMemberOnly ? 1 : seriesConfig.imageCount) : 1
   return generateSopPromptBatches(
     quantity,
     async (batchQuantity, existingPrompts) => {
@@ -410,7 +413,6 @@ export async function generatePromptsFromSopStore(
         ...options.context,
         existingPrompts,
       })
-      const seriesConfig = options.context?.seriesConfig
       const send = (useStructuredOutput: boolean) => {
         const textFormat = seriesConfig
           ? buildSeriesPromptTextFormat(requestQuantity, seriesCount)
@@ -504,7 +506,12 @@ export async function generatePromptsFromSopStore(
       const payload = await response.json()
       const resultText = useChatCompletions ? extractChatCompletionsText(payload) : extractResponseText(payload)
       if (seriesConfig) {
-        const groups = parseSopSeriesPromptBatchResponse(resultText, requestQuantity, seriesCount)
+        const groups = parseSopSeriesPromptBatchResponse(
+          resultText,
+          requestQuantity,
+          seriesCount,
+          options.context?.seriesFixedBlock,
+        )
         return groups.flatMap((group) => group.prompts)
       }
       return parseSopPromptBatchResponse(resultText, batchQuantity, { exact: false, existingPrompts })
@@ -597,6 +604,8 @@ export async function generateVariablePromptsFromSopStore(
     onBatch?: (prompts: string[], completed: number, total: number) => void | Promise<void>
     beforeBatch?: () => void | Promise<void>
     signal?: AbortSignal
+    /** 系列模式下批次单位是「组」：quantity 为组数，每组展开 outputUnitSize 条画面。 */
+    outputUnitSize?: number
   } = {},
 ) {
   const parsed = parseVariablePrompt(sop.content)
@@ -615,7 +624,9 @@ export async function generateVariablePromptsFromSopStore(
   }
 
   // 模板实际可展开的组合数；请求数量不能超过组合数（否则必然重复）
-  const targetCount = Math.max(1, Math.trunc(quantity))
+  // quantity 是批次单位数（系列模式下为组数），展开成实际画面条数再和组合数比较
+  const outputUnitSize = Math.max(1, Math.trunc(options.outputUnitSize ?? 1))
+  const targetCount = Math.max(1, Math.trunc(quantity)) * outputUnitSize
   let template = sop.content
 
   // 组合不足时自动调 AI 扩词条（仅当目标数量超过组合数，且未显式关闭）
@@ -632,14 +643,15 @@ export async function generateVariablePromptsFromSopStore(
       throw new Error(`扩词条后模板格式异常：${reparsed.errors[0] ?? '请检查可变项格式'}`)
     }
   }
-  // 用扩词条后的模板重新计算组合上限
+  // 用扩词条后的模板重新计算组合上限；按整组向下取整，避免凑不满一组时 exact 校验失败
   const finalParsed = parseVariablePrompt(template)
   const combinationLimit = Math.min(targetCount, finalParsed.combinationCount)
+  const unitCount = Math.max(1, Math.floor(combinationLimit / outputUnitSize))
 
   const seed = `${sop.id}:${brief.trim() || 'default'}`
   // 复用 generateSopPromptBatches 驱动：本地展开作为唯一一批，走现有 onBatch 逐条推进/提交
   return generateSopPromptBatches(
-    combinationLimit,
+    unitCount,
     async () => {
       return renderVariablePromptBatch(template, combinationLimit, seed)
     },
@@ -651,6 +663,7 @@ export async function generateVariablePromptsFromSopStore(
       onBatch: options.onBatch,
       beforeBatch: options.beforeBatch,
       signal: options.signal,
+      outputUnitSize,
     },
   )
 }

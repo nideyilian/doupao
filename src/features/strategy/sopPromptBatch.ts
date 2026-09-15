@@ -16,7 +16,21 @@ export interface SopPromptBatchContext {
   totalPromptCount?: number
   existingPrompts?: string[]
   seriesConfig?: SopSeriesConfig
+  /** 单成员重生成：只输出组内一条提示词，固定块由 seriesFixedBlock 逐字沿用。 */
+  seriesMemberOnly?: boolean
+  /**
+   * 组内固定块：非空时要求模型逐字沿用，并作为拼装时的唯一固定块。
+   * 单成员重生成、批次补缺都用它保证同组画面共用同一段视觉规范。
+   */
+  seriesFixedBlock?: string
 }
+
+/**
+ * 系列图固定块前缀。固定块单独成段，既能被逐字复用，也能被 getSopSeriesFixedBlock 重新提取；
+ * 文案里显式声明「非画面文字」，避免图片模型把它当作要渲染的文字元素。
+ */
+export const SOP_SERIES_FIXED_PREFIX = '系列统一规范（非画面文字）：'
+export const SOP_SERIES_VARIABLE_PREFIX = '本张画面：'
 
 export const SOP_PROMPT_GENERATOR_INSTRUCTION = `你是图像生成提示词编排专家，也是可靠的 SOP 执行器。
 
@@ -251,6 +265,63 @@ export function normalizeSopPromptCandidates(candidates: string[], limit: number
   return normalized
 }
 
+function normalizeSopSeriesFixedBlock(value: string) {
+  // 固定块必须单行：换行会破坏「首个段落即固定块」的提取约定，也让逐字复用难以核对。
+  return value.replace(/\s*\n+\s*/g, ' ').trim()
+}
+
+function getSopSeriesComparisonKey(value: string) {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+/**
+ * 模型可能已把固定块原样写在成员提示词开头；此时剥离掉，避免拼装后固定块重复出现。
+ * 严格前缀匹配失败时退化为「忽略空白与标点」的宽松匹配，再按原文位置切分。
+ */
+export function stripSopSeriesFixedPrefix(memberPrompt: string, fixedBlock: string) {
+  const member = memberPrompt.trim()
+  const fixed = normalizeSopSeriesFixedBlock(fixedBlock)
+  if (!member || !fixed) return member
+  if (member.startsWith(fixed))
+    return member
+      .slice(fixed.length)
+      .replace(/^[\s，,。;；:：、-]+/, '')
+      .trim()
+
+  const fixedKey = getSopSeriesComparisonKey(fixed)
+  const memberKey = getSopSeriesComparisonKey(member)
+  if (!fixedKey || !memberKey.startsWith(fixedKey)) return member
+  let consumed = 0
+  let index = 0
+  while (index < member.length && consumed < fixedKey.length) {
+    if (!/[\s\p{P}\p{S}]/u.test(member[index])) consumed += 1
+    index += 1
+  }
+  return member
+    .slice(index)
+    .replace(/^[\s，,。;；:：、-]+/, '')
+    .trim()
+}
+
+/** 把组内固定块与单张变化部分拼成最终提示词；固定块逐字复用，组内成员完全一致。 */
+export function assembleSopSeriesPrompt(fixedBlock: string, memberPrompt: string) {
+  const fixed = normalizeSopSeriesFixedBlock(fixedBlock)
+  const member = stripSopSeriesFixedPrefix(memberPrompt, fixed)
+  if (!fixed) return member
+  if (!member) return `${SOP_SERIES_FIXED_PREFIX}${fixed}`
+  return `${SOP_SERIES_FIXED_PREFIX}${fixed}\n${SOP_SERIES_VARIABLE_PREFIX}${member}`
+}
+
+/** 从已生成的系列提示词中取回固定块，供单成员重生成复用（组内成员共用同一段）。 */
+export function getSopSeriesFixedBlock(prompt: string) {
+  const firstLine = prompt.trim().split('\n', 1)[0]?.trim() ?? ''
+  if (!firstLine.startsWith(SOP_SERIES_FIXED_PREFIX)) return ''
+  return firstLine.slice(SOP_SERIES_FIXED_PREFIX.length).trim()
+}
+
 export async function generateSopPromptBatches(
   totalPromptCount: number,
   generateBatch: (quantity: number, existingPrompts: string[]) => Promise<string[]>,
@@ -332,13 +403,18 @@ export function buildSopPromptBatchRequest(
     comparisonPrompts.length <= 12
       ? comparisonPrompts
       : [...comparisonPrompts.slice(0, 3), ...comparisonPrompts.slice(-9)]
-  const seriesInstruction = context.seriesConfig
+  const seriesConfig = context.seriesConfig
+  const seriesMemberCount = seriesConfig ? (context.seriesMemberOnly ? 1 : seriesConfig.imageCount) : 0
+  const seriesFixedBlock = normalizeSopSeriesFixedBlock(context.seriesFixedBlock ?? '')
+  const seriesInstruction = seriesConfig
     ? [
-        `当前 SOP 是系列组图模式：每组必须输出 ${context.seriesConfig.imageCount} 条完整提示词。`,
-        `同组固定维度：${context.seriesConfig.fixedDimensions.join('、')}。`,
-        `同组允许变化维度：${context.seriesConfig.variableDimensions.join('、')}。`,
-        '先为本组确定固定规则，再输出组内每张图的完整提示词；禁止使用“同上”“保持一致”等省略表达。',
-        `只返回合法 JSON：{"series":[{"fixed":"本组固定规则","prompts":["系列图1完整提示词","系列图2完整提示词"${context.seriesConfig.imageCount === 3 ? ',"系列图3完整提示词"' : ''}]}]}`,
+        `当前 SOP 是系列组图模式：每组必须输出 ${seriesMemberCount} 条提示词。`,
+        seriesFixedBlock
+          ? `本组固定块已锁定，必须逐字沿用，不得改写、增删、调换顺序或重新措辞：\n<FIXED>\n${seriesFixedBlock}\n</FIXED>`
+          : '每组只写一次「固定块」，用于锁定本系列的视觉常量，供组内每条提示词逐字复用。',
+        `固定块内容为${seriesConfig.fixedDimensions.join('、')}的完整视觉规则；必须是单段文本，不得换行分段，不得出现空行，不得包含“同上”“保持一致”等省略表达。`,
+        `每条提示词只写本张图的变化部分，内容为${seriesConfig.variableDimensions.join('、')}；不得重复固定块里已写过的风格、构图、排版、色彩与光线描述。`,
+        `只返回合法 JSON：{"series":[{"fixed":"本组固定块原文","prompts":["系列图1变化部分"${seriesMemberCount >= 2 ? ',"系列图2变化部分"' : ''}${seriesMemberCount === 3 ? ',"系列图3变化部分"' : ''}]}]}`,
       ].join('\n')
     : ''
   return [
@@ -378,7 +454,7 @@ ${JSON.stringify(boundedComparisonPrompts)}
     '',
     '输出前逐条自检：SOP 明确硬约束无遗漏、禁止项未违反、事实未臆造、每条都能脱离上下文独立使用。',
     context.seriesConfig
-      ? `严格生成 ${count} 组系列图，每组 ${context.seriesConfig.imageCount} 条成员提示词。`
+      ? `严格生成 ${count} 组系列图，每组 ${seriesMemberCount} 条成员提示词；同组每条提示词必须共用同一段固定块原文。`
       : `只返回合法 JSON：{"prompts":["完整提示词 1","完整提示词 2","共严格 ${count} 条"]}`,
     '禁止 Markdown 代码围栏、解释、标题和列表编号；禁止使用“同上”“保持一致”等省略表达。',
   ]
@@ -402,7 +478,12 @@ export function parseSopPromptBatchResponse(
   return normalized
 }
 
-export function parseSopSeriesPromptBatchResponse(text: string, groupCount: number, seriesCount: number) {
+export function parseSopSeriesPromptBatchResponse(
+  text: string,
+  groupCount: number,
+  seriesCount: number,
+  fixedBlock?: string,
+) {
   const expectedGroups = normalizeSopPromptCount(groupCount)
   const membersPerGroup = normalizeSopPromptCount(seriesCount)
   const source = text
@@ -427,6 +508,9 @@ export function parseSopSeriesPromptBatchResponse(text: string, groupCount: numb
   // 不支持 json_schema 的模型可能给出偏差的组数或组内条数：组数多则截断到目标组数，
   // 少则留给批次循环补缺口；组内不足的组直接丢弃，保证每组都是完整的一组画面，
   // 批次单位换算（outputUnitSize）才不会错位。
+  // 固定块一律由这里拼装：模型只负责写「变化部分」，组内共用同一段固定块原文，
+  // 避免各条提示词各自改写风格描述导致同组画面风格、构图、排版漂移。
+  const reusedFixedBlock = normalizeSopSeriesFixedBlock(fixedBlock ?? '')
   const groups: Array<{ groupIndex: number; fixed: string; prompts: string[] }> = []
   for (let index = 0; index < series.length && groups.length < expectedGroups; index += 1) {
     const entry = series[index]
@@ -437,10 +521,12 @@ export function parseSopSeriesPromptBatchResponse(text: string, groupCount: numb
           .map((item) => item.trim())
       : []
     if (prompts.length < membersPerGroup) continue
+    const groupFixed =
+      reusedFixedBlock || normalizeSopSeriesFixedBlock(typeof record.fixed === 'string' ? record.fixed : '')
     groups.push({
       groupIndex: index,
-      fixed: typeof record.fixed === 'string' ? record.fixed.trim() : '',
-      prompts: prompts.slice(0, membersPerGroup),
+      fixed: groupFixed,
+      prompts: prompts.slice(0, membersPerGroup).map((item) => assembleSopSeriesPrompt(groupFixed, item)),
     })
   }
   if (!groups.length) throw new Error(`模型未返回完整的一组系列提示词，每组需要 ${membersPerGroup} 条`)

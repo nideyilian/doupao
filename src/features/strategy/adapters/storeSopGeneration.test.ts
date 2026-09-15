@@ -348,6 +348,25 @@ describe('store SOP generation', () => {
       expect(onBatch).toHaveBeenCalledWith(expect.any(Array), 6, 6)
     })
 
+    it('系列模式下 quantity 按组数换算，每组展开 imageCount 条画面', async () => {
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const onBatch = vi.fn()
+
+      // 2 组 × 每组 3 张 = 6 条画面（组合上限恰好 6，不应触发扩词条）
+      const result = await generateVariablePromptsFromSopStore(variableSop, 2, '', {
+        onBatch,
+        exact: false,
+        outputUnitSize: 3,
+      })
+
+      expect(result).toHaveLength(6)
+      expect(new Set(result).size).toBe(6)
+      expect(fetchMock).not.toHaveBeenCalled()
+      // onBatch 的 completed/total 是「组」单位，不是画面条数
+      expect(onBatch).toHaveBeenCalledWith(expect.any(Array), 2, 2)
+    })
+
     it('组合不足时自动调 AI 扩词条后再展开', async () => {
       const expanded = JSON.stringify({
         variablePrompt:

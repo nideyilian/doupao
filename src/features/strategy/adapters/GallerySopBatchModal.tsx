@@ -50,12 +50,18 @@ import { useAssetLibraryStore } from '../../assetLibrary/store'
 import {
   allocateSopPromptCounts,
   getSopRunCounts,
+  getSopSeriesFixedBlock,
   getSopTotalImageCount,
   MAX_SOP_IMAGES_PER_PROMPT,
   normalizeSopPromptCandidates,
   selectSopPromptSources,
   SOP_HIGH_VOLUME_WARNING_THRESHOLD,
 } from '../sopPromptBatch'
+import {
+  buildSopSeriesAnchoredPrompt,
+  getSopSeriesAnchorImageId,
+  waitForSopSeriesAnchor,
+} from '../../../lib/sopSeriesAnchor'
 import {
   generatePromptsFromSopStore,
   generateVariablePromptsFromSopStore,
@@ -114,6 +120,8 @@ type PersistedSopPromptRun = {
   brief: string
   autoGenerate?: boolean
   secondReference?: boolean
+  /** 系列模式下是否用组内首图作为后续成员的参考图（锁风格与构图）。 */
+  seriesAnchor?: boolean
   sources?: SourceRun[]
   prompts?: PromptDraft[]
 }
@@ -385,6 +393,7 @@ export default function GallerySopBatchModal({
   initialBrief = '',
   initialAutoGenerate = false,
   initialSecondReference = false,
+  initialSeriesAnchor = true,
   autoStart = false,
   countsSync,
   workspaceTabId,
@@ -407,6 +416,8 @@ export default function GallerySopBatchModal({
   initialBrief?: string
   initialAutoGenerate?: boolean
   initialSecondReference?: boolean
+  /** 系列模式下是否用组内首图锚定后续成员（默认开启，保证同组风格与构图一致）。 */
+  initialSeriesAnchor?: boolean
   autoStart?: boolean
   workspaceTabId?: string | null
   /** 素材库项目文件夹 id（空表示非文件夹作用域）：同一标签页内不同文件夹各自独立运行草稿 */
@@ -472,6 +483,7 @@ export default function GallerySopBatchModal({
   const [brief, setBrief] = useState(initialBrief)
   const [autoGenerate, setAutoGenerate] = useState(initialAutoGenerate)
   const [secondReference, setSecondReference] = useState(initialSecondReference)
+  const [seriesAnchor, setSeriesAnchor] = useState(initialSeriesAnchor)
   const [sources, setSources] = useState<SourceRun[]>([])
   const [prompts, setPrompts] = useState<PromptDraft[]>([])
   const [status, setStatus] = useState<BatchStatus>('idle')
@@ -494,6 +506,7 @@ export default function GallerySopBatchModal({
   const autoStartRef = useRef(false)
   const autoGenerateRef = useRef(initialAutoGenerate)
   const secondReferenceRef = useRef(initialSecondReference)
+  const seriesAnchorRef = useRef(initialSeriesAnchor)
   const activeRunIdRef = useRef(activeRunId)
   const activeRunSubmittedRef = useRef(false)
   const activePromptGenerationModelRef = useRef('')
@@ -506,6 +519,8 @@ export default function GallerySopBatchModal({
     (retrySourceId?: string, freshRun?: boolean, generateImagesForNewPrompts?: boolean) => Promise<void>
   >(async () => {})
   const componentActiveRef = useRef(true)
+  /** 批次提交期间的取消信号：用于中断「等待组内首图」的锚定等待。 */
+  const submissionAbortRef = useRef<AbortController | null>(null)
   const modalRef = useRef<HTMLDivElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   /**
@@ -741,6 +756,7 @@ export default function GallerySopBatchModal({
     nextPromptCount = targetCount,
     nextImagesPerPrompt = targetImagesPerPrompt,
     nextSecondReference = secondReferenceRef.current,
+    nextSeriesAnchor = seriesAnchorRef.current,
   ) => {
     window.localStorage.setItem(
       promptRunStorageKey,
@@ -754,6 +770,7 @@ export default function GallerySopBatchModal({
         brief: nextBrief,
         autoGenerate: nextAutoGenerate,
         secondReference: nextSecondReference,
+        seriesAnchor: nextSeriesAnchor,
       } satisfies PersistedSopPromptRun),
     )
   }
@@ -973,6 +990,10 @@ export default function GallerySopBatchModal({
             secondReferenceRef.current = persisted.secondReference
             setSecondReference(persisted.secondReference)
           }
+          if (typeof persisted.seriesAnchor === 'boolean') {
+            seriesAnchorRef.current = persisted.seriesAnchor
+            setSeriesAnchor(persisted.seriesAnchor)
+          }
           await applyPromptRun(
             storedRun,
             `已恢复上次 SOP 提示词列表，当前可用 ${storedRun.prompts.filter((item) => !item.deleted && item.text.trim()).length} 条`,
@@ -1010,6 +1031,10 @@ export default function GallerySopBatchModal({
         if (typeof persisted?.secondReference === 'boolean') {
           secondReferenceRef.current = persisted.secondReference
           setSecondReference(persisted.secondReference)
+        }
+        if (typeof persisted?.seriesAnchor === 'boolean') {
+          seriesAnchorRef.current = persisted.seriesAnchor
+          setSeriesAnchor(persisted.seriesAnchor)
         }
         setSources(legacySources)
         setPrompts(legacyPrompts)
@@ -1079,6 +1104,7 @@ export default function GallerySopBatchModal({
   useEffect(
     () => () => {
       componentActiveRef.current = false
+      submissionAbortRef.current?.abort()
       if (snapshotTimerRef.current != null) window.clearTimeout(snapshotTimerRef.current)
       const pending = pendingSnapshotRef.current
       if (pending) void putSopBatchSnapshot(pending)
@@ -1127,6 +1153,21 @@ export default function GallerySopBatchModal({
       targetCount,
       targetImagesPerPrompt,
       nextSecondReference,
+    )
+  }
+
+  const toggleSeriesAnchor = (nextSeriesAnchor: boolean) => {
+    seriesAnchorRef.current = nextSeriesAnchor
+    setSeriesAnchor(nextSeriesAnchor)
+    writeRunPointer(
+      activeRunIdRef.current,
+      prompts,
+      autoGenerateRef.current,
+      effectiveBrief,
+      targetCount,
+      targetImagesPerPrompt,
+      secondReferenceRef.current,
+      nextSeriesAnchor,
     )
   }
 
@@ -1477,6 +1518,31 @@ export default function GallerySopBatchModal({
     return { id: source.imageId, dataUrl }
   }
 
+  /**
+   * 取该提示词所属系列组首图的图片 id：组内第 1 个成员已出图时才可用。
+   * 首图是整组的视觉基准，成员 2..N 与单条重生成都拿它当参考图。
+   */
+  const findSeriesAnchorImageId = (item: PromptDraft) => {
+    const series = item.series
+    if (!series || series.seriesIndex === 0) return null
+    const seriesId = `${activeRunIdRef.current}-${series.groupIndex}`
+    const anchorTask = useStore.getState().tasks.find((task) => {
+      const taskSeries = task.sopBatch?.series
+      if (!taskSeries || taskSeries.seriesIndex !== 1) return false
+      return (
+        taskSeries.seriesId === seriesId &&
+        taskSeries.seriesCount === series.seriesCount &&
+        task.outputImages.length > 0
+      )
+    })
+    return getSopSeriesAnchorImageId(anchorTask)
+  }
+
+  const loadAnchorInputImage = async (imageId: string): Promise<InputImage | null> => {
+    const dataUrl = await ensureImageCached(imageId)
+    return dataUrl ? { id: imageId, dataUrl } : null
+  }
+
   const submitPromptList = async (itemsToSubmit = visiblePrompts) => {
     if (!selectedSop) return
     // 批次未启动过（例如手动建提示词后直接提交）时在此捕获；已由批次启动捕获的保持固定，不跟随中途切换
@@ -1519,58 +1585,120 @@ export default function GallerySopBatchModal({
       return
     }
     const promptInputImageById = new Map(promptInputImages.map((image) => [image.id, image]))
-    const results = await Promise.allSettled(
-      usablePrompts.map(async (item, index) => {
-        const source = allSources.find((candidate) => candidate.id === item.sourceId)
-        const itemReferenceImageIds = (
-          item.referenceImageIds ?? (source?.kind === 'image' && source.imageId ? [source.imageId] : [])
-        ).slice(0, 1)
-        const itemInputImages = secondReferenceRef.current
+    submissionAbortRef.current?.abort()
+    const submissionController = new AbortController()
+    submissionAbortRef.current = submissionController
+    const anchorEnabled = activeSeriesMode && seriesAnchorRef.current
+    const submitOne = async (item: PromptDraft, index: number, anchorImage: InputImage | null) => {
+      const source = allSources.find((candidate) => candidate.id === item.sourceId)
+      const itemReferenceImageIds = (
+        item.referenceImageIds ?? (source?.kind === 'image' && source.imageId ? [source.imageId] : [])
+      ).slice(0, 1)
+      // 锚定优先：同组以首图为唯一视觉基准，不再叠加输入区参考图，避免两个基准互相干扰
+      const itemInputImages = anchorImage
+        ? [anchorImage]
+        : secondReferenceRef.current
           ? itemReferenceImageIds.flatMap((imageId) => {
               const image = promptInputImageById.get(imageId)
               return image ? [image] : []
             })
           : []
-        return submitTaskWithData(
-          {
-            prompt: item.promptText.trim(),
-            inputImages: itemInputImages,
-            inputImageFolder: null,
-            params: { ...params, n: targetImagesPerPrompt, reference_mode: 'cycle' },
-            maskDraft: null,
-            targetTabId: targetWorkspaceTabId,
-            scheduledOutputPath: customOutputPath.trim() || undefined,
-            scheduledOutputSubFolder: activeTab?.name,
-            defaultCollectionId: batchDefaultCollectionIdRef.current,
-            sopBatch: {
-              batchId,
-              snapshotId,
-              sopId: selectedSop.id,
-              sopName: selectedSop.name,
-              promptId: item.id,
-              promptIndex: index + 1,
-              promptCount: activeSeriesMode ? Math.ceil(usablePrompts.length / seriesCount) : usablePrompts.length,
-              imagesPerPrompt: targetImagesPerPrompt,
-              series: item.series
-                ? {
-                    seriesId: `${snapshotId}-${item.series.groupIndex}`,
-                    groupIndex: item.series.groupIndex + 1,
-                    groupCount: Math.ceil(usablePrompts.length / item.series.seriesCount),
-                    seriesIndex: item.series.seriesIndex + 1,
-                    seriesCount: item.series.seriesCount,
-                  }
-                : undefined,
-            },
+      return submitTaskWithData(
+        {
+          prompt: anchorImage ? buildSopSeriesAnchoredPrompt(item.promptText) : item.promptText.trim(),
+          inputImages: itemInputImages,
+          inputImageFolder: null,
+          params: { ...params, n: targetImagesPerPrompt, reference_mode: 'cycle' },
+          maskDraft: null,
+          targetTabId: targetWorkspaceTabId,
+          scheduledOutputPath: customOutputPath.trim() || undefined,
+          scheduledOutputSubFolder: activeTab?.name,
+          defaultCollectionId: batchDefaultCollectionIdRef.current,
+          sopBatch: {
+            batchId,
+            snapshotId,
+            sopId: selectedSop.id,
+            sopName: selectedSop.name,
+            promptId: item.id,
+            promptIndex: index + 1,
+            promptCount: activeSeriesMode ? Math.ceil(usablePrompts.length / seriesCount) : usablePrompts.length,
+            imagesPerPrompt: targetImagesPerPrompt,
+            series: item.series
+              ? {
+                  seriesId: `${snapshotId}-${item.series.groupIndex}`,
+                  groupIndex: item.series.groupIndex + 1,
+                  groupCount: Math.ceil(usablePrompts.length / item.series.seriesCount),
+                  seriesIndex: item.series.seriesIndex + 1,
+                  seriesCount: item.series.seriesCount,
+                }
+              : undefined,
           },
-          { silentSuccess: true },
-        )
-      }),
+        },
+        { silentSuccess: true },
+      )
+    }
+
+    /**
+     * 系列锚定要求组内串行：第 1 张提交后等它出图，再把它作为同组其余画面的参考图；
+     * 组与组之间仍然并行，避免整批退化成一条直线。
+     */
+    const submissionUnits: Array<() => Promise<Array<{ taskId?: string; error?: unknown }>>> = []
+    if (anchorEnabled) {
+      const seriesGroups = new Map<string, Array<{ item: PromptDraft; index: number }>>()
+      usablePrompts.forEach((item, index) => {
+        const key = item.series ? `series-${item.series.groupIndex}` : `prompt-${item.id}`
+        seriesGroups.set(key, [...(seriesGroups.get(key) ?? []), { item, index }])
+      })
+      for (const entries of seriesGroups.values()) {
+        submissionUnits.push(async () => {
+          const outcomes: Array<{ taskId?: string; error?: unknown }> = []
+          let anchorImage: InputImage | null = null
+          for (const [position, entry] of entries.entries()) {
+            try {
+              const existingAnchorId = findSeriesAnchorImageId(entry.item)
+              const effectiveAnchor =
+                anchorImage ?? (existingAnchorId ? await loadAnchorInputImage(existingAnchorId) : null)
+              const taskId = await submitOne(entry.item, entry.index, effectiveAnchor)
+              outcomes.push({ taskId })
+              if (position === 0 && entries.length > 1 && !existingAnchorId && typeof taskId === 'string' && taskId) {
+                setStatusMessage('同组第 1 张生成中，完成后作为其余画面的参考图')
+                const anchorImageId = await waitForSopSeriesAnchor({
+                  taskId,
+                  getTask: (id) => useStore.getState().tasks.find((task) => task.id === id),
+                  signal: submissionController.signal,
+                })
+                anchorImage = anchorImageId ? await loadAnchorInputImage(anchorImageId) : null
+                if (!anchorImage) setStatusMessage('首图未就绪，同组其余画面按无参考图提交')
+              }
+            } catch (error) {
+              outcomes.push({ error })
+            }
+          }
+          return outcomes
+        })
+      }
+    } else {
+      submissionUnits.push(
+        ...usablePrompts.map((item, index) => async () => {
+          try {
+            return [{ taskId: await submitOne(item, index, null) }]
+          } catch (error) {
+            return [{ error }]
+          }
+        }),
+      )
+    }
+
+    const settledUnits = await Promise.allSettled(submissionUnits.map((run) => run()))
+    const outcomes = settledUnits.flatMap((unit) =>
+      unit.status === 'fulfilled' ? unit.value : [{ error: unit.reason }],
     )
-    const submittedTaskIds = results.flatMap((result) =>
-      result.status === 'fulfilled' && typeof result.value === 'string' && result.value ? [result.value] : [],
+    if (submissionAbortRef.current === submissionController) submissionAbortRef.current = null
+    const submittedTaskIds = outcomes.flatMap((outcome) =>
+      typeof outcome.taskId === 'string' && outcome.taskId ? [outcome.taskId] : [],
     )
-    const successCount = results.filter((result) => result.status === 'fulfilled' && Boolean(result.value)).length
-    const failCount = results.length - successCount
+    const successCount = outcomes.filter((outcome) => typeof outcome.taskId === 'string' && outcome.taskId).length
+    const failCount = outcomes.length - successCount
     if (submittingSnapshot) {
       const completedSnapshot: SopBatchSnapshot = {
         ...submittingSnapshot,
@@ -1715,6 +1843,8 @@ export default function GallerySopBatchModal({
     let progressiveFailureCount = 0
     let progressivePersistenceError = ''
     let generationCancelled = false
+    /** 渐进派发下的系列锚定：groupIndex → 该组首图 id（组内按生成顺序提交，首图出图后锚定后续成员）。 */
+    const progressiveSeriesAnchors = new Map<number, string>()
 
     const saveProgressiveSnapshot = async (runStatus: NonNullable<SopBatchSnapshot['status']>) => {
       if (!progressiveDispatch) return
@@ -1752,7 +1882,9 @@ export default function GallerySopBatchModal({
           (item) => !item.deleted && item.promptText.trim() && promptBelongsToSource(item, sourceRun.source),
         ).length
         const isVariablePromptSop = selectedSop.executionMode === 'variable-prompt'
-        const generationOptions: NonNullable<Parameters<typeof generatePromptsFromSopStore>[3]> = {
+        const generationOptions: NonNullable<Parameters<typeof generatePromptsFromSopStore>[3]> & {
+          outputUnitSize?: number
+        } = {
           context: {
             sourceLabel: sourceImage ? sourceRun.source.label : undefined,
             sourceIndex: sourceImage ? sourcePosition : undefined,
@@ -1771,6 +1903,8 @@ export default function GallerySopBatchModal({
           existingPrompts: [...existingPrompts, ...nextPrompts.map((item) => item.promptText.trim()).filter(Boolean)],
           // 变量提示词模式是本地展开，一次生成全部再逐条提交；AI 逐条模式才用 maxBatchSize=1 渐进生成
           maxBatchSize: !isVariablePromptSop && progressiveDispatch ? 1 : undefined,
+          // 系列模式下 generationCount 是「组数」，变量展开要按每组张数换算成条数
+          outputUnitSize: activeSeriesMode ? seriesCount : 1,
           beforeBatch: waitWhileGenerationPaused,
           signal: generationController.signal,
           onBatch: async (batchPrompts) => {
@@ -1809,12 +1943,19 @@ export default function GallerySopBatchModal({
                   `已生成系列成员 ${promptIndex}/${effectivePromptTarget}，正在发送第 ${promptIndex} 条生图任务`,
                 )
                 await saveProgressiveSnapshot('generating')
+                const seriesAnchorImageId =
+                  activeSeriesMode && seriesAnchorRef.current && item.series
+                    ? (progressiveSeriesAnchors.get(item.series.groupIndex) ?? findSeriesAnchorImageId(item))
+                    : null
+                const seriesAnchorImage = seriesAnchorImageId ? await loadAnchorInputImage(seriesAnchorImageId) : null
                 let dispatched = false
                 try {
                   const taskId = await submitTaskWithData(
                     {
-                      prompt: item.promptText.trim(),
-                      inputImages: generationInputImages,
+                      prompt: seriesAnchorImage
+                        ? buildSopSeriesAnchoredPrompt(item.promptText)
+                        : item.promptText.trim(),
+                      inputImages: seriesAnchorImage ? [seriesAnchorImage] : generationInputImages,
                       inputImageFolder: null,
                       params: { ...params, n: targetImagesPerPrompt, reference_mode: 'cycle' },
                       maskDraft: null,
@@ -1848,6 +1989,17 @@ export default function GallerySopBatchModal({
                     progressiveTaskIds.push(taskId)
                     progressiveSuccessCount += 1
                     dispatched = true
+                    // 组内第 1 张出图后作为同组其余成员的参考图；等不到就降级为无参考图提交
+                    if (activeSeriesMode && seriesAnchorRef.current && item.series && item.series.seriesIndex === 0) {
+                      setStatusMessage(`同组第 1 张生成中，完成后作为其余画面的参考图（${promptIndex} 已发送）`)
+                      const anchorId = await waitForSopSeriesAnchor({
+                        taskId,
+                        getTask: (id) => useStore.getState().tasks.find((task) => task.id === id),
+                        signal: generationController.signal,
+                      })
+                      if (anchorId) progressiveSeriesAnchors.set(item.series.groupIndex, anchorId)
+                      else setStatusMessage('首图未就绪，同组其余画面按无参考图提交')
+                    }
                   } else {
                     progressiveFailureCount += 1
                   }
@@ -1908,6 +2060,20 @@ export default function GallerySopBatchModal({
           ...existingPrompts,
           ...nextPrompts.map((item) => item.promptText),
         ])
+        // 系列模式下按生成顺序补齐组内位置：后续「提交生图」要靠它做组内串行与首图锚定，
+        // 缺了分组信息每个画面都会被当成独立一组，锚定不会生效。
+        const batchSeriesCount = activeSeriesMode ? seriesCount : 1
+        let batchSeriesCursor = nextPrompts.filter((item) => !item.deleted && item.promptText.trim()).length
+        const nextBatchSeries = () => {
+          if (batchSeriesCount <= 1) return undefined
+          const series = {
+            groupIndex: Math.floor(batchSeriesCursor / batchSeriesCount),
+            seriesIndex: batchSeriesCursor % batchSeriesCount,
+            seriesCount: batchSeriesCount,
+          }
+          batchSeriesCursor += 1
+          return series
+        }
         nextPrompts.push(
           ...candidates.map((prompt) => ({
             id: promptItemId(sourceRun.source.id),
@@ -1915,6 +2081,7 @@ export default function GallerySopBatchModal({
             referenceImageIds,
             promptText: prompt,
             origin: 'ai' as const,
+            series: nextBatchSeries(),
           })),
         )
         const generatedCount =
@@ -2102,6 +2269,22 @@ export default function GallerySopBatchModal({
       const existingPrompts = prompts
         .filter((entry) => entry.id !== item.id && !entry.deleted && entry.promptText.trim())
         .map((entry) => entry.promptText.trim())
+      // 系列模式只重生成组内这一张：固定块沿用原提示词（或同组其他成员）里的原文，
+      // 否则新提示词会带上一段新的视觉规范，把这一张从系列里拆出去。
+      const itemSeries = item.series
+      const seriesFixedBlock =
+        activeSeriesMode && itemSeries
+          ? getSopSeriesFixedBlock(item.promptText) ||
+            getSopSeriesFixedBlock(
+              prompts.find(
+                (entry) =>
+                  entry.id !== item.id &&
+                  !entry.deleted &&
+                  entry.series?.groupIndex === itemSeries.groupIndex &&
+                  entry.series?.seriesCount === itemSeries.seriesCount,
+              )?.promptText ?? '',
+            )
+          : ''
       const generated = await generatePromptsFromSopStore(selectedSop, 1, effectiveBrief, {
         context: {
           sourceLabel: sourceImage ? (source?.label ?? '参考图') : undefined,
@@ -2118,6 +2301,8 @@ export default function GallerySopBatchModal({
                 variableDimensions: ['主体', '背景'],
               })
             : undefined,
+          seriesMemberOnly: Boolean(activeSeriesMode && itemSeries),
+          seriesFixedBlock: seriesFixedBlock || undefined,
         },
         referenceImages: sourceImage ? [{ name: source?.label ?? '参考图', dataUrl: sourceImage.dataUrl }] : undefined,
         exact: true,
@@ -2135,7 +2320,11 @@ export default function GallerySopBatchModal({
         ),
       )
       setStatus('ready')
-      setStatusMessage(`已重新生成第 ${visiblePrompts.findIndex((entry) => entry.id === item.id) + 1} 条提示词`)
+      setStatusMessage(
+        `已重新生成第 ${visiblePrompts.findIndex((entry) => entry.id === item.id) + 1} 条提示词${
+          seriesFixedBlock ? '（沿用本组固定规范）' : ''
+        }`,
+      )
     } catch (cause) {
       setStatus('ready')
       if (generationController.signal.aborted || isAbortError(cause)) {
@@ -3143,6 +3332,17 @@ export default function GallerySopBatchModal({
                       label={<span className="text-xs">二次参考</span>}
                       className="h-ds-control-sm gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2"
                     />
+                    {activeSeriesMode && (
+                      <Switch
+                        checked={seriesAnchor}
+                        onCheckedChange={toggleSeriesAnchor}
+                        disabled={running}
+                        aria-label="用组内首图作为同组其余画面的参考图"
+                        title="开启后同组第 1 张出图即作为其余画面的参考图，锁定画风、构图与排版；组内需按顺序出图，整体略慢"
+                        label={<span className="text-xs">首图锚定</span>}
+                        className="h-ds-control-sm gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2"
+                      />
+                    )}
                     <span className="text-xs tabular-nums text-ds-muted">预计 {totalImageCount} 张</span>
                   </div>
                 )}

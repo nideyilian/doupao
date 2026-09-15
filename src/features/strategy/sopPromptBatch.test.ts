@@ -1,16 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   allocateSopPromptCounts,
+  assembleSopSeriesPrompt,
   buildSopPromptBatchRequest,
   generateSopPromptBatches,
   getMentionedSopSourceIndexes,
   getSopRunCounts,
   getSopPromptBatchSizes,
+  getSopSeriesFixedBlock,
   getSopTotalImageCount,
   parseSopPromptBatchResponse,
   parseSopSeriesPromptBatchResponse,
   selectSopPromptSources,
   SOP_PROMPT_GENERATOR_INSTRUCTION,
+  stripSopSeriesFixedPrefix,
 } from './sopPromptBatch'
 import type { SopLibraryItem } from './types'
 
@@ -319,7 +322,7 @@ describe('SOP prompt batch', () => {
     ).toEqual(['红色背景，白色产品'])
   })
 
-  it('parses a series batch that matches the requested group and member counts', () => {
+  it('parses a series batch and pins every member to the group fixed block', () => {
     const groups = parseSopSeriesPromptBatchResponse(
       '{"series":[{"fixed":"蓝色背景","prompts":["图1","图2","图3"]},{"fixed":"红色背景","prompts":["图4","图5","图6"]}]}',
       2,
@@ -327,14 +330,75 @@ describe('SOP prompt batch', () => {
     )
 
     expect(groups.map((group) => group.groupIndex)).toEqual([0, 1])
-    expect(groups.flatMap((group) => group.prompts)).toEqual(['图1', '图2', '图3', '图4', '图5', '图6'])
-    expect(groups[0].fixed).toBe('蓝色背景')
+    expect(groups.map((group) => group.fixed)).toEqual(['蓝色背景', '红色背景'])
+    expect(groups[0].prompts).toEqual([
+      '系列统一规范（非画面文字）：蓝色背景\n本张画面：图1',
+      '系列统一规范（非画面文字）：蓝色背景\n本张画面：图2',
+      '系列统一规范（非画面文字）：蓝色背景\n本张画面：图3',
+    ])
+    expect(groups[1].prompts[2]).toBe('系列统一规范（非画面文字）：红色背景\n本张画面：图6')
+  })
+
+  it('reuses the locked fixed block verbatim when one is supplied', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"模型自己改写的固定块","prompts":["图1","图2"]}]}',
+      1,
+      2,
+      '蓝色背景，中心对称构图',
+    )
+
+    expect(groups[0].fixed).toBe('蓝色背景，中心对称构图')
+    expect(groups[0].prompts).toEqual([
+      '系列统一规范（非画面文字）：蓝色背景，中心对称构图\n本张画面：图1',
+      '系列统一规范（非画面文字）：蓝色背景，中心对称构图\n本张画面：图2',
+    ])
+  })
+
+  it('drops a fixed block the model repeated inside a member prompt', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"蓝色背景","prompts":["蓝色背景，主体是咖啡杯","蓝色背景 主体是茶杯"]}]}',
+      1,
+      2,
+    )
+
+    expect(groups[0].prompts).toEqual([
+      '系列统一规范（非画面文字）：蓝色背景\n本张画面：主体是咖啡杯',
+      '系列统一规范（非画面文字）：蓝色背景\n本张画面：主体是茶杯',
+    ])
+  })
+
+  it('collapses a multi-line fixed block into a single reusable line', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      JSON.stringify({ series: [{ fixed: '蓝色背景\n中心对称构图', prompts: ['图1', '图2'] }] }),
+      1,
+      2,
+    )
+
+    expect(groups[0].fixed).toBe('蓝色背景 中心对称构图')
+    expect(getSopSeriesFixedBlock(groups[0].prompts[0])).toBe('蓝色背景 中心对称构图')
+  })
+
+  it('extracts the fixed block from a generated series prompt', () => {
+    expect(getSopSeriesFixedBlock('系列统一规范（非画面文字）：蓝色背景\n本张画面：图1')).toBe('蓝色背景')
+    expect(getSopSeriesFixedBlock('普通提示词')).toBe('')
+  })
+
+  it('strips a loosely matching fixed prefix and assembles both ends', () => {
+    expect(stripSopSeriesFixedPrefix('蓝色背景，主体是咖啡杯', '蓝色背景')).toBe('主体是咖啡杯')
+    expect(stripSopSeriesFixedPrefix('蓝 色 背 景：主体是咖啡杯', '蓝色背景')).toBe('主体是咖啡杯')
+    expect(stripSopSeriesFixedPrefix('主体是咖啡杯', '蓝色背景')).toBe('主体是咖啡杯')
+    expect(assembleSopSeriesPrompt('', '图1')).toBe('图1')
+    expect(assembleSopSeriesPrompt('蓝色背景', '')).toBe('系列统一规范（非画面文字）：蓝色背景')
   })
 
   it('keeps fewer series groups than requested so the batch loop can fill the deficit', () => {
     const groups = parseSopSeriesPromptBatchResponse('{"series":[{"fixed":"蓝","prompts":["图1","图2","图3"]}]}', 2, 3)
 
-    expect(groups.flatMap((group) => group.prompts)).toEqual(['图1', '图2', '图3'])
+    expect(groups.flatMap((group) => group.prompts)).toEqual([
+      '系列统一规范（非画面文字）：蓝\n本张画面：图1',
+      '系列统一规范（非画面文字）：蓝\n本张画面：图2',
+      '系列统一规范（非画面文字）：蓝\n本张画面：图3',
+    ])
   })
 
   it('truncates extra series groups and drops groups with too few members', () => {

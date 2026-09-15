@@ -4,6 +4,7 @@ import {
   getSopGeneratorInstruction,
   IMAGE_GENERATION_STRATEGY_META_PRESET,
   IMAGE_PROMPT_SOP_GENERATOR_INSTRUCTION,
+  normalizeSeriesConfig,
   parseGeneratedSop,
   parseGeneratedVariablePrompt,
   PROMPT_REVERSE_SOP_GENERATOR_INSTRUCTION,
@@ -158,6 +159,48 @@ describe('SOP natural-language generator', () => {
       { type: 'input_text', text: '参考图 2/2：参考图 B.jpg' },
       { type: 'input_image', image_url: 'data:image/jpeg;base64,BBB' },
     ])
+  })
+
+  it('normalizes a series config and falls back to defaults for empty dimensions', () => {
+    expect(normalizeSeriesConfig({})).toEqual({
+      imageCount: 3,
+      fixedDimensions: ['视觉风格', '构图方式', '排版方式', '文案结构', '色彩体系', '光线', '镜头语言'],
+      variableDimensions: ['主体', '背景'],
+    })
+    // 空数组视为未填写：否则会生成「固定块内容为的完整视觉规则」这类空规则
+    expect(
+      normalizeSeriesConfig({
+        imageCount: 2,
+        fixedDimensions: ['  画风  ', '构图'],
+        variableDimensions: [],
+      }),
+    ).toEqual({
+      imageCount: 2,
+      fixedDimensions: ['画风', '构图'],
+      variableDimensions: ['主体', '背景'],
+    })
+  })
+
+  it('parses seriesConfig only when the SOP is declared as a series', () => {
+    expect(
+      parseGeneratedSop(
+        JSON.stringify({
+          name: '系列海报',
+          sop: '# 系列海报\n按固定版式批量出图',
+          sopKind: 'series',
+          seriesConfig: { imageCount: 2, fixedDimensions: ['版式'], variableDimensions: ['主体'] },
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'series',
+      seriesConfig: { imageCount: 2, fixedDimensions: ['版式'], variableDimensions: ['主体'] },
+    })
+
+    const single = parseGeneratedSop(
+      JSON.stringify({ name: '单图海报', sop: '# 单图海报\n只出一张', seriesConfig: { imageCount: 2 } }),
+    )
+    expect(single.kind).toBeUndefined()
+    expect(single.seriesConfig).toBeUndefined()
   })
 })
 
