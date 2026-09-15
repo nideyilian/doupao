@@ -354,6 +354,48 @@ describe('SOP prompt batch', () => {
     ])
   })
 
+  it('prepends the user-locked fixed block ahead of the model block', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"构图方式：中心对称；光线：柔和顶光","prompts":["图1","图2"]}]}',
+      1,
+      2,
+      undefined,
+      '视觉风格：3D 皮克斯风；色彩体系：莫兰迪低饱和',
+    )
+
+    // 用户填的值必须逐字出现在固定块最前面，模型补的部分跟在后面
+    expect(groups[0].fixed).toBe('视觉风格：3D 皮克斯风；色彩体系：莫兰迪低饱和；构图方式：中心对称；光线：柔和顶光')
+    expect(groups[0].prompts[0]).toBe(
+      '系列统一规范（非画面文字）：视觉风格：3D 皮克斯风；色彩体系：莫兰迪低饱和；构图方式：中心对称；光线：柔和顶光\n本张画面：图1',
+    )
+  })
+
+  it('prefers the reused fixed block over the user-locked prefix to avoid duplication', () => {
+    // 单成员重生成时固定块整段复用，用户锁定项已经在里面了，不能再拼一次
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"模型改写过的内容","prompts":["图1","图2"]}]}',
+      1,
+      2,
+      '视觉风格：3D 皮克斯风；构图方式：中心对称',
+      '视觉风格：3D 皮克斯风',
+    )
+
+    expect(groups[0].fixed).toBe('视觉风格：3D 皮克斯风；构图方式：中心对称')
+  })
+
+  it('keeps the user-locked block when the model returns an empty fixed block', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"","prompts":["图1","图2"]}]}',
+      1,
+      2,
+      undefined,
+      '视觉风格：3D 皮克斯风',
+    )
+
+    expect(groups[0].fixed).toBe('视觉风格：3D 皮克斯风')
+    expect(groups[0].prompts[0]).toBe('系列统一规范（非画面文字）：视觉风格：3D 皮克斯风\n本张画面：图1')
+  })
+
   it('drops a fixed block the model repeated inside a member prompt', () => {
     const groups = parseSopSeriesPromptBatchResponse(
       '{"series":[{"fixed":"蓝色背景","prompts":["蓝色背景，主体是咖啡杯","蓝色背景 主体是茶杯"]}]}',
@@ -425,5 +467,63 @@ describe('SOP prompt batch', () => {
     )
     expect(() => parseSopSeriesPromptBatchResponse('{"prompts":["图1"]}', 1, 2)).toThrow('系列提示词没有返回内容')
     expect(() => parseSopSeriesPromptBatchResponse('不是 JSON', 1, 2)).toThrow('系列提示词返回格式不正确')
+  })
+
+  it('locks user-filled fixed dimensions and leaves the rest to the model', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: {
+        imageCount: 3,
+        fixedDimensions: ['视觉风格', '构图方式'],
+        variableDimensions: ['主体'],
+        fixedValues: { 视觉风格: '3D 皮克斯风' },
+      },
+    })
+
+    // 用户填的值原样进请求，已锁定的维度不再要求模型重写
+    expect(request).toContain('视觉风格：3D 皮克斯风')
+    expect(request).toContain('固定块只写其余固定维度（构图方式）的完整视觉规则')
+    expect(request).toContain('内容为主体')
+  })
+
+  it('asks the model for an empty fixed block when every fixed dimension is locked', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: {
+        imageCount: 2,
+        fixedDimensions: ['视觉风格'],
+        variableDimensions: ['主体', '背景'],
+        fixedValues: { 视觉风格: '3D 皮克斯风' },
+      },
+    })
+
+    expect(request).toContain('固定维度已全部被用户锁定，fixed 字段返回空字符串')
+  })
+
+  it('never emits a broken rule sentence for empty dimension lists', () => {
+    const noFixed = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: { imageCount: 2, fixedDimensions: [], variableDimensions: ['主体'] },
+    })
+    expect(noFixed).toContain('本组不固定任何维度')
+    expect(noFixed).not.toContain('固定块内容为的完整视觉规则')
+
+    const noVariable = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: { imageCount: 2, fixedDimensions: ['视觉风格'], variableDimensions: [] },
+    })
+    expect(noVariable).toContain('本次未限定可变维度')
+  })
+
+  it('keeps the locked fixed block instruction when the whole block is reused', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: {
+        imageCount: 2,
+        fixedDimensions: ['视觉风格'],
+        variableDimensions: ['主体'],
+        fixedValues: { 视觉风格: '3D 皮克斯风' },
+      },
+      seriesFixedBlock: '视觉风格：3D 皮克斯风；构图方式：中心对称',
+    })
+
+    // 整块复用时以 FIXED 为准，不再下发 LOCKED，避免同一段内容出现两次
+    expect(request).toContain('<FIXED>')
+    expect(request).not.toContain('<LOCKED>')
   })
 })

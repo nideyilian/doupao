@@ -32,6 +32,7 @@ import {
   type SopPromptBatchContext,
 } from '../sopPromptBatch'
 import { IMAGE_GENERATION_STRATEGY_SKILL_META_INSTRUCTION } from '../skillMetaInstructions'
+import { buildSopSeriesLockedFixedBlock } from '../sopSeriesDimensions'
 import { DERIVE_DIMENSIONS, validateVariablePromptTemplate, type DeriveDimensionPolicy } from '../derivePolicy'
 import { VISUAL_PROFILE_INSTRUCTION, buildProfileSummary, parseVisualProfiles } from '../visualProfile'
 import type { SopLibraryItem } from '../types'
@@ -511,6 +512,8 @@ export async function generatePromptsFromSopStore(
           requestQuantity,
           seriesCount,
           options.context?.seriesFixedBlock,
+          // 用户手工填了值的固定维度由客户端逐字拼进固定块，模型改写不了
+          buildSopSeriesLockedFixedBlock(seriesConfig),
         )
         return groups.flatMap((group) => group.prompts)
       }

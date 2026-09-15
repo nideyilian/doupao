@@ -57,6 +57,8 @@ import {
   selectSopPromptSources,
   SOP_HIGH_VOLUME_WARNING_THRESHOLD,
 } from '../sopPromptBatch'
+import { normalizeSeriesConfig } from '../sopGeneration'
+import type { SopSeriesConfig } from '../types'
 import {
   buildSopSeriesAnchoredPrompt,
   getSopSeriesAnchorImageId,
@@ -389,6 +391,7 @@ export default function GallerySopBatchModal({
   initialImagesPerPrompt = 1,
   initialSeriesMode = false,
   initialSeriesImageCount = 3,
+  initialSeriesConfig,
   syncInitialGenerationCounts = false,
   initialBrief = '',
   initialAutoGenerate = false,
@@ -412,6 +415,11 @@ export default function GallerySopBatchModal({
   initialImagesPerPrompt?: number
   initialSeriesMode?: boolean
   initialSeriesImageCount?: 2 | 3
+  /**
+   * 系列配置（每组张数 + 哪些维度组内固定/每张变化 + 用户填的固定值）。
+   * 由输入栏的一致性控件产出，是系列生成的唯一设置入口。
+   */
+  initialSeriesConfig?: SopSeriesConfig
   syncInitialGenerationCounts?: boolean
   initialBrief?: string
   initialAutoGenerate?: boolean
@@ -454,6 +462,7 @@ export default function GallerySopBatchModal({
     secondReference: boolean
     seriesMode: boolean
     seriesImageCount: 2 | 3
+    seriesConfig?: SopSeriesConfig
     nonce: number
   }
 }) {
@@ -480,6 +489,8 @@ export default function GallerySopBatchModal({
   const [imagesPerPrompt, setImagesPerPrompt] = useState(initialImagesPerPrompt)
   const [seriesMode, setSeriesMode] = useState(initialSeriesMode)
   const [seriesImageCount, setSeriesImageCount] = useState<2 | 3>(initialSeriesImageCount)
+  /** 系列一致性配置：跟随输入栏控件同步，弹窗内不再单独设置。 */
+  const [seriesConfig, setSeriesConfig] = useState<SopSeriesConfig | undefined>(initialSeriesConfig)
   const [brief, setBrief] = useState(initialBrief)
   const [autoGenerate, setAutoGenerate] = useState(initialAutoGenerate)
   const [secondReference, setSecondReference] = useState(initialSecondReference)
@@ -578,7 +589,13 @@ export default function GallerySopBatchModal({
   const normalizedCounts = getSopRunCounts(promptCount, imagesPerPrompt)
   const targetCount = normalizedCounts.promptCount
   const targetImagesPerPrompt = normalizedCounts.imagesPerPrompt
-  const seriesCount = activeSeriesMode ? (selectedSop?.seriesConfig?.imageCount ?? seriesImageCount) : 1
+  // 每组张数以输入栏同步过来的值为准（SOP 自带配置已由输入栏作为兜底解析，这里不再二次覆盖）。
+  const seriesCount = activeSeriesMode ? seriesImageCount : 1
+  /** 系列配置以输入栏一致性控件为准；控件未初始化时回落默认维度，保证旧 SOP 仍能生成。 */
+  const effectiveSeriesConfig = useMemo(
+    () => normalizeSeriesConfig({ ...(seriesConfig ?? {}), imageCount: seriesImageCount }),
+    [seriesConfig, seriesImageCount],
+  )
   const effectivePromptTarget = targetCount * seriesCount
   /** 系列模式下进度单位是「组内画面」而非「提示词」，文案需随之切换。 */
   const promptUnitLabel = activeSeriesMode ? '个画面' : '条'
@@ -593,14 +610,8 @@ export default function GallerySopBatchModal({
   useEffect(() => {
     const configured = selectedSop?.kind === 'series'
     setSeriesMode(initialSeriesMode || configured)
-    setSeriesImageCount(selectedSop?.seriesConfig?.imageCount ?? initialSeriesImageCount)
-  }, [
-    initialSeriesImageCount,
-    initialSeriesMode,
-    selectedSop?.id,
-    selectedSop?.kind,
-    selectedSop?.seriesConfig?.imageCount,
-  ])
+    setSeriesImageCount(initialSeriesImageCount)
+  }, [initialSeriesImageCount, initialSeriesMode, selectedSop?.id, selectedSop?.kind])
   const selectedSources = useMemo(
     () => selectSopPromptSources(allSources, targetCount, effectiveBrief),
     [allSources, effectiveBrief, targetCount],
@@ -1130,6 +1141,7 @@ export default function GallerySopBatchModal({
     setSecondReference(countsSync.secondReference)
     setSeriesMode(countsSync.seriesMode)
     setSeriesImageCount(countsSync.seriesImageCount)
+    if (countsSync.seriesConfig) setSeriesConfig(countsSync.seriesConfig)
     writeRunPointer(
       activeRunIdRef.current,
       prompts,
@@ -1890,13 +1902,7 @@ export default function GallerySopBatchModal({
             sourceIndex: sourceImage ? sourcePosition : undefined,
             sourceCount: sourceImage ? plannedSources.length : undefined,
             totalPromptCount: targetCount,
-            seriesConfig: activeSeriesMode
-              ? (selectedSop.seriesConfig ?? {
-                  imageCount: seriesImageCount,
-                  fixedDimensions: ['视觉风格', '构图方式', '排版方式', '文案结构', '色彩体系'],
-                  variableDimensions: ['主体', '背景'],
-                })
-              : undefined,
+            seriesConfig: activeSeriesMode ? effectiveSeriesConfig : undefined,
           },
           referenceImages: sourceImage ? [{ name: sourceRun.source.label, dataUrl: sourceImage.dataUrl }] : undefined,
           exact: false,
@@ -2294,13 +2300,7 @@ export default function GallerySopBatchModal({
               : undefined,
           sourceCount: sourceImage ? selectedSources.length : undefined,
           totalPromptCount: targetCount,
-          seriesConfig: activeSeriesMode
-            ? (selectedSop.seriesConfig ?? {
-                imageCount: seriesImageCount,
-                fixedDimensions: ['视觉风格', '构图方式', '排版方式', '文案结构', '色彩体系'],
-                variableDimensions: ['主体', '背景'],
-              })
-            : undefined,
+          seriesConfig: activeSeriesMode ? effectiveSeriesConfig : undefined,
           seriesMemberOnly: Boolean(activeSeriesMode && itemSeries),
           seriesFixedBlock: seriesFixedBlock || undefined,
         },
@@ -3284,7 +3284,7 @@ export default function GallerySopBatchModal({
                         <option value="series">系列组图</option>
                       </select>
                     </label>
-                    {activeSeriesMode && !selectedSop.seriesConfig && (
+                    {activeSeriesMode && (
                       <label className="flex h-ds-control-sm items-center gap-1.5 rounded-lg border border-ds-border bg-ds-surface px-2 text-xs text-ds-muted">
                         <span>组图</span>
                         <select

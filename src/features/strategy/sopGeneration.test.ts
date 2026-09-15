@@ -12,6 +12,7 @@ import {
   SOP_GENERATOR_META_PRESET,
   validateSopGenerationInput,
 } from './sopGeneration'
+import { SOP_SERIES_DEFAULT_FIXED_DIMENSIONS, SOP_SERIES_DEFAULT_VARIABLE_DIMENSIONS } from './sopSeriesDimensions'
 
 describe('SOP natural-language generator', () => {
   it('ships a named meta instruction that requires structured SOP output', () => {
@@ -161,13 +162,14 @@ describe('SOP natural-language generator', () => {
     ])
   })
 
-  it('normalizes a series config and falls back to defaults for empty dimensions', () => {
+  it('normalizes a series config and falls back to defaults only for missing dimensions', () => {
     expect(normalizeSeriesConfig({})).toEqual({
       imageCount: 3,
-      fixedDimensions: ['视觉风格', '构图方式', '排版方式', '文案结构', '色彩体系', '光线', '镜头语言'],
-      variableDimensions: ['主体', '背景'],
+      fixedDimensions: [...SOP_SERIES_DEFAULT_FIXED_DIMENSIONS],
+      variableDimensions: [...SOP_SERIES_DEFAULT_VARIABLE_DIMENSIONS],
     })
-    // 空数组视为未填写：否则会生成「固定块内容为的完整视觉规则」这类空规则
+    // 显式空数组 = 用户明确「不变化任何维度」，必须原样保留：
+    // 否则在 SOP 管理中心把维度全部切走时，开关会因为回落默认值而自己弹回来
     expect(
       normalizeSeriesConfig({
         imageCount: 2,
@@ -177,8 +179,34 @@ describe('SOP natural-language generator', () => {
     ).toEqual({
       imageCount: 2,
       fixedDimensions: ['画风', '构图'],
-      variableDimensions: ['主体', '背景'],
+      variableDimensions: [],
     })
+    // 非数组（字段缺失或类型不对）才回落到默认维度
+    expect(normalizeSeriesConfig({ fixedDimensions: '视觉风格', variableDimensions: undefined })).toEqual({
+      imageCount: 3,
+      fixedDimensions: [...SOP_SERIES_DEFAULT_FIXED_DIMENSIONS],
+      variableDimensions: [...SOP_SERIES_DEFAULT_VARIABLE_DIMENSIONS],
+    })
+  })
+
+  it('keeps user-filled fixed values verbatim and drops only the empty ones', () => {
+    expect(
+      normalizeSeriesConfig({
+        imageCount: 3,
+        fixedDimensions: ['视觉风格', '色彩体系'],
+        variableDimensions: ['主体'],
+        fixedValues: { 视觉风格: '3D 皮克斯风 ', 色彩体系: '   ', 主体: '' },
+      }),
+    ).toEqual({
+      imageCount: 3,
+      fixedDimensions: ['视觉风格', '色彩体系'],
+      variableDimensions: ['主体'],
+      // 原样保留不 trim：否则输入框里刚敲的空格会被立刻吃掉。
+      // 纯空白值同样保留（取值时由 buildSopSeriesLockedFixedBlock trim 掉，不会进提示词）。
+      fixedValues: { 视觉风格: '3D 皮克斯风 ', 色彩体系: '   ' },
+    })
+    // 没有任何有效值时不下发 fixedValues 字段，避免把空对象写进资产
+    expect(normalizeSeriesConfig({ fixedValues: { 视觉风格: '' } })).not.toHaveProperty('fixedValues')
   })
 
   it('parses seriesConfig only when the SOP is declared as a series', () => {

@@ -110,6 +110,11 @@ export interface SopSeriesConfig {
   imageCount: 2 | 3
   fixedDimensions: string[]
   variableDimensions: string[]
+  /**
+   * 用户为固定维度填的具体值（键为维度名）。
+   * 填了的维度由客户端逐字拼进固定块，模型不得改写；留空的维度仍交给模型补全。
+   */
+  fixedValues?: Record<string, string>
 }
 
 export interface SopLibraryItem {

@@ -1153,6 +1153,12 @@ export const legacyComponentCoverage: LegacyComponentCoverage[] = [
     targets: ['Dialog', 'EmptyState'],
   },
   {
+    module: 'src/features/strategy/SeriesConsistencyControl.tsx',
+    responsibility: '系列图一致性设置：维度固定/变化切换与固定值填写',
+    decision: 'compose',
+    targets: ['Popover'],
+  },
+  {
     module: 'src/features/strategy/SopAiRevisionPanel.tsx',
     responsibility: 'SOP AI 多轮修订对话与提案操作',
     decision: 'compose',

@@ -1,5 +1,6 @@
 import { IMAGE_GENERATION_STRATEGY_SKILL_META_INSTRUCTION } from './skillMetaInstructions'
 import { compressSopReferenceImageIfNeeded } from '../../lib/sopReferenceImageCompression'
+import { SOP_SERIES_DEFAULT_FIXED_DIMENSIONS, SOP_SERIES_DEFAULT_VARIABLE_DIMENSIONS } from './sopSeriesDimensions'
 import type { SopKind, SopSeriesConfig } from './types'
 
 const GENERAL_SOP_GENERATOR_INSTRUCTION = `你是“标准作业程序（SOP）编译器”和 AI 视觉生产流程专家。你的任务是根据用户提供的自然语言需求和参考图片，编译成一套可直接作为模型核心指令使用的专业 SOP。
@@ -425,34 +426,38 @@ export function parseGeneratedSop(text: string): GeneratedSop {
 }
 
 /**
- * 归一化系列配置。AI 解析与「SOP 管理中心」的手工编辑共用同一套默认值，
- * 空数组视为未填写并回落到默认维度，避免生成出「固定块内容为的完整视觉规则」这类空规则。
+ * 归一化系列配置。AI 解析与「SOP 管理中心」的手工编辑共用同一套默认值。
+ *
+ * 字段缺失（不是数组）时回落到默认维度；**显式空数组视为用户明确「不固定 / 不变化任何维度」并原样保留** ——
+ * 否则在 SOP 管理中心把维度全部切成「变化」时，开关会因为回落默认值而自己弹回来。
+ * 空维度导致的空规则文案由 buildSopPromptBatchRequest 单独兜底。
  */
 export function normalizeSeriesConfig(value: {
   imageCount?: unknown
   fixedDimensions?: unknown
   variableDimensions?: unknown
+  fixedValues?: unknown
 }): SopSeriesConfig {
   const imageCount = value.imageCount === 2 ? 2 : 3
   const toDimensions = (input: unknown, fallback: string[]) => {
     if (!Array.isArray(input)) return fallback
-    const dimensions = input
+    return input
       .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
       .map((item) => item.trim())
-    return dimensions.length ? dimensions : fallback
+  }
+  const rawValues =
+    value.fixedValues && typeof value.fixedValues === 'object' ? (value.fixedValues as Record<string, unknown>) : {}
+  // 保留原始文本不 trim：输入框里刚敲的空格否则会被立刻吃掉。取值时才 trim。
+  const fixedValues: Record<string, string> = {}
+  for (const [dimension, raw] of Object.entries(rawValues)) {
+    if (typeof raw !== 'string' || raw === '') continue
+    fixedValues[dimension] = raw
   }
   return {
     imageCount,
-    fixedDimensions: toDimensions(value.fixedDimensions, [
-      '视觉风格',
-      '构图方式',
-      '排版方式',
-      '文案结构',
-      '色彩体系',
-      '光线',
-      '镜头语言',
-    ]),
-    variableDimensions: toDimensions(value.variableDimensions, ['主体', '背景']),
+    fixedDimensions: toDimensions(value.fixedDimensions, SOP_SERIES_DEFAULT_FIXED_DIMENSIONS),
+    variableDimensions: toDimensions(value.variableDimensions, SOP_SERIES_DEFAULT_VARIABLE_DIMENSIONS),
+    ...(Object.keys(fixedValues).length ? { fixedValues } : {}),
   }
 }
 

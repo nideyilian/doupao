@@ -13,7 +13,6 @@ import {
   MenuSeparator,
   SearchField,
   SelectField,
-  Switch,
   TextField,
 } from '../../design-system'
 import {
@@ -34,20 +33,11 @@ import { useAppDialog } from '../../hooks/useAppDialog'
 import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
 import { useStore } from '../../store'
 import type { TaskRecord } from '../../types'
-import type { SopGroup, SopLibraryItem, SopSeriesConfig } from './types'
+import type { SopGroup, SopLibraryItem } from './types'
 import SopImageStack from './SopImageStack'
 import SopTextEditor from './SopTextEditor'
-import { normalizeSeriesConfig } from './sopGeneration'
 
 const SOP_DRAG_TYPE = 'application/x-doupao-sop-ids'
-
-/** 维度输入框的展示与解析：用户用逗号/顿号/分号分隔，内部存数组。 */
-function parseDimensionInput(value: string) {
-  return value
-    .split(/[,，、;；]/u)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
 
 export type SopLibraryTabProps = {
   groups: SopGroup[]
@@ -146,21 +136,7 @@ export default function SopLibraryTab({
   const showToast = useStore((state) => state.showToast)
   const [editorMenuOpen, setEditorMenuOpen] = useState(false)
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null)
-  // 维度输入框保留用户原始文本（含未完成的分隔符），否则「视觉风格、」会被立刻吃掉顿号
-  const [fixedDimensionsDraft, setFixedDimensionsDraft] = useState('')
-  const [variableDimensionsDraft, setVariableDimensionsDraft] = useState('')
-  const syncedSeriesItemRef = useRef<string | null>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    // 只在切换 SOP 或开关系列图时回填，编辑过程中不回写，避免打断输入
-    const seriesConfig = itemDraft?.seriesConfig
-    const key = itemDraft ? `${itemDraft.id}:${seriesConfig ? 'series' : 'single'}` : null
-    if (key === syncedSeriesItemRef.current) return
-    syncedSeriesItemRef.current = key
-    setFixedDimensionsDraft(seriesConfig ? seriesConfig.fixedDimensions.join('、') : '')
-    setVariableDimensionsDraft(seriesConfig ? seriesConfig.variableDimensions.join('、') : '')
-  }, [itemDraft])
 
   useCloseOnEscape(editorMenuOpen, () => setEditorMenuOpen(false))
 
@@ -211,23 +187,6 @@ export default function SopLibraryTab({
     } catch {
       // 忽略无效的拖拽负载
     }
-  }
-
-  /** 打开「系列图」时补一份默认配置，关闭时连同 kind 一起清掉，避免留下孤儿字段。 */
-  const toggleSeriesKind = (checked: boolean) => {
-    setItemDraft((current) => {
-      if (!current) return current
-      if (!checked) return { ...current, kind: undefined, seriesConfig: undefined }
-      return { ...current, kind: 'series', seriesConfig: current.seriesConfig ?? normalizeSeriesConfig({}) }
-    })
-  }
-
-  const updateSeriesConfig = (patch: Partial<SopSeriesConfig>) => {
-    setItemDraft((current) =>
-      current?.seriesConfig
-        ? { ...current, seriesConfig: normalizeSeriesConfig({ ...current.seriesConfig, ...patch }) }
-        : current,
-    )
   }
 
   return (
@@ -574,44 +533,6 @@ export default function SopLibraryTab({
                 value={itemDraft.description}
                 onChange={(event) => setItemDraft({ ...itemDraft, description: event.target.value })}
               />
-            </div>
-            <div className="flex flex-col gap-3 rounded-lg border border-ds-border bg-ds-surface p-3">
-              <Switch
-                checked={itemDraft.kind === 'series'}
-                onCheckedChange={toggleSeriesKind}
-                aria-label="把该 SOP 标记为系列图"
-                label="系列图"
-                description="固定维度在一组内逐字复用，可变维度逐张变化；实际生图时同组第 1 张还会作为其余画面的参考图。"
-              />
-              {itemDraft.seriesConfig && (
-                <div className="sop-center-editor-fields">
-                  <SelectField
-                    label="每组张数"
-                    value={String(itemDraft.seriesConfig.imageCount)}
-                    onChange={(event) => updateSeriesConfig({ imageCount: event.target.value === '2' ? 2 : 3 })}
-                    options={[
-                      { value: '2', label: '2 张' },
-                      { value: '3', label: '3 张' },
-                    ]}
-                  />
-                  <TextField
-                    label="固定维度"
-                    value={fixedDimensionsDraft}
-                    onChange={(event) => {
-                      setFixedDimensionsDraft(event.target.value)
-                      updateSeriesConfig({ fixedDimensions: parseDimensionInput(event.target.value) })
-                    }}
-                  />
-                  <TextField
-                    label="可变维度"
-                    value={variableDimensionsDraft}
-                    onChange={(event) => {
-                      setVariableDimensionsDraft(event.target.value)
-                      updateSeriesConfig({ variableDimensions: parseDimensionInput(event.target.value) })
-                    }}
-                  />
-                </div>
-              )}
             </div>
             <SopTextEditor
               documentId={itemDraft.id}

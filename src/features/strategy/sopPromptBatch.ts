@@ -1,3 +1,8 @@
+import {
+  buildSopSeriesLockedFixedBlock,
+  getSopSeriesFreeFixedDimensions,
+  mergeSopSeriesFixedBlock,
+} from './sopSeriesDimensions'
 import type { SopLibraryItem, SopSeriesConfig } from './types'
 
 export const MAX_SOP_PROMPTS_PER_MODEL_REQUEST = 10
@@ -391,6 +396,47 @@ export async function generateSopPromptBatches(
   return generated
 }
 
+/**
+ * 系列模式下固定块的指令，三种来源按优先级：
+ * 1. 已锁定的固定块（单成员重生成 / 批次补缺）—— 必须逐字沿用；
+ * 2. 用户手工填了值的固定维度 —— 由客户端直接拼进固定块，模型只补其余维度；
+ * 3. 模型自由撰写全部固定维度。
+ */
+function buildSopSeriesFixedInstruction(
+  seriesConfig: SopSeriesConfig,
+  seriesFixedBlock: string,
+  lockedFixedBlock: string,
+  freeFixedDimensions: string[],
+) {
+  if (seriesFixedBlock)
+    return [
+      '本组固定块已锁定，必须逐字沿用，不得改写、增删、调换顺序或重新措辞：',
+      `<FIXED>\n${seriesFixedBlock}\n</FIXED>`,
+    ].join('\n')
+  if (!seriesConfig.fixedDimensions.length) return '本组不固定任何维度，fixed 字段返回空字符串。'
+  const singleParagraph = '固定块必须是单段文本，不得换行分段，不得出现空行，不得包含“同上”“保持一致”等省略表达。'
+  if (!lockedFixedBlock)
+    return [
+      '每组只写一次「固定块」，用于锁定本系列的视觉常量，供组内每条提示词逐字复用。',
+      `固定块内容为${seriesConfig.fixedDimensions.join('、')}的完整视觉规则；${singleParagraph}`,
+    ].join('\n')
+  return [
+    '用户已逐字锁定以下固定项，客户端会直接把它们拼在固定块最前面，不要重复描述这些维度：',
+    `<LOCKED>\n${lockedFixedBlock}\n</LOCKED>`,
+    freeFixedDimensions.length
+      ? `固定块只写其余固定维度（${freeFixedDimensions.join('、')}）的完整视觉规则；${singleParagraph}`
+      : '固定维度已全部被用户锁定，fixed 字段返回空字符串。',
+  ].join('\n')
+}
+
+/** 系列模式下变化部分的指令；未限定可变维度时退化为「写出完整画面描述」。 */
+function buildSopSeriesVariableInstruction(seriesConfig: SopSeriesConfig) {
+  const tail = '不得重复固定块里已写过的风格、构图、排版、色彩与光线描述。'
+  return seriesConfig.variableDimensions.length
+    ? `每条提示词只写本张图的变化部分，内容为${seriesConfig.variableDimensions.join('、')}；${tail}`
+    : `每条提示词写出完整的画面描述（本次未限定可变维度）；${tail}`
+}
+
 export function buildSopPromptBatchRequest(
   sop: SopLibraryItem,
   quantity: number,
@@ -406,14 +452,14 @@ export function buildSopPromptBatchRequest(
   const seriesConfig = context.seriesConfig
   const seriesMemberCount = seriesConfig ? (context.seriesMemberOnly ? 1 : seriesConfig.imageCount) : 0
   const seriesFixedBlock = normalizeSopSeriesFixedBlock(context.seriesFixedBlock ?? '')
+  // 用户手工填了值的固定维度：由客户端直接拼进固定块，不交给模型改写。
+  const lockedFixedBlock = seriesConfig ? buildSopSeriesLockedFixedBlock(seriesConfig) : ''
+  const freeFixedDimensions = seriesConfig ? getSopSeriesFreeFixedDimensions(seriesConfig) : []
   const seriesInstruction = seriesConfig
     ? [
         `当前 SOP 是系列组图模式：每组必须输出 ${seriesMemberCount} 条提示词。`,
-        seriesFixedBlock
-          ? `本组固定块已锁定，必须逐字沿用，不得改写、增删、调换顺序或重新措辞：\n<FIXED>\n${seriesFixedBlock}\n</FIXED>`
-          : '每组只写一次「固定块」，用于锁定本系列的视觉常量，供组内每条提示词逐字复用。',
-        `固定块内容为${seriesConfig.fixedDimensions.join('、')}的完整视觉规则；必须是单段文本，不得换行分段，不得出现空行，不得包含“同上”“保持一致”等省略表达。`,
-        `每条提示词只写本张图的变化部分，内容为${seriesConfig.variableDimensions.join('、')}；不得重复固定块里已写过的风格、构图、排版、色彩与光线描述。`,
+        buildSopSeriesFixedInstruction(seriesConfig, seriesFixedBlock, lockedFixedBlock, freeFixedDimensions),
+        buildSopSeriesVariableInstruction(seriesConfig),
         `只返回合法 JSON：{"series":[{"fixed":"本组固定块原文","prompts":["系列图1变化部分"${seriesMemberCount >= 2 ? ',"系列图2变化部分"' : ''}${seriesMemberCount === 3 ? ',"系列图3变化部分"' : ''}]}]}`,
       ].join('\n')
     : ''
@@ -483,6 +529,7 @@ export function parseSopSeriesPromptBatchResponse(
   groupCount: number,
   seriesCount: number,
   fixedBlock?: string,
+  lockedFixedBlock?: string,
 ) {
   const expectedGroups = normalizeSopPromptCount(groupCount)
   const membersPerGroup = normalizeSopPromptCount(seriesCount)
@@ -510,7 +557,9 @@ export function parseSopSeriesPromptBatchResponse(
   // 批次单位换算（outputUnitSize）才不会错位。
   // 固定块一律由这里拼装：模型只负责写「变化部分」，组内共用同一段固定块原文，
   // 避免各条提示词各自改写风格描述导致同组画面风格、构图、排版漂移。
+  // 用户手工填了值的固定维度（lockedPrefix）永远排在模型补全段之前，保证用户填的内容逐字生效。
   const reusedFixedBlock = normalizeSopSeriesFixedBlock(fixedBlock ?? '')
+  const lockedPrefix = normalizeSopSeriesFixedBlock(lockedFixedBlock ?? '')
   const groups: Array<{ groupIndex: number; fixed: string; prompts: string[] }> = []
   for (let index = 0; index < series.length && groups.length < expectedGroups; index += 1) {
     const entry = series[index]
@@ -522,7 +571,11 @@ export function parseSopSeriesPromptBatchResponse(
       : []
     if (prompts.length < membersPerGroup) continue
     const groupFixed =
-      reusedFixedBlock || normalizeSopSeriesFixedBlock(typeof record.fixed === 'string' ? record.fixed : '')
+      reusedFixedBlock ||
+      mergeSopSeriesFixedBlock(
+        lockedPrefix,
+        normalizeSopSeriesFixedBlock(typeof record.fixed === 'string' ? record.fixed : ''),
+      )
     groups.push({
       groupIndex: index,
       fixed: groupFixed,

@@ -83,6 +83,8 @@ import {
 } from '../design-system/icons'
 import { getGallerySopPromptRunStorageKey, type GallerySopRunStatus } from '../features/strategy/adapters/gallerySopRun'
 import { getSopRunCounts, getSopTotalImageCount, MAX_SOP_IMAGES_PER_PROMPT } from '../features/strategy/sopPromptBatch'
+import { buildSopSeriesConfig, SOP_SERIES_DEFAULT_FIXED_DIMENSIONS } from '../features/strategy/sopSeriesDimensions'
+import SeriesConsistencyControl, { type SeriesConsistencyValue } from '../features/strategy/SeriesConsistencyControl'
 import { generateVariablePromptTwoPhase, generateVisualSkill } from '../features/strategy/adapters/storeSopGeneration'
 import {
   buildVisualSkillBatchPrompt,
@@ -768,6 +770,10 @@ export default function InputBar() {
   const [gallerySopImagesPerPromptByTab, setGallerySopImagesPerPromptByTab] = useState<Record<string, number>>({})
   const [gallerySopSeriesModeByTab, setGallerySopSeriesModeByTab] = useState<Record<string, boolean>>({})
   const [gallerySopSeriesImageCountByTab, setGallerySopSeriesImageCountByTab] = useState<Record<string, 2 | 3>>({})
+  /** 系列一致性（哪些维度组内固定、固定成什么值）：按标签页独立，未设置时回落 SOP 自身配置 */
+  const [gallerySopSeriesConsistencyByTab, setGallerySopSeriesConsistencyByTab] = useState<
+    Record<string, SeriesConsistencyValue>
+  >({})
   const [gallerySopAutoGenerateByTab, setGallerySopAutoGenerateByTab] = useState<Record<string, boolean>>({})
   /** 输入栏直接修改批次参数时递增，作为 GallerySopBatchModal 的外部同步信号 */
   const [gallerySopCountsNonce, setGallerySopCountsNonce] = useState(0)
@@ -840,6 +846,36 @@ export default function InputBar() {
     gallerySopSeriesModeByTab[gallerySopScopeKey] ?? Boolean(selectedGallerySop?.kind === 'series')
   const gallerySopSeriesImageCount =
     gallerySopSeriesImageCountByTab[gallerySopScopeKey] ?? selectedGallerySop?.seriesConfig?.imageCount ?? 3
+  /**
+   * 解析某个标签页作用域的一致性设置。
+   * 输入栏是系列一致性的唯一设置入口：本标签页改过就用改过的，没改过则用 SOP 自带配置兜底。
+   */
+  const resolveGallerySopSeriesConsistency = useCallback(
+    (scopeKey: string): SeriesConsistencyValue => {
+      const stored = gallerySopSeriesConsistencyByTab[scopeKey]
+      if (stored) return stored
+      const sop = sopItems.find((item) => item.id === gallerySopIdsByTab[scopeKey])
+      return {
+        fixedDimensions: sop?.seriesConfig?.fixedDimensions ?? [...SOP_SERIES_DEFAULT_FIXED_DIMENSIONS],
+        fixedValues: sop?.seriesConfig?.fixedValues ?? {},
+      }
+    },
+    [gallerySopIdsByTab, gallerySopSeriesConsistencyByTab, sopItems],
+  )
+  const resolveGallerySopSeriesConfig = useCallback(
+    (scopeKey: string) => {
+      const sop = sopItems.find((item) => item.id === gallerySopIdsByTab[scopeKey])
+      const consistency = resolveGallerySopSeriesConsistency(scopeKey)
+      return buildSopSeriesConfig({
+        imageCount: gallerySopSeriesImageCountByTab[scopeKey] ?? sop?.seriesConfig?.imageCount ?? 3,
+        fixedDimensions: consistency.fixedDimensions,
+        fixedValues: consistency.fixedValues,
+      })
+    },
+    [gallerySopIdsByTab, gallerySopSeriesImageCountByTab, resolveGallerySopSeriesConsistency, sopItems],
+  )
+  const gallerySopSeriesConsistency = resolveGallerySopSeriesConsistency(gallerySopScopeKey)
+  const gallerySopSeriesConfig = resolveGallerySopSeriesConfig(gallerySopScopeKey)
   const gallerySopAutoGenerate = gallerySopAutoGenerateByTab[gallerySopScopeKey] ?? false
   const gallerySopSecondReference = gallerySopSecondReferenceByTab[gallerySopScopeKey] ?? false
   const gallerySopTotalImages = getSopTotalImageCount(
@@ -861,6 +897,11 @@ export default function InputBar() {
         return next
       })
       setGallerySopSeriesImageCountByTab((current) => {
+        const next = { ...current }
+        delete next[gallerySopScopeKey]
+        return next
+      })
+      setGallerySopSeriesConsistencyByTab((current) => {
         const next = { ...current }
         delete next[gallerySopScopeKey]
         return next
@@ -3727,6 +3768,17 @@ export default function InputBar() {
               />
               <span>{gallerySopSeriesMode ? '版' : '张'}</span>
             </label>
+            {gallerySopSeriesMode && (
+              <SeriesConsistencyControl
+                value={gallerySopSeriesConsistency}
+                onChange={(next) => {
+                  setGallerySopSeriesConsistencyByTab((current) => ({ ...current, [gallerySopScopeKey]: next }))
+                  // 弹窗若已打开，靠 nonce 把新的一致性设置同步进去
+                  setGallerySopCountsNonce((current) => current + 1)
+                }}
+                disabled={gallerySopIsRunning}
+              />
+            )}
             <span
               className="inline-flex h-ds-control-md shrink-0 items-center rounded-full bg-ds-primary-subtle px-3 text-xs font-medium text-ds-primary dark:bg-ds-primary/10 dark:text-ds-primary"
               title={
@@ -5377,6 +5429,7 @@ export default function InputBar() {
                 3
               }
               syncInitialGenerationCounts
+              initialSeriesConfig={gallerySopSeriesConfig}
               initialBrief={prompt}
               initialAutoGenerate={gallerySopAutoGenerateByTab[scopeKey] ?? false}
               countsSync={{
@@ -5391,6 +5444,7 @@ export default function InputBar() {
                   3,
                 autoGenerate: gallerySopAutoGenerateByTab[scopeKey] ?? false,
                 secondReference: gallerySopSecondReferenceByTab[scopeKey] ?? false,
+                seriesConfig: resolveGallerySopSeriesConfig(scopeKey),
                 nonce: gallerySopCountsNonce,
               }}
               initialSecondReference={gallerySopSecondReferenceByTab[scopeKey] ?? false}
