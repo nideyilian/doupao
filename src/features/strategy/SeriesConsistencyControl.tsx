@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Popover, cx } from '../../design-system'
 import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
-import { SOP_SERIES_DEFAULT_FIXED_DIMENSIONS, SOP_SERIES_DIMENSIONS } from './sopSeriesDimensions'
+import {
+  SOP_SERIES_COPY_DIMENSION,
+  SOP_SERIES_DEFAULT_FIXED_DIMENSIONS,
+  SOP_SERIES_DIMENSIONS,
+} from './sopSeriesDimensions'
 
 /** 系列一致性配置：哪些维度组内固定、固定成什么值。 */
 export interface SeriesConsistencyValue {
@@ -51,6 +55,7 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
 
   const fixedCount = value.fixedDimensions.length
   const lockedCount = value.fixedDimensions.filter((dimension) => value.fixedValues[dimension]?.trim()).length
+  const copyFixed = value.fixedDimensions.includes(SOP_SERIES_COPY_DIMENSION)
 
   const toggleDimension = (dimension: string) => {
     const nextFixed = value.fixedDimensions.includes(dimension)
@@ -150,14 +155,21 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
               <p className="mb-1.5 text-xs text-ds-muted">固定成什么（留空＝模型决定）</p>
               <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
                 {value.fixedDimensions.map((dimension) => (
-                  <label key={dimension} className="flex items-center gap-1.5 text-xs">
+                  <label
+                    key={dimension}
+                    // 文案比「3D 皮克斯风」这类关键词长得多，占满整行才看得全
+                    className={cx(
+                      'flex items-center gap-1.5 text-xs',
+                      dimension === SOP_SERIES_COPY_DIMENSION && 'col-span-2',
+                    )}
+                  >
                     <span className="shrink-0 text-ds-muted">{dimension}</span>
                     <input
                       type="text"
                       value={value.fixedValues[dimension] ?? ''}
                       onChange={(event) => setFixedValue(dimension, event.target.value)}
                       aria-label={`${dimension}固定值`}
-                      placeholder="模型自动"
+                      placeholder={dimension === SOP_SERIES_COPY_DIMENSION ? '模型定一句' : '模型自动'}
                       className="h-ds-control-sm min-w-0 flex-1 rounded-ds-md border border-ds-border bg-ds-surface px-2 text-xs text-ds-text outline-none placeholder:text-ds-muted focus-visible:border-ds-primary/40 focus-visible:ring-2 focus-visible:ring-ds-focus"
                     />
                   </label>
@@ -165,6 +177,9 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
               </div>
               {lockedCount > 0 && (
                 <p className="mt-2 text-xs leading-4 text-ds-muted">填了值的固定项会逐字写进提示词，模型不会改写。</p>
+              )}
+              {copyFixed && (
+                <p className="mt-1.5 text-xs leading-4 text-ds-muted">固定的文案会逐字画在图上，一组内每张都一样。</p>
               )}
             </>
           ) : (

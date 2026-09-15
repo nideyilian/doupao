@@ -51,6 +51,7 @@ import {
   allocateSopPromptCounts,
   getSopRunCounts,
   getSopSeriesFixedBlock,
+  getSopSeriesCopyBlock,
   getSopTotalImageCount,
   MAX_SOP_IMAGES_PER_PROMPT,
   normalizeSopPromptCandidates,
@@ -2278,18 +2279,24 @@ export default function GallerySopBatchModal({
       // 系列模式只重生成组内这一张：固定块沿用原提示词（或同组其他成员）里的原文，
       // 否则新提示词会带上一段新的视觉规范，把这一张从系列里拆出去。
       const itemSeries = item.series
+      const siblingPromptText =
+        activeSeriesMode && itemSeries
+          ? (prompts.find(
+              (entry) =>
+                entry.id !== item.id &&
+                !entry.deleted &&
+                entry.series?.groupIndex === itemSeries.groupIndex &&
+                entry.series?.seriesCount === itemSeries.seriesCount,
+            )?.promptText ?? '')
+          : ''
       const seriesFixedBlock =
         activeSeriesMode && itemSeries
-          ? getSopSeriesFixedBlock(item.promptText) ||
-            getSopSeriesFixedBlock(
-              prompts.find(
-                (entry) =>
-                  entry.id !== item.id &&
-                  !entry.deleted &&
-                  entry.series?.groupIndex === itemSeries.groupIndex &&
-                  entry.series?.seriesCount === itemSeries.seriesCount,
-              )?.promptText ?? '',
-            )
+          ? getSopSeriesFixedBlock(item.promptText) || getSopSeriesFixedBlock(siblingPromptText)
+          : ''
+      // 画面文字段同样要沿用：文案整组固定时，重生成这一张不能换成另一句文案
+      const seriesCopyBlock =
+        activeSeriesMode && itemSeries
+          ? getSopSeriesCopyBlock(item.promptText) || getSopSeriesCopyBlock(siblingPromptText)
           : ''
       const generated = await generatePromptsFromSopStore(selectedSop, 1, effectiveBrief, {
         context: {
@@ -2303,6 +2310,7 @@ export default function GallerySopBatchModal({
           seriesConfig: activeSeriesMode ? effectiveSeriesConfig : undefined,
           seriesMemberOnly: Boolean(activeSeriesMode && itemSeries),
           seriesFixedBlock: seriesFixedBlock || undefined,
+          seriesCopyBlock: seriesCopyBlock || undefined,
         },
         referenceImages: sourceImage ? [{ name: source?.label ?? '参考图', dataUrl: sourceImage.dataUrl }] : undefined,
         exact: true,

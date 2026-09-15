@@ -32,7 +32,7 @@ import {
   type SopPromptBatchContext,
 } from '../sopPromptBatch'
 import { IMAGE_GENERATION_STRATEGY_SKILL_META_INSTRUCTION } from '../skillMetaInstructions'
-import { buildSopSeriesLockedFixedBlock } from '../sopSeriesDimensions'
+import { buildSopSeriesLockedCopy, buildSopSeriesLockedFixedBlock } from '../sopSeriesDimensions'
 import { DERIVE_DIMENSIONS, validateVariablePromptTemplate, type DeriveDimensionPolicy } from '../derivePolicy'
 import { VISUAL_PROFILE_INSTRUCTION, buildProfileSummary, parseVisualProfiles } from '../visualProfile'
 import type { SopLibraryItem } from '../types'
@@ -507,14 +507,14 @@ export async function generatePromptsFromSopStore(
       const payload = await response.json()
       const resultText = useChatCompletions ? extractChatCompletionsText(payload) : extractResponseText(payload)
       if (seriesConfig) {
-        const groups = parseSopSeriesPromptBatchResponse(
-          resultText,
-          requestQuantity,
-          seriesCount,
-          options.context?.seriesFixedBlock,
+        const groups = parseSopSeriesPromptBatchResponse(resultText, requestQuantity, seriesCount, {
+          fixedBlock: options.context?.seriesFixedBlock,
+          copyBlock: options.context?.seriesCopyBlock,
           // 用户手工填了值的固定维度由客户端逐字拼进固定块，模型改写不了
-          buildSopSeriesLockedFixedBlock(seriesConfig),
-        )
+          lockedFixedBlock: buildSopSeriesLockedFixedBlock(seriesConfig),
+          // 文案同理：单独走画面文字段，避免被「非画面文字」前缀挡掉
+          lockedCopy: buildSopSeriesLockedCopy(seriesConfig),
+        })
         return groups.flatMap((group) => group.prompts)
       }
       return parseSopPromptBatchResponse(resultText, batchQuantity, { exact: false, existingPrompts })

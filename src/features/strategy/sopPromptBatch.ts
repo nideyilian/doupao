@@ -1,6 +1,8 @@
 import {
+  buildSopSeriesLockedCopy,
   buildSopSeriesLockedFixedBlock,
   getSopSeriesFreeFixedDimensions,
+  isSopSeriesCopyFixed,
   mergeSopSeriesFixedBlock,
 } from './sopSeriesDimensions'
 import type { SopLibraryItem, SopSeriesConfig } from './types'
@@ -28,6 +30,11 @@ export interface SopPromptBatchContext {
    * 单成员重生成、批次补缺都用它保证同组画面共用同一段视觉规范。
    */
   seriesFixedBlock?: string
+  /**
+   * 组内画面文字段：与 seriesFixedBlock 配套，同样逐字沿用。
+   * 「文案内容」固定时才有值，单独成段是因为固定块被标注为「非画面文字」。
+   */
+  seriesCopyBlock?: string
 }
 
 /**
@@ -36,6 +43,11 @@ export interface SopPromptBatchContext {
  */
 export const SOP_SERIES_FIXED_PREFIX = '系列统一规范（非画面文字）：'
 export const SOP_SERIES_VARIABLE_PREFIX = '本张画面：'
+/**
+ * 画面文字段前缀。整组共用的文案不能塞进上面的固定块 —— 那个块被显式标注「非画面文字」，
+ * 图片模型会刻意不把它渲染成文字。所以文案单独成段，并显式要求逐字绘制。
+ */
+export const SOP_SERIES_COPY_PREFIX = '画面文字（逐字绘制）：'
 
 export const SOP_PROMPT_GENERATOR_INSTRUCTION = `你是图像生成提示词编排专家，也是可靠的 SOP 执行器。
 
@@ -311,13 +323,21 @@ export function stripSopSeriesFixedPrefix(memberPrompt: string, fixedBlock: stri
     .trim()
 }
 
-/** 把组内固定块与单张变化部分拼成最终提示词；固定块逐字复用，组内成员完全一致。 */
-export function assembleSopSeriesPrompt(fixedBlock: string, memberPrompt: string) {
+/**
+ * 把组内固定块、画面文字段与单张变化部分拼成最终提示词；固定块与画面文字逐字复用，组内成员完全一致。
+ * 三段顺序固定：固定块 → 画面文字 → 本张画面。缺哪段就省哪段。
+ */
+export function assembleSopSeriesPrompt(fixedBlock: string, memberPrompt: string, copyBlock = '') {
   const fixed = normalizeSopSeriesFixedBlock(fixedBlock)
+  const copy = normalizeSopSeriesFixedBlock(copyBlock)
   const member = stripSopSeriesFixedPrefix(memberPrompt, fixed)
-  if (!fixed) return member
-  if (!member) return `${SOP_SERIES_FIXED_PREFIX}${fixed}`
-  return `${SOP_SERIES_FIXED_PREFIX}${fixed}\n${SOP_SERIES_VARIABLE_PREFIX}${member}`
+  // 既没有固定块也没有画面文字时退化为裸提示词，与单条生成保持一致
+  if (!fixed && !copy) return member
+  const lines: string[] = []
+  if (fixed) lines.push(`${SOP_SERIES_FIXED_PREFIX}${fixed}`)
+  if (copy) lines.push(`${SOP_SERIES_COPY_PREFIX}${copy}`)
+  if (member) lines.push(`${SOP_SERIES_VARIABLE_PREFIX}${member}`)
+  return lines.join('\n')
 }
 
 /** 从已生成的系列提示词中取回固定块，供单成员重生成复用（组内成员共用同一段）。 */
@@ -325,6 +345,16 @@ export function getSopSeriesFixedBlock(prompt: string) {
   const firstLine = prompt.trim().split('\n', 1)[0]?.trim() ?? ''
   if (!firstLine.startsWith(SOP_SERIES_FIXED_PREFIX)) return ''
   return firstLine.slice(SOP_SERIES_FIXED_PREFIX.length).trim()
+}
+
+/** 从已生成的系列提示词中取回画面文字段，供单成员重生成复用（与固定块配套）。 */
+export function getSopSeriesCopyBlock(prompt: string) {
+  const line = prompt
+    .trim()
+    .split('\n')
+    .find((item) => item.trim().startsWith(SOP_SERIES_COPY_PREFIX))
+  if (!line) return ''
+  return line.trim().slice(SOP_SERIES_COPY_PREFIX.length).trim()
 }
 
 export async function generateSopPromptBatches(
@@ -397,28 +427,31 @@ export async function generateSopPromptBatches(
 }
 
 /**
- * 系列模式下固定块的指令，三种来源按优先级：
+ * 系列模式下固定块的指令，来源按优先级：
  * 1. 已锁定的固定块（单成员重生成 / 批次补缺）—— 必须逐字沿用；
  * 2. 用户手工填了值的固定维度 —— 由客户端直接拼进固定块，模型只补其余维度；
  * 3. 模型自由撰写全部固定维度。
+ * 文案内容不走这里（见 buildSopSeriesCopyInstruction）：固定块被标注「非画面文字」。
  */
-function buildSopSeriesFixedInstruction(
-  seriesConfig: SopSeriesConfig,
-  seriesFixedBlock: string,
-  lockedFixedBlock: string,
-  freeFixedDimensions: string[],
-) {
+function buildSopSeriesFixedInstruction(input: {
+  seriesConfig: SopSeriesConfig
+  seriesFixedBlock: string
+  lockedFixedBlock: string
+  freeFixedDimensions: string[]
+}) {
+  const { freeFixedDimensions, lockedFixedBlock, seriesConfig, seriesFixedBlock } = input
   if (seriesFixedBlock)
     return [
       '本组固定块已锁定，必须逐字沿用，不得改写、增删、调换顺序或重新措辞：',
       `<FIXED>\n${seriesFixedBlock}\n</FIXED>`,
     ].join('\n')
-  if (!seriesConfig.fixedDimensions.length) return '本组不固定任何维度，fixed 字段返回空字符串。'
+  if (!freeFixedDimensions.length && !lockedFixedBlock)
+    return '本组没有需要写进固定块的视觉维度，fixed 字段返回空字符串。'
   const singleParagraph = '固定块必须是单段文本，不得换行分段，不得出现空行，不得包含“同上”“保持一致”等省略表达。'
   if (!lockedFixedBlock)
     return [
       '每组只写一次「固定块」，用于锁定本系列的视觉常量，供组内每条提示词逐字复用。',
-      `固定块内容为${seriesConfig.fixedDimensions.join('、')}的完整视觉规则；${singleParagraph}`,
+      `固定块内容为${freeFixedDimensions.join('、')}的完整视觉规则；${singleParagraph}`,
     ].join('\n')
   return [
     '用户已逐字锁定以下固定项，客户端会直接把它们拼在固定块最前面，不要重复描述这些维度：',
@@ -429,9 +462,38 @@ function buildSopSeriesFixedInstruction(
   ].join('\n')
 }
 
+/**
+ * 系列模式下画面文字（fixedCopy 字段）的指令。
+ * 画面文字单独走一个字段，因为固定块前缀写死了「非画面文字」，塞进去会被模型刻意不渲染。
+ */
+function buildSopSeriesCopyInstruction(input: {
+  seriesConfig: SopSeriesConfig
+  seriesCopyBlock: string
+  lockedCopy: string
+}) {
+  const { lockedCopy, seriesConfig, seriesCopyBlock } = input
+  if (seriesCopyBlock)
+    return ['本组画面文字已锁定，必须逐字沿用，不得改写、增删或重新措辞：', `<COPY>\n${seriesCopyBlock}\n</COPY>`].join(
+      '\n',
+    )
+  if (lockedCopy)
+    return '用户已逐字锁定画面文字，客户端会直接拼在固定块之后，fixedCopy 字段返回空字符串，各条提示词也不得再写文案。'
+  if (isSopSeriesCopyFixed(seriesConfig))
+    return [
+      '「文案内容」已固定：请在 fixedCopy 字段写出本组唯一的那一句画面文字，要求可直接绘制、逐字可用、不带任何解释或标注。',
+      '组内每条提示词都不得再写自己的文案，只写画面其余部分。',
+    ].join('\n')
+  return '「文案内容」每张变化：fixedCopy 字段返回空字符串，文案写在各条提示词的变化部分里。'
+}
+
 /** 系列模式下变化部分的指令；未限定可变维度时退化为「写出完整画面描述」。 */
 function buildSopSeriesVariableInstruction(seriesConfig: SopSeriesConfig) {
-  const tail = '不得重复固定块里已写过的风格、构图、排版、色彩与光线描述。'
+  const tail = [
+    '不得重复固定块里已写过的风格、构图、排版、色彩与光线描述。',
+    isSopSeriesCopyFixed(seriesConfig) ? '文案内容已整组固定，变化部分不得再写任何画面文字。' : '',
+  ]
+    .filter(Boolean)
+    .join('')
   return seriesConfig.variableDimensions.length
     ? `每条提示词只写本张图的变化部分，内容为${seriesConfig.variableDimensions.join('、')}；${tail}`
     : `每条提示词写出完整的画面描述（本次未限定可变维度）；${tail}`
@@ -452,15 +514,19 @@ export function buildSopPromptBatchRequest(
   const seriesConfig = context.seriesConfig
   const seriesMemberCount = seriesConfig ? (context.seriesMemberOnly ? 1 : seriesConfig.imageCount) : 0
   const seriesFixedBlock = normalizeSopSeriesFixedBlock(context.seriesFixedBlock ?? '')
+  const seriesCopyBlock = normalizeSopSeriesFixedBlock(context.seriesCopyBlock ?? '')
   // 用户手工填了值的固定维度：由客户端直接拼进固定块，不交给模型改写。
   const lockedFixedBlock = seriesConfig ? buildSopSeriesLockedFixedBlock(seriesConfig) : ''
+  // 用户手工填了的文案：客户端直接拼成画面文字段，模型只负责照写。
+  const lockedCopy = seriesConfig ? buildSopSeriesLockedCopy(seriesConfig) : ''
   const freeFixedDimensions = seriesConfig ? getSopSeriesFreeFixedDimensions(seriesConfig) : []
   const seriesInstruction = seriesConfig
     ? [
         `当前 SOP 是系列组图模式：每组必须输出 ${seriesMemberCount} 条提示词。`,
-        buildSopSeriesFixedInstruction(seriesConfig, seriesFixedBlock, lockedFixedBlock, freeFixedDimensions),
+        buildSopSeriesFixedInstruction({ seriesConfig, seriesFixedBlock, lockedFixedBlock, freeFixedDimensions }),
+        buildSopSeriesCopyInstruction({ seriesConfig, seriesCopyBlock, lockedCopy }),
         buildSopSeriesVariableInstruction(seriesConfig),
-        `只返回合法 JSON：{"series":[{"fixed":"本组固定块原文","prompts":["系列图1变化部分"${seriesMemberCount >= 2 ? ',"系列图2变化部分"' : ''}${seriesMemberCount === 3 ? ',"系列图3变化部分"' : ''}]}]}`,
+        `只返回合法 JSON：{"series":[{"fixed":"本组固定块原文","fixedCopy":"本组画面文字，没有则空字符串","prompts":["系列图1变化部分"${seriesMemberCount >= 2 ? ',"系列图2变化部分"' : ''}${seriesMemberCount === 3 ? ',"系列图3变化部分"' : ''}]}]}`,
       ].join('\n')
     : ''
   return [
@@ -524,12 +590,23 @@ export function parseSopPromptBatchResponse(
   return normalized
 }
 
+/** 系列提示词解析的拼装输入：固定块与画面文字段的四个来源。 */
+export interface SopSeriesPromptBatchOptions {
+  /** 已锁定的固定块（单成员重生成 / 批次补缺）—— 必须逐字沿用。 */
+  fixedBlock?: string
+  /** 与 fixedBlock 配套的画面文字段。 */
+  copyBlock?: string
+  /** 用户手工填了值的固定维度拼成的锁定段。 */
+  lockedFixedBlock?: string
+  /** 用户手工填了值的画面文字。 */
+  lockedCopy?: string
+}
+
 export function parseSopSeriesPromptBatchResponse(
   text: string,
   groupCount: number,
   seriesCount: number,
-  fixedBlock?: string,
-  lockedFixedBlock?: string,
+  options: SopSeriesPromptBatchOptions = {},
 ) {
   const expectedGroups = normalizeSopPromptCount(groupCount)
   const membersPerGroup = normalizeSopPromptCount(seriesCount)
@@ -555,15 +632,19 @@ export function parseSopSeriesPromptBatchResponse(
   // 不支持 json_schema 的模型可能给出偏差的组数或组内条数：组数多则截断到目标组数，
   // 少则留给批次循环补缺口；组内不足的组直接丢弃，保证每组都是完整的一组画面，
   // 批次单位换算（outputUnitSize）才不会错位。
-  // 固定块一律由这里拼装：模型只负责写「变化部分」，组内共用同一段固定块原文，
+  // 固定块与画面文字段一律由这里拼装：模型只负责写「变化部分」，组内共用同一段原文，
   // 避免各条提示词各自改写风格描述导致同组画面风格、构图、排版漂移。
   // 用户手工填了值的固定维度（lockedPrefix）永远排在模型补全段之前，保证用户填的内容逐字生效。
-  const reusedFixedBlock = normalizeSopSeriesFixedBlock(fixedBlock ?? '')
-  const lockedPrefix = normalizeSopSeriesFixedBlock(lockedFixedBlock ?? '')
-  const groups: Array<{ groupIndex: number; fixed: string; prompts: string[] }> = []
+  // 画面文字优先级：已锁定段 > 用户填的文案 > 模型写的 fixedCopy。
+  const reusedFixedBlock = normalizeSopSeriesFixedBlock(options.fixedBlock ?? '')
+  const reusedCopyBlock = normalizeSopSeriesFixedBlock(options.copyBlock ?? '')
+  const lockedPrefix = normalizeSopSeriesFixedBlock(options.lockedFixedBlock ?? '')
+  const lockedCopy = normalizeSopSeriesFixedBlock(options.lockedCopy ?? '')
+  const groups: Array<{ groupIndex: number; fixed: string; copy: string; prompts: string[] }> = []
   for (let index = 0; index < series.length && groups.length < expectedGroups; index += 1) {
     const entry = series[index]
-    const record = entry && typeof entry === 'object' ? (entry as { fixed?: unknown; prompts?: unknown }) : {}
+    const record =
+      entry && typeof entry === 'object' ? (entry as { fixed?: unknown; fixedCopy?: unknown; prompts?: unknown }) : {}
     const prompts = Array.isArray(record.prompts)
       ? record.prompts
           .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
@@ -576,10 +657,15 @@ export function parseSopSeriesPromptBatchResponse(
         lockedPrefix,
         normalizeSopSeriesFixedBlock(typeof record.fixed === 'string' ? record.fixed : ''),
       )
+    const groupCopy =
+      reusedCopyBlock ||
+      lockedCopy ||
+      normalizeSopSeriesFixedBlock(typeof record.fixedCopy === 'string' ? record.fixedCopy : '')
     groups.push({
       groupIndex: index,
       fixed: groupFixed,
-      prompts: prompts.slice(0, membersPerGroup).map((item) => assembleSopSeriesPrompt(groupFixed, item)),
+      copy: groupCopy,
+      prompts: prompts.slice(0, membersPerGroup).map((item) => assembleSopSeriesPrompt(groupFixed, item, groupCopy)),
     })
   }
   if (!groups.length) throw new Error(`模型未返回完整的一组系列提示词，每组需要 ${membersPerGroup} 条`)

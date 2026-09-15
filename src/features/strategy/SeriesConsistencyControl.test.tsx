@@ -66,10 +66,24 @@ describe('SeriesConsistencyControl', () => {
     const chips = renderer.root.findAllByProps({ role: 'switch' })
     expect(chips).toHaveLength(SOP_SERIES_DIMENSIONS.length)
     expect(chips.map((chip) => chip.props.children)).toEqual([...SOP_SERIES_DIMENSIONS])
-    // 默认固定 5 项、变化 2 项，变化项不出现值输入框
+    // 默认固定 5 项、变化 3 项（主体 / 背景 / 文案内容），变化项不出现值输入框
     expect(trigger(renderer.root)!.props['aria-label']).toContain('5 项组内固定')
     expect(fixedValueInput(renderer.root, '主体')).toBeUndefined()
     expect(fixedValueInput(renderer.root, '背景')).toBeUndefined()
+    expect(fixedValueInput(renderer.root, '文案内容')).toBeUndefined()
+
+    renderer.unmount()
+  })
+
+  it('lets 文案内容 be pinned to one group-wide line of on-image copy', () => {
+    const { renderer, state } = renderControl()
+
+    expect(state.latest.fixedDimensions).not.toContain('文案内容')
+    act(() => dimensionChip(renderer.root, '文案内容')!.props.onClick())
+
+    expect(state.latest.fixedDimensions).toContain('文案内容')
+    act(() => fixedValueInput(renderer.root, '文案内容')!.props.onChange({ target: { value: '限时 5 折' } }))
+    expect(state.latest.fixedValues['文案内容']).toBe('限时 5 折')
 
     renderer.unmount()
   })
@@ -107,14 +121,15 @@ describe('SeriesConsistencyControl', () => {
 
   it('counts only non-blank fixed values as locked', () => {
     const { renderer } = renderControl()
+    const expectedSummary = `一致性5/${SOP_SERIES_DIMENSIONS.length}`
 
     // 触发按钮收起时也要能一眼看到有几个维度被钉死
-    expect(textContent(trigger(renderer.root)!)).toBe('一致性5/7')
+    expect(textContent(trigger(renderer.root)!)).toBe(expectedSummary)
     act(() => fixedValueInput(renderer.root, '画风')!.props.onChange({ target: { value: '   ' } }))
-    expect(textContent(trigger(renderer.root)!)).toBe('一致性5/7')
+    expect(textContent(trigger(renderer.root)!)).toBe(expectedSummary)
 
     act(() => fixedValueInput(renderer.root, '画风')!.props.onChange({ target: { value: '写实' } }))
-    expect(textContent(trigger(renderer.root)!)).toBe('一致性5/7· 锁定 1')
+    expect(textContent(trigger(renderer.root)!)).toBe(`${expectedSummary}· 锁定 1`)
 
     renderer.unmount()
   })

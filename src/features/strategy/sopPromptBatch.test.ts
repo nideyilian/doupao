@@ -7,6 +7,7 @@ import {
   getMentionedSopSourceIndexes,
   getSopRunCounts,
   getSopPromptBatchSizes,
+  getSopSeriesCopyBlock,
   getSopSeriesFixedBlock,
   getSopTotalImageCount,
   parseSopPromptBatchResponse,
@@ -344,7 +345,7 @@ describe('SOP prompt batch', () => {
       '{"series":[{"fixed":"模型自己改写的固定块","prompts":["图1","图2"]}]}',
       1,
       2,
-      '蓝色背景，中心对称构图',
+      { fixedBlock: '蓝色背景，中心对称构图' },
     )
 
     expect(groups[0].fixed).toBe('蓝色背景，中心对称构图')
@@ -359,8 +360,7 @@ describe('SOP prompt batch', () => {
       '{"series":[{"fixed":"构图方式：中心对称；光线：柔和顶光","prompts":["图1","图2"]}]}',
       1,
       2,
-      undefined,
-      '视觉风格：3D 皮克斯风；色彩体系：莫兰迪低饱和',
+      { lockedFixedBlock: '视觉风格：3D 皮克斯风；色彩体系：莫兰迪低饱和' },
     )
 
     // 用户填的值必须逐字出现在固定块最前面，模型补的部分跟在后面
@@ -376,21 +376,16 @@ describe('SOP prompt batch', () => {
       '{"series":[{"fixed":"模型改写过的内容","prompts":["图1","图2"]}]}',
       1,
       2,
-      '视觉风格：3D 皮克斯风；构图方式：中心对称',
-      '视觉风格：3D 皮克斯风',
+      { fixedBlock: '视觉风格：3D 皮克斯风；构图方式：中心对称', lockedFixedBlock: '视觉风格：3D 皮克斯风' },
     )
 
     expect(groups[0].fixed).toBe('视觉风格：3D 皮克斯风；构图方式：中心对称')
   })
 
   it('keeps the user-locked block when the model returns an empty fixed block', () => {
-    const groups = parseSopSeriesPromptBatchResponse(
-      '{"series":[{"fixed":"","prompts":["图1","图2"]}]}',
-      1,
-      2,
-      undefined,
-      '视觉风格：3D 皮克斯风',
-    )
+    const groups = parseSopSeriesPromptBatchResponse('{"series":[{"fixed":"","prompts":["图1","图2"]}]}', 1, 2, {
+      lockedFixedBlock: '视觉风格：3D 皮克斯风',
+    })
 
     expect(groups[0].fixed).toBe('视觉风格：3D 皮克斯风')
     expect(groups[0].prompts[0]).toBe('系列统一规范（非画面文字）：视觉风格：3D 皮克斯风\n本张画面：图1')
@@ -425,12 +420,100 @@ describe('SOP prompt batch', () => {
     expect(getSopSeriesFixedBlock('普通提示词')).toBe('')
   })
 
+  it('assembles the picture-copy segment between the fixed block and the member prompt', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"蓝色背景","fixedCopy":"限时 5 折","prompts":["图1","图2"]}]}',
+      1,
+      2,
+    )
+
+    expect(groups[0].copy).toBe('限时 5 折')
+    expect(groups[0].prompts).toEqual([
+      '系列统一规范（非画面文字）：蓝色背景\n画面文字（逐字绘制）：限时 5 折\n本张画面：图1',
+      '系列统一规范（非画面文字）：蓝色背景\n画面文字（逐字绘制）：限时 5 折\n本张画面：图2',
+    ])
+    expect(getSopSeriesCopyBlock(groups[0].prompts[1])).toBe('限时 5 折')
+  })
+
+  it('omits the picture-copy segment when the model returns an empty fixedCopy', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"蓝色背景","fixedCopy":"","prompts":["图1","图2"]}]}',
+      1,
+      2,
+    )
+
+    expect(groups[0].copy).toBe('')
+    expect(groups[0].prompts[0]).toBe('系列统一规范（非画面文字）：蓝色背景\n本张画面：图1')
+  })
+
+  it('prefers the user-filled copy over the model copy', () => {
+    // 用户填了具体文案时由客户端逐字拼装，模型写的 fixedCopy 必须被丢弃
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"蓝色背景","fixedCopy":"模型自己编的文案","prompts":["图1","图2"]}]}',
+      1,
+      2,
+      { lockedCopy: '限时 5 折，仅限今天' },
+    )
+
+    expect(groups[0].copy).toBe('限时 5 折，仅限今天')
+    expect(groups[0].prompts[0]).toContain('画面文字（逐字绘制）：限时 5 折，仅限今天')
+    expect(groups[0].prompts[0]).not.toContain('模型自己编的文案')
+  })
+
+  it('reuses the copy block verbatim on single-member regeneration', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      '{"series":[{"fixed":"模型改写过的固定块","fixedCopy":"模型换掉的文案","prompts":["图1"]}]}',
+      1,
+      1,
+      {
+        fixedBlock: '蓝色背景',
+        copyBlock: '限时 5 折',
+        lockedFixedBlock: '画风：3D 皮克斯风',
+        lockedCopy: '用户填的文案',
+      },
+    )
+
+    // 整段复用时固定块与画面文字都以后者为准，避免重生成的那一张从系列里拆出去
+    expect(groups[0].fixed).toBe('蓝色背景')
+    expect(groups[0].copy).toBe('限时 5 折')
+    expect(groups[0].prompts[0]).toBe(
+      '系列统一规范（非画面文字）：蓝色背景\n画面文字（逐字绘制）：限时 5 折\n本张画面：图1',
+    )
+  })
+
+  it('collapses a multi-line picture-copy block into a single drawable line', () => {
+    const groups = parseSopSeriesPromptBatchResponse(
+      JSON.stringify({ series: [{ fixed: '蓝色背景', fixedCopy: '限时 5 折\n仅限今天', prompts: ['图1', '图2'] }] }),
+      1,
+      2,
+    )
+
+    expect(groups[0].copy).toBe('限时 5 折 仅限今天')
+    expect(getSopSeriesCopyBlock(groups[0].prompts[0])).toBe('限时 5 折 仅限今天')
+  })
+
+  it('reads the copy block out of a generated prompt and tolerates its absence', () => {
+    expect(
+      getSopSeriesCopyBlock('系列统一规范（非画面文字）：蓝\n画面文字（逐字绘制）：限时 5 折\n本张画面：图1'),
+    ).toBe('限时 5 折')
+    expect(getSopSeriesCopyBlock('系列统一规范（非画面文字）：蓝\n本张画面：图1')).toBe('')
+    expect(getSopSeriesCopyBlock('普通提示词')).toBe('')
+  })
+
   it('strips a loosely matching fixed prefix and assembles both ends', () => {
     expect(stripSopSeriesFixedPrefix('蓝色背景，主体是咖啡杯', '蓝色背景')).toBe('主体是咖啡杯')
     expect(stripSopSeriesFixedPrefix('蓝 色 背 景：主体是咖啡杯', '蓝色背景')).toBe('主体是咖啡杯')
     expect(stripSopSeriesFixedPrefix('主体是咖啡杯', '蓝色背景')).toBe('主体是咖啡杯')
     expect(assembleSopSeriesPrompt('', '图1')).toBe('图1')
     expect(assembleSopSeriesPrompt('蓝色背景', '')).toBe('系列统一规范（非画面文字）：蓝色背景')
+    // 画面文字段永远夹在固定块与本张画面之间
+    expect(assembleSopSeriesPrompt('蓝色背景', '图1', '限时 5 折')).toBe(
+      '系列统一规范（非画面文字）：蓝色背景\n画面文字（逐字绘制）：限时 5 折\n本张画面：图1',
+    )
+    expect(assembleSopSeriesPrompt('', '图1', '限时 5 折')).toBe('画面文字（逐字绘制）：限时 5 折\n本张画面：图1')
+    expect(assembleSopSeriesPrompt('蓝色背景', '', '限时 5 折')).toBe(
+      '系列统一规范（非画面文字）：蓝色背景\n画面文字（逐字绘制）：限时 5 折',
+    )
   })
 
   it('keeps fewer series groups than requested so the batch loop can fill the deficit', () => {
@@ -502,13 +585,75 @@ describe('SOP prompt batch', () => {
     const noFixed = buildSopPromptBatchRequest(sop, 1, '', {
       seriesConfig: { imageCount: 2, fixedDimensions: [], variableDimensions: ['主体'] },
     })
-    expect(noFixed).toContain('本组不固定任何维度')
+    expect(noFixed).toContain('本组没有需要写进固定块的视觉维度')
     expect(noFixed).not.toContain('固定块内容为的完整视觉规则')
 
     const noVariable = buildSopPromptBatchRequest(sop, 1, '', {
       seriesConfig: { imageCount: 2, fixedDimensions: ['视觉风格'], variableDimensions: [] },
     })
     expect(noVariable).toContain('本次未限定可变维度')
+  })
+
+  it('asks the model to author the group copy when 文案内容 is fixed but left blank', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: {
+        imageCount: 3,
+        fixedDimensions: ['画风', '文案内容'],
+        variableDimensions: ['主体', '背景'],
+      },
+    })
+
+    expect(request).toContain('「文案内容」已固定：请在 fixedCopy 字段写出本组唯一的那一句画面文字')
+    // 文案不能进固定块：那个块被标注为「非画面文字」
+    expect(request).toContain('固定块内容为画风的完整视觉规则')
+    expect(request).not.toContain('文案内容的完整视觉规则')
+    expect(request).toContain('"fixedCopy":"本组画面文字，没有则空字符串"')
+    // 变化部分要明确不再写文案
+    expect(request).toContain('文案内容已整组固定，变化部分不得再写任何画面文字')
+  })
+
+  it('hands the user-filled copy to the client instead of asking the model for it', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: {
+        imageCount: 3,
+        fixedDimensions: ['画风', '文案内容'],
+        variableDimensions: ['主体'],
+        fixedValues: { 文案内容: '限时 5 折，仅限今天' },
+      },
+    })
+
+    // 文案由客户端逐字拼进画面文字段，模型只需返回空 fixedCopy
+    expect(request).toContain('用户已逐字锁定画面文字')
+    expect(request).not.toContain('限时 5 折，仅限今天')
+  })
+
+  it('asks for an empty fixedCopy when 文案内容 varies per image', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: {
+        imageCount: 3,
+        fixedDimensions: ['画风'],
+        variableDimensions: ['主体', '背景', '文案内容'],
+      },
+    })
+
+    expect(request).toContain('「文案内容」每张变化：fixedCopy 字段返回空字符串')
+    expect(request).not.toContain('文案内容已整组固定')
+  })
+
+  it('reuses the locked copy block on single-member regeneration', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: {
+        imageCount: 3,
+        fixedDimensions: ['画风', '文案内容'],
+        variableDimensions: ['主体'],
+      },
+      seriesFixedBlock: '画风：3D 皮克斯风',
+      seriesCopyBlock: '限时 5 折',
+      seriesMemberOnly: true,
+    })
+
+    expect(request).toContain('<COPY>\n限时 5 折\n</COPY>')
+    expect(request).toContain('本组画面文字已锁定，必须逐字沿用')
   })
 
   it('keeps the locked fixed block instruction when the whole block is reused', () => {
