@@ -26,6 +26,7 @@ latest.yml
 .dsh-vision-router/
 .trae/
 .impeccable/
+.workbuddy-ai/
 
 # app runtime backups / temp dirs
 tmp-*.json
