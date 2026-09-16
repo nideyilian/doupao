@@ -34,6 +34,7 @@ import {
   type AssetBatchGroup,
 } from '../../lib/assetBatchGrouping'
 import type { GeneratedAsset, SopBatchSnapshot, TaskRecord } from '../../types'
+import { findCardImageAsset } from './assetContextMenuTarget'
 import TaskCard from '../../components/TaskCard'
 import SopBatchTaskCard from '../../components/SopBatchTaskCard'
 import SopBatchDetailModal from '../../components/SopBatchDetailModal'
@@ -851,18 +852,6 @@ function AssetGroupedView({
     [clearSelection],
   )
 
-  /** 任务卡片整卡右键：以组内全部素材为操作目标 */
-  const handleGroupMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>, group: AssetBatchGroup) => {
-    const first = group.assets[0]
-    if (!first) return
-    const selection = useAssetLibraryStore.getState().selectedAssetIds
-    const groupIds = group.assets.map((asset) => asset.id)
-    const included = groupIds.some((id) => selection.includes(id))
-    if (!included) useAssetLibraryStore.getState().replaceSelection(groupIds)
-    const assetIds = included && selection.length > 0 ? Array.from(new Set([...selection, ...groupIds])) : groupIds
-    setMenu({ x: event.clientX, y: event.clientY, asset: first, assetIds })
-  }, [])
-
   /** 图片砖·列表行形式的单张图片砖右键：Eagle 式（未选中 → 以该砖为唯一选中；已选中 → 作用于选区） */
   const handleTileMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, asset: GeneratedAsset) => {
     const selection = useAssetLibraryStore.getState().selectedAssetIds
@@ -875,6 +864,35 @@ function AssetGroupedView({
       assetIds: included && selection.length > 1 ? selection : [asset.id],
     })
   }, [])
+
+  /**
+   * 任务卡片整卡右键：命中卡内某张图片时按「该图片」处理（Eagle 式），否则以组内全部素材为目标。
+   *
+   * 命中图片时必须 `stopPropagation`：卡片根 div 是卡内 img 的祖先，不拦的话 window 上的
+   * 全局图片右键菜单也会打开，两个菜单叠在同一坐标、层级还不同（全局 z 更高），而
+   * `AssetCardMenu` 的「点外部即关闭」会把落在上层菜单上的 pointerdown 判成外部点击 ——
+   * 表现为右键菜单闪一下就没了。`AssetTile` / `AssetListRow` 早就拦了，只有这里漏了。
+   */
+  const handleGroupMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>, group: AssetBatchGroup) => {
+      const hitAsset = findCardImageAsset(event.target, group.assets)
+      if (hitAsset) {
+        event.preventDefault()
+        event.stopPropagation()
+        handleTileMenu(event, hitAsset)
+        return
+      }
+      const first = group.assets[0]
+      if (!first) return
+      const selection = useAssetLibraryStore.getState().selectedAssetIds
+      const groupIds = group.assets.map((asset) => asset.id)
+      const included = groupIds.some((id) => selection.includes(id))
+      if (!included) useAssetLibraryStore.getState().replaceSelection(groupIds)
+      const assetIds = included && selection.length > 0 ? Array.from(new Set([...selection, ...groupIds])) : groupIds
+      setMenu({ x: event.clientX, y: event.clientY, asset: first, assetIds })
+    },
+    [handleTileMenu],
+  )
 
   // 空状态仅在没有素材**且没有补入的任务组**（生成中/失败任务卡）时显示：
   // includeTaskless 补入的任务组必须渲染——否则「3 个任务失败」提示条点击进来
