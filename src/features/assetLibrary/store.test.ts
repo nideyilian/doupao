@@ -255,6 +255,27 @@ describe('mutation actions', () => {
     expect(useAssetLibraryStore.getState().assetsById.a.updatedAt).toBe(999)
   })
 
+  // 目录查询会把同一份结果反复回写。若每次都重建 assetsById，派生出的 assets 数组就换引用，
+  // 素材库整树重渲染、所有 useMemo 失效——实测曾放大到每秒上百次，右键菜单刚打开就被清掉。
+  it('keeps assetsById reference stable when identical content is written back', () => {
+    useAssetLibraryStore.setState({
+      assetsById: { a: makeAsset('a', { collectionIds: ['c1'] }) },
+      assetOrder: ['a'],
+    })
+    const before = useAssetLibraryStore.getState().assetsById
+    useAssetLibraryStore.getState().applyUpsertedAssets([makeAsset('a', { collectionIds: ['c1'] })])
+    expect(useAssetLibraryStore.getState().assetsById).toBe(before)
+  })
+
+  it('still replaces the record when content actually changes', () => {
+    useAssetLibraryStore.setState({ assetsById: { a: makeAsset('a') }, assetOrder: ['a'] })
+    const before = useAssetLibraryStore.getState().assetsById
+    useAssetLibraryStore.getState().applyUpsertedAssets([makeAsset('a', { favorite: true })])
+    const after = useAssetLibraryStore.getState().assetsById
+    expect(after).not.toBe(before)
+    expect(after.a.favorite).toBe(true)
+  })
+
   it('upsertCollections makes newly archived folders visible in the sidebar state', () => {
     useAssetLibraryStore.setState({ collections: [] })
     const folder: AssetCollection = {

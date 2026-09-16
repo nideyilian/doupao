@@ -331,13 +331,52 @@ function applyAssetsToState(
   state: Pick<AssetLibraryStoreState, 'assetsById' | 'assetOrder'>,
   assets: GeneratedAsset[],
 ) {
-  const assetsById = { ...state.assetsById }
-  const assetOrder = [...state.assetOrder]
-  for (const asset of assets) {
-    if (!(asset.id in assetsById)) assetOrder.push(asset.id)
-    assetsById[asset.id] = asset
+  let assetsById: Record<string, GeneratedAsset> | null = null
+  let assetOrder: string[] | null = null
+  const ensureCopy = () => {
+    if (!assetsById) {
+      assetsById = { ...state.assetsById }
+      assetOrder = [...state.assetOrder]
+    }
   }
-  return { assetsById, assetOrder }
+  for (const asset of assets) {
+    const prev = state.assetsById[asset.id]
+    // 内容与现有记录完全一致（同一份查询结果被重复回写）时不替换：
+    // assetsById 必须保持引用稳定，否则每次回写都会让派生 assets 数组换引用，
+    // 订阅方整树重渲染、所有 useMemo 失效——素材库打开期间可放大成每秒上百次渲染。
+    if (prev && assetFingerprint(prev) === assetFingerprint(asset)) continue
+    ensureCopy()
+    if (!(asset.id in assetsById!)) assetOrder!.push(asset.id)
+    assetsById![asset.id] = asset
+  }
+  return assetsById && assetOrder
+    ? { assetsById, assetOrder }
+    : { assetsById: state.assetsById, assetOrder: state.assetOrder }
+}
+
+/** 回写去重的内容指纹缓存：同一对象只序列化一次（内存态对象长期命中，查询结果算一次）。 */
+const assetFingerprintCache = new WeakMap<object, string>()
+
+/**
+ * 与键序无关的稳定序列化：回写比较必须容忍「内容相同但键序不同」的等价对象
+ * （内存态经 patch 构造的对象与 SQLite 反序列化回来的对象键序未必一致）。
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  const record = value as Record<string, unknown>
+  const entries = Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+  return `{${entries.join(',')}}`
+}
+
+function assetFingerprint(asset: GeneratedAsset): string {
+  const cached = assetFingerprintCache.get(asset)
+  if (cached !== undefined) return cached
+  const fingerprint = stableStringify(asset)
+  assetFingerprintCache.set(asset, fingerprint)
+  return fingerprint
 }
 
 function sameStringArray(a: string[], b: string[]): boolean {

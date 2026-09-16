@@ -287,7 +287,9 @@ export default function AssetGrid({
   }, [resetScrollKey, measureGrid])
 
   useLayoutEffect(() => {
-    setMenu(null)
+    // 同 AssetBatchView：重新测量布局不负责关菜单，只关闭「右键目标已不在当前结果集」的菜单，
+    // 避免网格内容更新（批量操作、入库、回写）把用户正打开的菜单一起清掉。
+    setMenu((current) => (current && assets.some((item) => item.id === current.asset.id) ? current : null))
     measureGrid(false)
     const frame = requestAnimationFrame(() => measureGrid(false))
     return () => cancelAnimationFrame(frame)

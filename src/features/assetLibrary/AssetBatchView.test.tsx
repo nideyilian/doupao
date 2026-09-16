@@ -285,6 +285,66 @@ describe('AssetGroupedView（分组视图 · 任务卡片形式）', () => {
     act(() => renderer.unmount())
   })
 
+  // 网格因「目录查询回写」拿到内容相同但引用全新的素材列表时，不能把用户已打开的右键菜单
+  // 顺手关掉——历史上这个无条件 setMenu(null) 让菜单闪一下就消失（素材库必现）。
+  it('keeps the open context menu when the grid refreshes with equivalent assets', () => {
+    const renderer = renderGrouped()
+    const card = renderer.root.findAll((node) => node.props['data-testid'] === 'asset-batch-card')[0]!
+    act(() => {
+      card.props.onContextMenu({
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+        clientX: 12,
+        clientY: 12,
+        target: null,
+      })
+    })
+    const menuCount = () => renderer.root.findAll((node) => node.props['data-testid'] === 'asset-card-menu').length
+    expect(menuCount()).toBe(1)
+
+    act(() => {
+      renderer.update(
+        createElement(AssetGroupedView, {
+          assets: assets.map((asset) => ({ ...asset })),
+          libraryAssetCount: assets.length,
+          onPurgeRequest: vi.fn(),
+        }),
+      )
+    })
+    expect(menuCount()).toBe(1)
+    act(() => renderer.unmount())
+  })
+
+  // 目标素材已从结果集中消失（删除 / 移动 / 切文件夹）时，菜单必须关闭，避免操作到已失效的素材。
+  it('closes the context menu once the target asset is gone from the result set', () => {
+    const renderer = renderGrouped()
+    const card = renderer.root.findAll((node) => node.props['data-testid'] === 'asset-batch-card')[0]!
+    act(() => {
+      card.props.onContextMenu({
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+        clientX: 12,
+        clientY: 12,
+        target: null,
+      })
+    })
+    const menuCount = () => renderer.root.findAll((node) => node.props['data-testid'] === 'asset-card-menu').length
+    expect(menuCount()).toBe(1)
+
+    act(() => {
+      const remaining = assets.filter((asset) => asset.id !== 'a' && asset.id !== 'b')
+      renderer.update(
+        createElement(AssetGroupedView, {
+          assets: remaining,
+          libraryAssetCount: remaining.length,
+          onPurgeRequest: vi.fn(),
+        }),
+      )
+    })
+    expect(menuCount()).toBe(0)
+    act(() => renderer.unmount())
+  })
+
   it('toggles the group selection with Ctrl/⌘ click', () => {
     useAssetLibraryStore.setState({ selectedAssetIds: ['a', 'b'] })
     const renderer = renderGrouped()

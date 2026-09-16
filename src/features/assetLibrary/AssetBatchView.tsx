@@ -642,7 +642,10 @@ function AssetGroupedView({
   }, [resetScrollKey, measure])
 
   useLayoutEffect(() => {
-    setMenu(null)
+    // 这里只负责重新测量布局，**不**无条件关菜单：菜单自身有「点击外部 / Esc / 选中操作」
+    // 三条关闭路径。只有右键目标已经从当前结果集中消失（删除、移动、切文件夹）时才关闭，
+    // 否则网格任何一次内容更新都会把用户刚打开的菜单顺手清掉（表现为菜单闪一下就没）。
+    setMenu((current) => (current && assets.some((item) => item.id === current.asset.id) ? current : null))
     measure(false)
     const frame = requestAnimationFrame(() => measure(false))
     return () => cancelAnimationFrame(frame)

@@ -293,6 +293,15 @@ function AssetLibraryWorkspaceInner() {
     ],
   )
   const queryCounts = queryResult.counts
+  // 目录查询 effect 内需要最新 counts，但**不能**把它写进依赖数组：
+  // queryCounts 派生自 queryResult，而 queryResult 依赖 assets；effect 自身又会把查询结果
+  // 回写进 assets（applyUpsertedAssets），一旦 counts 进依赖就会形成
+  // 「查询 → 回写 → counts 换引用 → 再查询」的自循环——实测每秒上百次重渲染，
+  // 素材库里的右键菜单刚挂上就被网格的「assets 变化即关闭菜单」清掉（表现为闪一下就没）。
+  const queryCountsRef = useRef(queryCounts)
+  useEffect(() => {
+    queryCountsRef.current = queryCounts
+  })
 
   // 相似图片搜索：以某素材为基准，按感知哈希/文本/使用行为排序（Electron 走 SQLite）
   const similarToAssetId = useAssetLibraryStore((state) => state.similarToAssetId)
@@ -337,7 +346,7 @@ function AssetLibraryWorkspaceInner() {
             assets: ranked,
             totalCount: ranked.length,
             nextCursor: null,
-            counts: queryCounts,
+            counts: queryCountsRef.current,
           })
         })
         .catch(() => {
@@ -398,7 +407,6 @@ function AssetLibraryWorkspaceInner() {
     filterFavorite,
     hydrationStatus,
     queryScope,
-    queryCounts,
     similarToAssetId,
     sortKey,
     sortOrder,
