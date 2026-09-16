@@ -34,6 +34,36 @@ describe('asset MCP server', () => {
     expect(response.result.contents[0].uri).toBe('doupao://assets/a')
     expect(response.result.contents[0].text).toContain('"id":"a"')
   })
+
+  it('exposes workspace state and forwards app-level edits', async () => {
+    const runCommand = vi.fn(async (command: unknown) => ({ received: command }))
+    const handle = createMcpRequestHandler({ catalog: catalog as never, runCommand, exportAsset: vi.fn() })
+
+    const tools = await handle({ jsonrpc: '2.0', id: 5, method: 'tools/list' })
+    const names = tools.result.tools.map((tool: { name: string }) => tool.name)
+    expect(names).toContain('get_app_state')
+
+    const state = await handle({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_app_state' } })
+    expect(runCommand).toHaveBeenCalledWith({ action: 'getAppState' })
+    expect(state.result.structuredContent).toEqual({ received: { action: 'getAppState' } })
+
+    await handle({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: { name: 'run_asset_command', arguments: { action: 'setPrompt', prompt: '一只猫', tabId: 't2' } },
+    })
+    expect(runCommand).toHaveBeenCalledWith({ action: 'setPrompt', prompt: '一只猫', tabId: 't2' })
+
+    // params 是对象、prompt 是字符串才透传；缺失字段必须留 undefined，不能塞 null。
+    await handle({
+      jsonrpc: '2.0',
+      id: 8,
+      method: 'tools/call',
+      params: { name: 'run_asset_command', arguments: { action: 'setParams', params: { n: 2 } } },
+    })
+    expect(runCommand).toHaveBeenLastCalledWith({ action: 'setParams', params: { n: 2 } })
+  })
 })
 
 describe('MCP stdio 行切分', () => {

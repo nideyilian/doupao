@@ -489,6 +489,12 @@ export class AssetKernelManager {
       port: this.apiConfig.port,
       token: this.apiConfig.token,
       baseUrl: `http://127.0.0.1:${this.apiConfig.port}/v1`,
+      // MCP 客户端配置：打包版就是安装好的 exe；开发版跑的是 node_modules 里的 Electron，
+      // 必须把应用目录作为参数传进去，否则它会去加载 Electron 自带的默认应用。
+      mcp: {
+        command: process.execPath,
+        args: app.isPackaged ? ['--asset-mcp'] : [app.getAppPath(), '--asset-mcp'],
+      },
     }
   }
 

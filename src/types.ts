@@ -1029,6 +1029,39 @@ export interface AssetCatalogQuery {
   }
 }
 
+/**
+ * 外部控制面（本地 REST / MCP）允许执行的素材域命令。
+ * 这里的定义是**单一事实来源**：主进程 API server、MCP 服务与渲染进程 IPC 桥都引用它，
+ * 新增 action 时只改这一处 + `asset-api-server.ts` 的 `ALLOWED_COMMANDS` / `validCommand`。
+ */
+export type ExternalAssetCommandAction =
+  | 'useAsReference'
+  | 'openInPostprocess'
+  | 'openInComposite'
+  | 'reuseGenerationConfig'
+  | 'exportAsset'
+  | 'createCollection'
+  | 'importExternalFiles'
+
+/** 应用级命令：读写当前工作区状态（提示词、生成参数），不针对具体素材。 */
+export type ExternalAppCommandAction = 'getAppState' | 'setPrompt' | 'setParams'
+
+/** 外部命令载荷：素材域字段与应用级字段共用同一个对象，按 `action` 分派。 */
+export interface ExternalAssetCommand {
+  action: ExternalAssetCommandAction | ExternalAppCommandAction
+  // 素材域字段
+  assetId?: string
+  name?: string
+  parentId?: string | null
+  color?: string | null
+  paths?: string[]
+  // 应用级字段
+  prompt?: string
+  params?: Partial<TaskParams>
+  /** 写入类命令的目标标签页；省略则作用于当前活动标签页。 */
+  tabId?: string
+}
+
 export type AssetUsageAction =
   | 'selected-as-reference'
   | 'generation-input'

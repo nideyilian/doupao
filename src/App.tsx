@@ -203,12 +203,45 @@ export default function App() {
             const count = await useAssetLibraryStore.getState().importExternalPaths(command.paths ?? [])
             return { imported: count }
           }
+          case 'getAppState': {
+            const state = useStore.getState()
+            return {
+              appMode: state.appMode,
+              activeTabId: state.activeWorkspaceTabId,
+              tabs: state.workspaceTabs.map((tab) => ({
+                id: tab.id,
+                name: tab.name,
+                prompt: tab.prompt,
+                params: tab.params,
+                taskCount: tab.tasks.length,
+              })),
+            }
+          }
+          case 'setPrompt':
+          case 'setParams': {
+            // 写入作用于「当前活动标签页」：带 tabId 时先切过去，让用户看得见改动落在哪一页。
+            const before = useStore.getState()
+            if (command.tabId && command.tabId !== before.activeWorkspaceTabId) {
+              if (!before.workspaceTabs.some((tab) => tab.id === command.tabId)) throw new Error('tab not found')
+              before.setActiveWorkspaceTabId(command.tabId)
+            }
+            const target = useStore.getState()
+            if (command.action === 'setPrompt') target.setPrompt(command.prompt ?? '')
+            else target.setParams(command.params ?? {})
+            const after = useStore.getState()
+            return { activeTabId: after.activeWorkspaceTabId, prompt: after.prompt, params: after.params }
+          }
           default:
             throw new Error('unsupported external asset command')
         }
       }
       void run().then(
-        (result) => api.completeExternalAssetCommand?.({ id, result: { success: Boolean(result) } }),
+        (result) =>
+          api.completeExternalAssetCommand?.({
+            id,
+            // 回执必须带上真实结果：只回 { success } 会让 agent 拿不到 collectionId / 应用状态
+            result: { success: Boolean(result), ...(result && typeof result === 'object' ? result : {}) },
+          }),
         (error) =>
           api.completeExternalAssetCommand?.({ id, error: error instanceof Error ? error.message : String(error) }),
       )

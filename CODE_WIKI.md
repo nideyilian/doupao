@@ -1009,7 +1009,16 @@ npx tsc --noEmit
 - **本地 HTTP API 写能力**（`electron/asset-api-server.ts`，token 鉴权）：新增
   `GET/POST /v1/collections`、`GET /v1/tags`、`POST /v1/imports`；
   写操作经 `runCommand` 由渲染端执行（`ExternalAssetCommand` 扩展 createCollection/importExternalFiles）。
-- **MCP**（`electron/asset-mcp.ts`）：`run_asset_command` 工具枚举同步扩展（组织/导入命令 + 可选参数 name/parentId/color/paths）。
+- **应用级命令**（`getAppState` / `setPrompt` / `setParams`）：让外部 agent 读写**活动工作区状态**而不是单个素材 ——
+  `getAppState` 返回 appMode、活动标签页 id 与每个标签页的 prompt/params/taskCount；`setPrompt`/`setParams`
+  写入活动标签页（可选 `tabId` 先切页，让用户看得见改动落在哪一页），`params` 只接受 `DEFAULT_PARAMS` 里已有的键。
+  命令契约定义在 `src/types.ts`（单一事实来源），主进程 API server、MCP 与渲染进程 IPC 桥同源引用，
+  避免各处手写镜像类型漂移。渲染端分发在 `src/App.tsx` 的 `onExternalAssetCommand` 回调里，回执携带真实 payload
+  （不再只回 `{ success }`，否则 agent 拿不到 collectionId / 应用状态）。
+- **MCP**（`electron/asset-mcp.ts`）：`run_asset_command` 工具枚举同步扩展（组织/导入命令 + 可选参数 name/parentId/color/paths
+  - 应用级 setPrompt/setParams + tabId），并新增只读工具 `get_app_state`。
+    `--asset-mcp` 进程豁免单实例锁（否则应用开着时它秒退），stdin 用原始 fd 读取而非 readline
+    （Windows 下 Electron 主进程的 stdin _流_ 会立刻 EOF，但同一 fd 可正常读）。
 - **外部图片导入**（`src/lib/externalAssetImport.ts`）：工具栏「导入图片」与网格拖拽（或深链接/API 路径）→ 内容哈希去重、
   以 `origins: []` 的独立素材入库（含缩略图与磁盘原图）；`AssetDuplicateModal`（感知哈希 Hamming ≤ 8bit 分组，
   保留一张、其余一键回收站，`asset-catalog:near-duplicates`）。

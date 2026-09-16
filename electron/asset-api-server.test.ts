@@ -95,4 +95,43 @@ describe('local asset REST API', () => {
     })
     expect(runCommand).toHaveBeenCalledWith({ action: 'importExternalFiles', paths: ['D:/a.png'] })
   })
+
+  it('accepts app-level workspace commands without an assetId', async () => {
+    const runCommand = vi.fn(async (command: unknown) => ({ received: command }))
+    const server = new AssetApiServer({ token: 'test-token', catalog: makeCatalog(), runCommand })
+    servers.push(server)
+    const { port } = await server.start(0)
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }
+    const post = (body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/v1/commands`, { method: 'POST', headers, body: JSON.stringify(body) })
+
+    // getAppState 不针对素材，必须绕过 `default` 分支的 assetId 强制校验。
+    expect((await post({ action: 'getAppState' })).status).toBe(200)
+    expect(runCommand).toHaveBeenCalledWith({ action: 'getAppState' })
+
+    expect((await post({ action: 'setPrompt', prompt: '一只戴帽子的猫', tabId: 't1' })).status).toBe(200)
+    expect(runCommand).toHaveBeenCalledWith({ action: 'setPrompt', prompt: '一只戴帽子的猫', tabId: 't1' })
+
+    expect((await post({ action: 'setParams', params: { size: '1024x1024', n: 2 } })).status).toBe(200)
+    expect(runCommand).toHaveBeenCalledWith({ action: 'setParams', params: { size: '1024x1024', n: 2 } })
+  })
+
+  it('rejects malformed app-level workspace commands', async () => {
+    const runCommand = vi.fn(async () => ({ success: true }))
+    const server = new AssetApiServer({ token: 'test-token', catalog: makeCatalog(), runCommand })
+    servers.push(server)
+    const { port } = await server.start(0)
+    const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }
+    const post = (body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/v1/commands`, { method: 'POST', headers, body: JSON.stringify(body) })
+
+    expect((await post({ action: 'setPrompt' })).status).toBe(400)
+    expect((await post({ action: 'setPrompt', prompt: 42 })).status).toBe(400)
+    expect((await post({ action: 'setParams' })).status).toBe(400)
+    expect((await post({ action: 'setParams', params: [] })).status).toBe(400)
+    // 未知参数键会被塞进持久化状态，必须挡掉。
+    expect((await post({ action: 'setParams', params: { notAParam: 1 } })).status).toBe(400)
+    expect((await post({ action: 'deleteEverything' })).status).toBe(400)
+    expect(runCommand).not.toHaveBeenCalled()
+  })
 })

@@ -45,7 +45,19 @@ Example command body:
 }
 ```
 
-Allowed actions are `useAsReference`, `openInPostprocess`, `openInComposite`, `reuseGenerationConfig` and `exportAsset`.
+Asset actions are `useAsReference`, `openInPostprocess`, `openInComposite`, `reuseGenerationConfig`,
+`exportAsset`, `createCollection` (requires `name`, optional `parentId`) and `importExternalFiles`
+(requires `paths`).
+
+App-level actions read and edit the live workspace instead of a specific asset:
+
+- `getAppState` — returns `appMode`, `activeTabId` and every workspace tab with its prompt, params and task count;
+- `setPrompt` — writes the prompt of the active tab (requires `prompt`);
+- `setParams` — merges generation params into the active tab (requires `params`; only keys present in
+  `DEFAULT_PARAMS` are accepted).
+
+Both writes accept an optional `tabId` to switch tabs first, so the change is visible where the user is looking.
+They require the app window to be open — unlike the read-only catalog endpoints, they are executed by the renderer.
 
 ## MCP stdio server
 
@@ -61,8 +73,13 @@ The stdio server implements MCP protocol revision `2025-06-18` and exposes:
 - `search_assets`;
 - `get_asset`;
 - `recommend_assets`;
+- `get_app_state` (read-only workspace snapshot);
 - `run_asset_command`;
 - `export_asset` (copy-only and refuses to overwrite an existing file).
+
+The MCP process is exempt from the single-instance lock so it can run alongside an open DOUPAO window —
+`run_asset_command` and `get_app_state` are only useful against a live renderer. It reads
+`asset-api.json` from `userData` and talks to the loopback REST API, so that API must be enabled.
 
 Commands that affect the active workspace require the authenticated local REST API to be enabled. Read-only catalog tools and direct export continue to work against SQLite without opening the renderer.
 

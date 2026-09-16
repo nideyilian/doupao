@@ -1,7 +1,7 @@
 import { copyFile, readFile } from 'node:fs/promises'
 import { constants as fsConstants, readSync } from 'node:fs'
 import path from 'node:path'
-import type { AssetCatalogQuery } from '../src/types'
+import type { AssetCatalogQuery, TaskParams } from '../src/types'
 import { AssetCatalog, type CatalogAssetDetails } from './asset-catalog'
 import type { ExternalAssetCommand } from './asset-api-server'
 
@@ -70,12 +70,23 @@ const tools = [
     annotations: { readOnlyHint: true },
   },
   {
-    name: 'run_asset_command',
-    title: 'Use a DOUPAO asset',
+    name: 'get_app_state',
+    title: 'Read DOUPAO workspace state',
     description:
-      'Run an allowlisted command in the active DOUPAO window: asset actions (useAsReference, openInPostprocess, ' +
-      'openInComposite, reuseGenerationConfig, exportAsset), organization (createCollection) ' +
-      'or import external image files by local path (importExternalFiles).',
+      'Read the live workspace: current app mode, active tab id, and every workspace tab with its prompt, ' +
+      'generation params and task count.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'run_asset_command',
+    title: 'Use a DOUPAO asset or edit the workspace',
+    description:
+      'Run an allowlisted command in the active DOUPAO window. Asset actions: useAsReference, ' +
+      'openInPostprocess, openInComposite, reuseGenerationConfig, exportAsset. Organization: createCollection. ' +
+      'Import: importExternalFiles (by local path). Workspace edits: setPrompt (writes the active tab prompt), ' +
+      'setParams (merges generation params such as size / quality / n). Writes target the active tab; pass ' +
+      'tabId to switch tabs first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -89,6 +100,8 @@ const tools = [
             'exportAsset',
             'createCollection',
             'importExternalFiles',
+            'setPrompt',
+            'setParams',
           ],
         },
         assetId: { type: 'string' },
@@ -96,6 +109,9 @@ const tools = [
         parentId: { type: ['string', 'null'] },
         color: { type: ['string', 'null'] },
         paths: { type: 'array', items: { type: 'string' } },
+        prompt: { type: 'string' },
+        params: { type: 'object' },
+        tabId: { type: 'string' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -206,6 +222,8 @@ export function createMcpRequestHandler(deps: McpDependencies) {
               }),
             ),
           )
+        if (name === 'get_app_state')
+          return result(request.id, textToolResult(await deps.runCommand({ action: 'getAppState' })))
         if (name === 'run_asset_command')
           return result(
             request.id,
@@ -214,11 +232,19 @@ export function createMcpRequestHandler(deps: McpDependencies) {
                 action: String(args.action) as ExternalAssetCommand['action'],
                 assetId: typeof args.assetId === 'string' ? args.assetId : undefined,
                 name: typeof args.name === 'string' ? args.name : undefined,
-                parentId: typeof args.parentId === 'string' ? args.parentId : null,
-                color: typeof args.color === 'string' ? args.color : null,
+                // 缺失的可选字段一律留 undefined：`createCollection` 那侧 App.tsx 用 `?? null` 兜底，
+                // 语义等价，但能避免每条命令都夹带 parentId:null / color:null 的噪声。
+                parentId: typeof args.parentId === 'string' ? args.parentId : undefined,
+                color: typeof args.color === 'string' ? args.color : undefined,
                 paths: Array.isArray(args.paths)
                   ? (args.paths.filter((p): p is string => typeof p === 'string') ?? [])
                   : undefined,
+                // 应用级写入字段：不传就保持 undefined，别塞 null —— validParams 只认对象，
+                // setPrompt 也只认字符串，多余的键会让命令被判非法。
+                prompt: typeof args.prompt === 'string' ? args.prompt : undefined,
+                params:
+                  args.params && typeof args.params === 'object' ? (args.params as Partial<TaskParams>) : undefined,
+                tabId: typeof args.tabId === 'string' ? args.tabId : undefined,
               }),
             ),
           )

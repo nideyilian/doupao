@@ -3993,6 +3993,29 @@ export default function SettingsModal() {
                           复制 Token
                         </button>
                       </div>
+                      <div className="flex items-start justify-between gap-3 border-t border-ds-border/60 pt-3">
+                        <p className="text-xs leading-relaxed text-ds-muted dark:text-ds-muted">
+                          想让 Code / DeepSeek harness / WorkBuddy 等外部 agent 直接操作本应用，把下面的 MCP
+                          配置粘进它们的 MCP 客户端即可。需要保持本窗口开着，并先启用上面的 REST。
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const config = {
+                              mcpServers: {
+                                doupao: { command: assetApiStatus.mcp.command, args: assetApiStatus.mcp.args },
+                              },
+                            }
+                            void navigator.clipboard
+                              .writeText(JSON.stringify(config, null, 2))
+                              .then(() => showToast('MCP 配置已复制', 'success'))
+                              .catch(() => showToast('复制 MCP 配置失败', 'error'))
+                          }}
+                          className="shrink-0 rounded-lg border border-ds-border px-3 py-2 text-xs dark:border-ds-border"
+                        >
+                          复制 MCP 配置
+                        </button>
+                      </div>
                     </div>
                   )}
 

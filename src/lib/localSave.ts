@@ -8,6 +8,7 @@ import type {
   AssetTag,
   AssetTombstone,
   AssetUsageEvent,
+  ExternalAssetCommand,
   GeneratedAsset,
 } from '../types'
 import { sanitizeGeneratedImageFilenamePart } from './generatedImageFilename'
@@ -186,24 +187,18 @@ type ElectronAPI = {
     port: number
     token: string
     baseUrl: string
+    /** 可直接粘进 MCP 客户端配置的启动命令；开发版 args 里会带上应用目录。 */
+    mcp: { command: string; args: string[] }
   }>
-  configureAssetApi?: (input: {
+  configureAssetApi?: (input: { enabled: boolean; port?: number }) => Promise<{
     enabled: boolean
-    port?: number
-  }) => Promise<{ enabled: boolean; host: '127.0.0.1'; port: number; token: string; baseUrl: string }>
-  onExternalAssetCommand?: (
-    callback: (payload: {
-      id: string
-      command: {
-        action: string
-        assetId?: string
-        name?: string
-        parentId?: string | null
-        color?: string | null
-        paths?: string[]
-      }
-    }) => void,
-  ) => () => void
+    host: '127.0.0.1'
+    port: number
+    token: string
+    baseUrl: string
+    mcp: { command: string; args: string[] }
+  }>
+  onExternalAssetCommand?: (callback: (payload: { id: string; command: ExternalAssetCommand }) => void) => () => void
   /** doupao:// 深链接（打开素材 / 搜索 / 导入 / 打开项目） */
   onDeepLink?: (
     callback: (

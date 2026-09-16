@@ -2,26 +2,22 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { timingSafeEqual } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { createReadStream } from 'node:fs'
-import type { AssetCatalogCursorPage, AssetCatalogQuery, AssetCollection, AssetTag, GeneratedAsset } from '../src/types'
+import { DEFAULT_PARAMS } from '../src/types'
+import type {
+  AssetCatalogCursorPage,
+  AssetCatalogQuery,
+  AssetCollection,
+  AssetTag,
+  ExternalAppCommandAction,
+  ExternalAssetCommand,
+  ExternalAssetCommandAction,
+  GeneratedAsset,
+  TaskParams,
+} from '../src/types'
 import type { CatalogAssetDetails } from './asset-catalog'
 
-export type ExternalAssetCommandAction =
-  | 'useAsReference'
-  | 'openInPostprocess'
-  | 'openInComposite'
-  | 'reuseGenerationConfig'
-  | 'exportAsset'
-  | 'createCollection'
-  | 'importExternalFiles'
-
-export type ExternalAssetCommand = {
-  action: ExternalAssetCommandAction
-  assetId?: string
-  name?: string
-  parentId?: string | null
-  color?: string | null
-  paths?: string[]
-}
+// 命令契约定义在 `src/types.ts`（单一事实来源，渲染进程 IPC 桥同源），这里只做转出。
+export type { ExternalAppCommandAction, ExternalAssetCommand, ExternalAssetCommandAction }
 
 interface AssetApiCatalog {
   query(input: AssetCatalogQuery): Promise<AssetCatalogCursorPage>
@@ -52,9 +48,28 @@ const ALLOWED_COMMANDS = new Set<ExternalAssetCommandAction>([
   'importExternalFiles',
 ])
 
-/** 命令有效性：素材类命令需要 assetId；创建类命令需要 name；导入需要 paths。 */
+const ALLOWED_APP_COMMANDS = new Set<ExternalAppCommandAction>(['getAppState', 'setPrompt', 'setParams'])
+
+/** 参数补丁只允许 TaskParams 已知的键，避免外部命令往持久化状态里塞未知字段。 */
+function validParams(raw: unknown): raw is Partial<TaskParams> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  return Object.keys(raw).every((key) => key in DEFAULT_PARAMS)
+}
+
+/** 命令有效性：素材类命令需要 assetId；创建类需要 name；导入需要 paths；应用级各有必填字段。 */
 function validCommand(raw: Partial<ExternalAssetCommand>): raw is ExternalAssetCommand {
-  if (!raw.action || !ALLOWED_COMMANDS.has(raw.action)) return false
+  if (!raw.action) return false
+  if (ALLOWED_APP_COMMANDS.has(raw.action as ExternalAppCommandAction)) {
+    switch (raw.action) {
+      case 'setPrompt':
+        return typeof raw.prompt === 'string'
+      case 'setParams':
+        return validParams(raw.params)
+      default:
+        return true
+    }
+  }
+  if (!ALLOWED_COMMANDS.has(raw.action as ExternalAssetCommandAction)) return false
   switch (raw.action) {
     case 'createCollection':
       return typeof raw.name === 'string' && raw.name.trim().length > 0
@@ -290,7 +305,9 @@ export class AssetApiServer {
             '/collections': { get: { summary: 'List collections' }, post: { summary: 'Create a collection' } },
             '/tags': { get: { summary: 'List tags' }, post: { summary: 'Create a tag' } },
             '/imports': { post: { summary: 'Import external image files by path' } },
-            '/commands': { post: { summary: 'Run an allowlisted asset command' } },
+            '/commands': {
+              post: { summary: 'Run an allowlisted command: asset actions, or app-level state read/write' },
+            },
             '/events': { get: { summary: 'Subscribe to asset events using SSE' } },
           },
         })
