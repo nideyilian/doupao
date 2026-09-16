@@ -31,6 +31,7 @@ const storeMocks = vi.hoisted(() => {
     reuseConfig: vi.fn(),
     retryTask: vi.fn(),
     updateTaskPrompt: vi.fn(),
+    GRID_THUMBNAIL_VARIANT: 'grid',
     ensureImageCached: vi.fn(async () => null),
     ensureImageThumbnailCached: vi.fn(async () => null),
     getCachedThumbnail: vi.fn(() => null),

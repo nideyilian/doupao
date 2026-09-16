@@ -13,6 +13,7 @@ import type {
   StoredCompositeAsset,
   StoredImage,
   StoredImageThumbnail,
+  ThumbnailVariant,
   WordGenerationBatch,
   WordLibraryEntry,
   WordLibraryGroup,
@@ -27,6 +28,7 @@ import {
 import type { MigrationJournal } from './migrations/registry'
 import { computeContentHash } from './imageFingerprint'
 import { blobToDataUrl, dataUrlToBlob } from './blobDataUrl'
+import { canvasToWebpDataUrl, createImageThumbnailDataUrl } from './canvasImage'
 
 const DB_NAME = 'gpt-image-playground'
 const DB_VERSION = 15
@@ -48,6 +50,19 @@ const STORE_ASSET_BLOBS = 'assetBlobs'
 const STORE_ASSET_VERSIONS = 'assetVersions'
 const THUMBNAIL_MAX_SIZE = 1024
 const THUMBNAIL_QUALITY = 0.82
+/**
+ * 网格小图（grid 通道）参数：最长边 512px。
+ *
+ * 尺寸依据（本机真实库 `D:\AI生图2\thumbs`，2267 张 v5 full 缩略图）：
+ * - 磁贴最大边长由用户可选列数决定（3–6 列），3 列 + 宽屏下单个磁贴 CSS 边长可达 ~500–700px，
+ *   2x DPR 需要 ~1000+ 设备像素，288px 会明显发虚；512px 与历史 grid 文件口径一致
+ *   （v1/v2 实测尺寸分布 512×288 / 320×180 / 384×512，长边均为 512）。
+ * - 实测收益（生产 `buildGridThumbnail` 跑真实缩略图，40 张均匀取样）：
+ *   full 均值 79.9KB → grid 均值 26.7KB / p50 25.7KB，**缩量 x2.99**（逐张中位 x2.90，区间 x2.30–3.61）；
+ *   解码位图内存 1024×576×4≈2.36MB → 512×288×4≈0.59MB，**约 1/4**。
+ */
+const GRID_THUMBNAIL_MAX_SIZE = 512
+const GRID_THUMBNAIL_QUALITY = 0.8
 const THUMBNAIL_VERSION = 5
 const APP_DATA_MIGRATION_ID = 'electron-app-data-migrated-v1'
 const APP_DATA_LEGACY_CLEANUP_ID = 'electron-indexeddb-cleaned-v1'
@@ -396,6 +411,25 @@ function writeManyElectronRecords(namespace: string, values: unknown[]): Promise
     .then(() => undefined)
 }
 
+/**
+ * 跨命名空间批量写（Electron）：一次 IPC 提交多条不同 namespace 的记录。
+ *
+ * 生成一张图会先写 `images` 再写 `thumbnails`，两条记录分别 `put` 就是两次
+ * 渲染→主进程→UtilityProcess→SQLite 的完整往返；这里合并成一次。旧 preload 没有该通道时
+ * 返回 null，调用方回退到逐条写入。
+ */
+function writeBatchElectronRecords(entries: AppDataBatchEntry[]): Promise<void> | null {
+  const api = getElectronAppDataApi()
+  if (!api) return null
+  const putBatch = api.appDataPutBatch
+  if (typeof putBatch !== 'function' || entries.length === 0) return null
+  return ensureElectronAppDataMigrated()
+    .then(() => putBatch(entries))
+    .then(() => undefined)
+}
+
+type AppDataBatchEntry = { namespace: string; id: string; value: unknown }
+
 function replaceElectronRecords(namespace: string, values: unknown[]): Promise<void> | null {
   const api = getElectronAppDataApi()
   if (!api) return null
@@ -492,6 +526,22 @@ export function putTask(task: TaskRecord): Promise<IDBValidKey> {
   const electron = writeElectronRecord(STORE_TASKS, task.id, task)
   if (electron) return electron
   return dbTransaction(STORE_TASKS, 'readwrite', (s) => s.put(task))
+}
+
+/**
+ * 批量写入任务记录。
+ *
+ * 收藏夹批量增删 / 导入恢复等场景一次要落几十上百条任务，逐条 `putTask` 会各走一次
+ * 渲染→主进程→UtilityProcess→SQLite 的往返；此处合并为一次 `app-data:put-many`（单事务）。
+ */
+export async function putTasks(tasks: TaskRecord[]): Promise<void> {
+  if (tasks.length === 0) return
+  const batch = writeManyElectronRecords(STORE_TASKS, tasks)
+  if (batch) {
+    await batch
+    return
+  }
+  await putMany(STORE_TASKS, tasks)
 }
 
 export function deleteTask(id: string): Promise<undefined> {
@@ -789,10 +839,16 @@ export function putImageThumbnail(thumbnail: StoredImageThumbnail): Promise<IDBV
   return dbTransaction(STORE_THUMBNAILS, 'readwrite', (s) => s.put(thumbnail))
 }
 
-/** 从磁盘缩略图缓存读取（Electron，库根 thumbs/）；浏览器或未命中返回 undefined。 */
-export async function getFreshThumbnailFromDisk(id: string): Promise<StoredImageThumbnail | undefined> {
+/**
+ * 从磁盘缩略图缓存读取（Electron，库根 thumbs/）；浏览器或未命中返回 undefined。
+ * variant 决定通道（默认 full）；grid 未命中时调用方需自行回退 full。
+ */
+export async function getFreshThumbnailFromDisk(
+  id: string,
+  variant: ThumbnailVariant = 'full',
+): Promise<StoredImageThumbnail | undefined> {
   if (!isElectron()) return undefined
-  const disk = await readThumbnailFromDisk(id, THUMBNAIL_VERSION)
+  const disk = await readThumbnailFromDisk(id, THUMBNAIL_VERSION, variant)
   if (!disk?.dataUrl) return undefined
   return {
     id,
@@ -800,6 +856,29 @@ export async function getFreshThumbnailFromDisk(id: string): Promise<StoredImage
     width: disk.width,
     height: disk.height,
     thumbnailVersion: THUMBNAIL_VERSION,
+  }
+}
+
+/**
+ * 由 full 缩略图现出网格小图并落盘（grid 通道）。
+ *
+ * 源用 full 缩略图（最长边 ≤1024px 的 webp）而不是原图：目标最长边只有 512px，
+ * 二次缩放画质损失可忽略，却省掉一次 2K/4K 原图解码。
+ * 失败返回 undefined（调用方继续用 full 兜底），永不 reject。
+ * 写盘失败仍返回 dataUrl —— 内存缓存已经能用，下次读取会重试落盘。
+ */
+export async function buildGridThumbnail(id: string, fullThumbnailDataUrl: string): Promise<string | undefined> {
+  try {
+    const gridDataUrl = await createImageThumbnailDataUrl(
+      fullThumbnailDataUrl,
+      GRID_THUMBNAIL_MAX_SIZE,
+      GRID_THUMBNAIL_QUALITY,
+    )
+    if (!gridDataUrl) return undefined
+    if (isElectron()) await writeThumbnailToDisk(id, THUMBNAIL_VERSION, gridDataUrl, 'grid')
+    return gridDataUrl
+  } catch {
+    return undefined
   }
 }
 
@@ -977,6 +1056,30 @@ export function putImage(image: StoredImage): Promise<IDBValidKey> {
   return dbTransaction(STORE_IMAGES, 'readwrite', (s) => s.put(image))
 }
 
+/**
+ * 写入图片记录与缩略图记录（可只写其中一条）。
+ *
+ * 生成一张图会产生「`images` 记录 + `thumbnails` 记录」两条不同命名空间的写入。
+ * 逐条 `putImage` / `putImageThumbnail` 各走一次 渲染→主进程→UtilityProcess→SQLite 的完整往返，
+ * 这里在 Electron 下合并为一次 `app-data:put-batch`（单事务原子提交）；旧 preload 或浏览器环境
+ * 自动回退到逐条写入，语义不变。
+ */
+export async function putImageRecords(
+  image: StoredImage | null,
+  thumbnail?: StoredImageThumbnail | null,
+): Promise<void> {
+  const entries: AppDataBatchEntry[] = []
+  if (image) entries.push({ namespace: STORE_IMAGES, id: image.id, value: image })
+  if (thumbnail) entries.push({ namespace: STORE_THUMBNAILS, id: thumbnail.id, value: thumbnail })
+  const batch = writeBatchElectronRecords(entries)
+  if (batch) {
+    await batch
+    return
+  }
+  if (image) await putImage(image)
+  if (thumbnail) await putImageThumbnail(thumbnail)
+}
+
 export async function deleteImage(id: string): Promise<undefined> {
   const image = await getImage(id)
   const api = getElectronAppDataApi()
@@ -1076,24 +1179,27 @@ export async function storeImage(
 
   if (!existing) {
     const thumbnail = await safeCreateImageThumbnail(dataUrl)
-    await putImage({
-      id,
-      dataUrl: localPath ? undefined : dataUrl,
-      localPath,
-      createdAt: Date.now(),
-      source,
-      width: thumbnail.width,
-      height: thumbnail.height,
-    })
-    if (thumbnail.thumbnailDataUrl) {
-      await putImageThumbnail({
+    // 图片记录与缩略图记录合并为一次跨进程写（两个命名空间，见 putImageRecords）
+    await putImageRecords(
+      {
         id,
-        thumbnailDataUrl: thumbnail.thumbnailDataUrl,
+        dataUrl: localPath ? undefined : dataUrl,
+        localPath,
+        createdAt: Date.now(),
+        source,
         width: thumbnail.width,
         height: thumbnail.height,
-        thumbnailVersion: THUMBNAIL_VERSION,
-      })
-    }
+      },
+      thumbnail.thumbnailDataUrl
+        ? {
+            id,
+            thumbnailDataUrl: thumbnail.thumbnailDataUrl,
+            width: thumbnail.width,
+            height: thumbnail.height,
+            thumbnailVersion: THUMBNAIL_VERSION,
+          }
+        : null,
+    )
   } else if (
     (await getStoredImageThumbnail(id))?.thumbnailVersion !== THUMBNAIL_VERSION ||
     (!existing.localPath && localPath)
@@ -1112,18 +1218,18 @@ export async function storeImage(
       updates.localPath = localPath
       updates.dataUrl = undefined // Clear dataUrl from DB if we successfully saved to localPath
     }
-    if (Object.keys(updates).length > 0) {
-      await putImage({ ...existing, ...updates })
-    }
-    if (thumbnail.thumbnailDataUrl) {
-      await putImageThumbnail({
-        id,
-        thumbnailDataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
-        thumbnailVersion: THUMBNAIL_VERSION,
-      })
-    }
+    await putImageRecords(
+      Object.keys(updates).length > 0 ? { ...existing, ...updates } : null,
+      thumbnail.thumbnailDataUrl
+        ? {
+            id,
+            thumbnailDataUrl: thumbnail.thumbnailDataUrl,
+            width: thumbnail.width,
+            height: thumbnail.height,
+            thumbnailVersion: THUMBNAIL_VERSION,
+          }
+        : null,
+    )
   }
   return id
 }

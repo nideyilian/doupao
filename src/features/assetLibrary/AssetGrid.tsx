@@ -14,7 +14,7 @@ import {
 import type { GeneratedAsset } from '../../types'
 import { HOVER_FULL_IMAGE_LIMIT } from '../../lib/imageHover'
 import { markScrollActivity } from '../../lib/scrollActivity'
-import { prefetchImageThumbnails } from '../../store'
+import { GRID_THUMBNAIL_VARIANT, prefetchImageThumbnails } from '../../store'
 import { ImageIcon } from '../../design-system/icons'
 import { EmptyState } from '../../design-system'
 import { useDragSelect, getMarqueeBoxStyle } from '../../hooks/useDragSelect'
@@ -326,6 +326,7 @@ export default function AssetGrid({
     prefetchImageThumbnails(
       assets.slice(0, SCROLL_PREFETCH_COUNT).map((asset) => asset.imageId),
       'ahead',
+      GRID_THUMBNAIL_VARIANT,
     )
   }, [assets, resetScrollKey])
 
@@ -388,6 +389,7 @@ export default function AssetGrid({
             prefetchImageThumbnails(
               assets.slice(start, end).map((asset) => asset.imageId),
               'ahead',
+              GRID_THUMBNAIL_VARIANT,
             )
           }
         })

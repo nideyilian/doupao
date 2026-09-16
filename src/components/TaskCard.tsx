@@ -4,11 +4,13 @@ import {
   useStore,
   ensureImageCached,
   ensureImageThumbnailCached,
+  resolveImageDisplaySrc,
   subscribeImageThumbnail,
   retryTask,
   removeMultipleTasks,
 } from '../store'
 import { getImage } from '../lib/db'
+import { isLocalImageUrl } from '../lib/localImageUrl'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { updateTaskPrompt } from '../store'
 import { formatImageRatio } from '../lib/size'
@@ -293,7 +295,8 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
     }
 
     const loadOriginalFallback = (imageId: string) => {
-      void ensureImageCached(imageId)
+      // 缩略图不可用时的兜底展示：优先本地文件协议直出，失败再退回 dataUrl。
+      void resolveImageDisplaySrc(imageId)
         .then((dataUrl) => {
           if (cancelled) return
           if (dataUrl) {
@@ -340,6 +343,15 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
       unsubscribe?.()
     }
   }, [task.outputImages, task.actualParams, task.actualParamsByImage, task.params.size])
+
+  // 兜底封面可能来自本地文件协议，文件被外部删除/移出库根时会 404：回退 dataUrl，避免破图。
+  const handleThumbError = () => {
+    const imageId = task.outputImages[0]
+    if (!imageId || !isLocalImageUrl(thumbSrc)) return
+    void ensureImageCached(imageId).then((dataUrl) => {
+      if (dataUrl) setThumbSrc(dataUrl)
+    })
+  }
 
   const duration = (() => {
     let seconds: number
@@ -516,6 +528,8 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                     data-output-image-ids={task.outputImages.join(',')}
                     className="saveable-image w-full h-full object-cover"
                     loading="lazy"
+                    decoding="async"
+                    onError={handleThumbError}
                     alt=""
                   />
                   {(task.outputImages?.length ?? 0) > 1 && (
@@ -610,6 +624,8 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                   data-output-image-ids={task.outputImages.join(',')}
                   className="saveable-image w-full h-full object-cover"
                   loading="lazy"
+                  decoding="async"
+                  onError={handleThumbError}
                   alt=""
                 />
                 {(task.outputImages?.length ?? 0) > 1 && (
@@ -667,6 +683,8 @@ function TaskCard({ task, onReuse, onEditOutputs, onDelete, onClick, isSelected,
                   data-output-image-ids={task.outputImages.join(',')}
                   className="saveable-image w-full h-full object-cover"
                   loading="lazy"
+                  decoding="async"
+                  onError={handleThumbError}
                   alt=""
                 />
                 {!task.isFavorite && (task.outputImages?.length ?? 0) > 1 && (

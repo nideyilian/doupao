@@ -42,9 +42,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFiles: (filters?: { name: string; extensions: string[] }[]) =>
     ipcRenderer.invoke('fs:select-files', { filters }),
   saveImage: (filePath: string, dataUrl: string) => ipcRenderer.invoke('fs:save-image', { filePath, dataUrl }),
+  // 热点路径：渲染进程已用原生 base64 解码出字节，主进程不必再对整张图的 base64 字符串解码
+  saveImageBytes: (filePath: string, bytes: Uint8Array) => ipcRenderer.invoke('fs:save-image', { filePath, bytes }),
   linkFile: (sourcePath: string, targetPath: string) => ipcRenderer.invoke('fs:link-file', { sourcePath, targetPath }),
   saveCompositeImage: (filePath: string, dataUrl: string, maxSizeKb?: number) =>
     ipcRenderer.invoke('composite:save-image', { filePath, dataUrl, maxSizeKb }),
+  // 同上，但导出成图常有 10MB+：渲染进程解码后只搬字节，主进程不再同步解 base64
+  saveCompositeImageBytes: (filePath: string, bytes: Uint8Array) =>
+    ipcRenderer.invoke('composite:save-image', { filePath, bytes }),
   authorizeCompositeOutputDirectory: (dirPath: string) =>
     ipcRenderer.invoke('composite:authorize-output-directory', { dirPath }),
   saveJson: (filePath: string, data: unknown) => ipcRenderer.invoke('fs:save-json', { filePath, data }),
@@ -101,9 +106,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteCacheImages: (filePaths: string[]) => ipcRenderer.invoke('store:delete-cache-images', { filePaths }),
   reconcileCacheImages: (referencedFileNames: string[]) =>
     ipcRenderer.invoke('store:reconcile-cache-images', { referencedFileNames }),
-  readThumbnail: (id: string, version: number, variant?: 'grid') =>
+  readThumbnail: (id: string, version: number, variant?: 'full' | 'grid') =>
     ipcRenderer.invoke('thumb:read', { id, version, variant }),
-  writeThumbnail: (id: string, version: number, dataUrl: string, variant?: 'grid') =>
+  writeThumbnail: (id: string, version: number, dataUrl: string, variant?: 'full' | 'grid') =>
     ipcRenderer.invoke('thumb:save', { id, version, dataUrl, variant }),
   deleteThumbnails: (imageIds: string[]) => ipcRenderer.invoke('thumb:delete', { imageIds }),
   fileExists: (filePath: string) => ipcRenderer.invoke('fs:exists', { filePath }),
@@ -169,6 +174,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('app-data:put', namespace, id, value),
   appDataPutMany: (namespace: string, records: unknown[]) =>
     ipcRenderer.invoke('app-data:put-many', namespace, records),
+  // 跨命名空间批量写：一次往返提交多条不同 namespace 的记录（如 image + thumbnail）
+  appDataPutBatch: (entries: Array<{ namespace: string; id: string; value: unknown }>) =>
+    ipcRenderer.invoke('app-data:put-batch', entries),
   appDataReplace: (namespace: string, records: unknown[]) => ipcRenderer.invoke('app-data:replace', namespace, records),
   appDataDelete: (namespace: string, id: string) => ipcRenderer.invoke('app-data:delete', namespace, id),
   appDataDeleteMany: (namespace: string, ids: string[]) => ipcRenderer.invoke('app-data:delete-many', namespace, ids),

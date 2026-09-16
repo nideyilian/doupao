@@ -16,6 +16,7 @@ import { BookOpenCheckIcon, Layers3Icon } from '../../design-system/icons'
 import {
   editOutputs,
   prefetchImageThumbnails,
+  GRID_THUMBNAIL_VARIANT,
   removeMultipleTasks,
   removeTask,
   rerunSopBatchTasks,
@@ -587,7 +588,7 @@ function AssetGroupedView({
       .flatMap((group) => (groupedViewStyle === 'cards' ? group.assets.slice(0, 1) : group.assets))
       .slice(0, SCROLL_PREFETCH_ASSETS)
       .map((asset) => asset.imageId)
-    prefetchImageThumbnails(ids, 'ahead')
+    prefetchImageThumbnails(ids, 'ahead', GRID_THUMBNAIL_VARIANT)
   }, [groupedViewStyle, groups, resetScrollKey, viewMode])
 
   const measure = useCallback((resetScroll = false) => {
@@ -698,7 +699,7 @@ function AssetGroupedView({
             .flatMap((layout) => (groupedViewStyle === 'cards' ? layout.group.assets.slice(0, 1) : layout.group.assets))
             .slice(0, SCROLL_PREFETCH_ASSETS)
             .map((asset) => asset.imageId)
-          prefetchImageThumbnails(ids, 'ahead')
+          prefetchImageThumbnails(ids, 'ahead', GRID_THUMBNAIL_VARIANT)
         })
       }
       if (hasMore && !loadingMore && element.scrollHeight - element.scrollTop - element.clientHeight < 600)

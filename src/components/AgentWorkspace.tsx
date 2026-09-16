@@ -16,6 +16,7 @@ import {
   getAgentSiblingRounds,
   getCachedImage,
   ensureImageCached,
+  resolveImageDisplaySrc,
   regenerateAgentAssistantMessage,
   remapAgentRoundMentionsForPathChange,
   removeMultipleTasks,
@@ -23,6 +24,7 @@ import {
 } from '../store'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
+import { isLocalImageUrl } from '../lib/localImageUrl'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import {
   collectWebSearchCalls,
@@ -145,7 +147,9 @@ function ChatImageThumb({
         cancelled = true
       }
     }
-    ensureImageCached(imageId).then((url) => {
+    // 无遮罩时是纯展示：优先本地文件协议直出，拿不到时自动回退 dataUrl。
+    // （带遮罩的分支必须留在上面，合成依赖真实像素。）
+    resolveImageDisplaySrc(imageId).then((url) => {
       if (!cancelled && url) setSrc(url)
     })
     return () => {
@@ -161,7 +165,20 @@ function ChatImageThumb({
       onClick={() => setLightboxImageId(imageId, [imageId])}
     >
       {src ? (
-        <img src={src} className="h-full w-full object-cover" alt="" />
+        <img
+          src={src}
+          data-image-id={imageId}
+          className="h-full w-full object-cover"
+          alt=""
+          decoding="async"
+          onError={() => {
+            // 协议 404（文件被外部删除/移出库根）时回退 dataUrl，避免聊天里破图。
+            if (!isLocalImageUrl(src)) return
+            void ensureImageCached(imageId).then((url) => {
+              if (url) setSrc(url)
+            })
+          }}
+        />
       ) : (
         <div className="h-full w-full bg-ds-surface dark:bg-ds-surface" />
       )}

@@ -68,6 +68,43 @@ describe('AppDataStore', () => {
     expect(store.count('compositeAssets')).toBe(0)
   })
 
+  it('writes records from different namespaces in a single transaction', () => {
+    db = new DatabaseSync(':memory:')
+    store = new AppDataStore(db)
+
+    store.putBatch([
+      { namespace: 'images', id: 'image-1', value: { id: 'image-1', localPath: 'cache-images/image-1.png' } },
+      { namespace: 'thumbnails', id: 'image-1', value: { id: 'image-1', thumbnailVersion: 5 } },
+    ])
+
+    expect(store.get('images', 'image-1')).toMatchObject({ localPath: 'cache-images/image-1.png' })
+    expect(store.get('thumbnails', 'image-1')).toMatchObject({ thumbnailVersion: 5 })
+  })
+
+  it('rolls the whole batch back when one record cannot be serialized', () => {
+    db = new DatabaseSync(':memory:')
+    store = new AppDataStore(db)
+
+    // 跨命名空间合并写入必须是原子的：否则「图有了、缩略图没有」这类半提交状态会残留
+    expect(() =>
+      store.putBatch([
+        { namespace: 'images', id: 'image-1', value: { id: 'image-1', localPath: 'cache-images/image-1.png' } },
+        { namespace: 'thumbnails', id: 'image-1', value: { id: 'image-1', invalid: BigInt(1) } },
+      ]),
+    ).toThrow()
+
+    expect(store.count('images')).toBe(0)
+    expect(store.count('thumbnails')).toBe(0)
+  })
+
+  it('ignores an empty batch', () => {
+    db = new DatabaseSync(':memory:')
+    store = new AppDataStore(db)
+
+    expect(() => store.putBatch([])).not.toThrow()
+    expect(store.count('images')).toBe(0)
+  })
+
   it('updates image paths in one transaction', () => {
     db = new DatabaseSync(':memory:')
     store = new AppDataStore(db)

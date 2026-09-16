@@ -39,7 +39,7 @@ import type {
   WordLibraryExportData,
   AssetCollection,
 } from './types'
-import type { StoredImage, StoredImageThumbnail } from './types'
+import type { StoredImage, StoredImageThumbnail, ThumbnailVariant } from './types'
 import type { CallApiOptions, CallApiResult } from './lib/imageApiShared'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
 import {
@@ -118,6 +118,7 @@ import { assetCommands } from './lib/assetCommands'
 import { useAssetLibraryStore } from './features/assetLibrary/store'
 import { loadGalleryViewMode, saveGalleryViewMode, type GalleryViewMode } from './lib/galleryPreferences'
 import { isScrollActive } from './lib/scrollActivity'
+import { buildLocalImageUrl, isLocalImageUrl, localImageUrlToDataUrl } from './lib/localImageUrl'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import { appendAdNegativeRule, createAdNegativeRuleSnapshot, getAdNegativeRule } from './lib/adNegativeRules'
 import {
@@ -125,6 +126,7 @@ import {
   getAllTasks,
   loadTasksIncrementally,
   putTask as dbPutTask,
+  putTasks as dbPutTasks,
   deleteTask as dbDeleteTask,
   clearTasks as dbClearTasks,
   getAllAgentConversations,
@@ -171,6 +173,7 @@ import {
   putAssetUsageEvents,
   purgeGeneratedAssetsInTransaction,
   getFreshThumbnailFromDisk,
+  buildGridThumbnail,
   type PurgeRecords,
 } from './lib/db'
 import { buildImageReferenceGraph, isImageReferenced, type ImageReferenceGraph } from './lib/imageReferenceGraph'
@@ -288,12 +291,11 @@ const thumbnailCache = new ByteLruCache<
   string,
   { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number }
 >(64 * 1024 * 1024)
-const thumbnailBackfillIds = new Map<string, 'visible' | 'background'>()
+// 以下三个结构统一按 `${id}:${variant}` 分键（见 thumbnailKey）：
+// 待回填队列 / 回填在途集合 / 缩略图更新订阅。
+const thumbnailBackfillIds = new Map<string, ThumbnailBackfillRequest>()
 const thumbnailBackfillRunningIds = new Set<string>()
-const thumbnailSubscribers = new Map<
-  string,
-  Set<(thumbnail: { dataUrl: string; width?: number; height?: number }) => void>
->()
+const thumbnailSubscribers = new Map<string, Set<(thumbnail: ThumbnailResult) => void>>()
 let thumbnailBackfillScheduled = false
 const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 export const MAX_RETAINED_STREAM_PARTIAL_IMAGES = 3
@@ -428,10 +430,15 @@ function getNextTaskFilenameBatch(createdAt: number, targetTabId: string | null,
   const tab = targetTabId ? state.workspaceTabs.find((item) => item.id === targetTabId) : null
   if (tab) return getNextGeneratedImageBatch(tab.tasks, createdAt)
 
+  // 一次 O(总任务数) 建索引：原实现在 filter 回调里对每个任务再扫一遍所有标签页，
+  // 复杂度是 O(任务数 × 标签页数 × 每页任务数)。千级任务量下每张图命名都要跑数百万次比较，
+  // 而它位于「保存到本地」链路，批量出图时会被反复调用。
+  const ownedTaskIds = new Set<string>()
+  for (const item of state.workspaceTabs) {
+    for (const candidate of item.tasks) ownedTaskIds.add(candidate.id)
+  }
   const unownedTasks = state.tasks.filter(
-    (task) =>
-      !state.workspaceTabs.some((item) => item.tasks.some((candidate) => candidate.id === task.id)) &&
-      getTaskFilenameFallbackLabel(task) === fallbackLabel,
+    (task) => !ownedTaskIds.has(task.id) && getTaskFilenameFallbackLabel(task) === fallbackLabel,
   )
   return getNextGeneratedImageBatch(unownedTasks, createdAt)
 }
@@ -689,13 +696,37 @@ async function saveAgentConversationToLocalFS(conversationId: string) {
   }
 }
 
-export function getCachedThumbnail(id: string) {
-  const thumbnail = thumbnailCache.get(id)
+export interface ThumbnailResult {
+  dataUrl: string
+  width?: number
+  height?: number
+}
+
+/**
+ * 网格磁贴（图库 / 素材库 / Agent 网格 / 文件夹封面）统一使用的缩略图通道。
+ * grid 小图最长边 512px（见 `db.ts` 的 GRID_THUMBNAIL_MAX_SIZE），实测读取量约为 full 的 1/3
+ * （full 均值 79.9KB → grid 26.7KB），解码位图内存约 1/4，内存缓存可多放约 3 倍张数。
+ * 查看器、详情面板、任务卡封面等需要看清细节或原图分辨率的位置保持默认的 `'full'`（1024px）。
+ */
+export const GRID_THUMBNAIL_VARIANT: ThumbnailVariant = 'grid'
+
+/**
+ * 缩略图内存缓存键：`${id}:${variant}`。
+ * full（详情大图 1024px）与 grid（网格小图 512px）必须分开分键，
+ * 否则大图会顶掉小图、网格磁贴读到的仍是大图。
+ */
+function thumbnailKey(id: string, variant: ThumbnailVariant): string {
+  return `${id}:${variant}`
+}
+
+export function getCachedThumbnail(id: string, variant: ThumbnailVariant = 'full') {
+  const key = thumbnailKey(id, variant)
+  const thumbnail = thumbnailCache.get(key)
   if (thumbnail?.thumbnailVersion === CURRENT_THUMBNAIL_VERSION) {
     return thumbnail
   }
   if (thumbnail) {
-    thumbnailCache.delete(id)
+    thumbnailCache.delete(key)
   }
   return undefined
 }
@@ -703,21 +734,25 @@ export function getCachedThumbnail(id: string) {
 function cacheThumbnail(
   id: string,
   thumbnail: { dataUrl: string; width?: number; height?: number; thumbnailVersion?: number },
+  variant: ThumbnailVariant = 'full',
 ) {
   if (thumbnail.thumbnailVersion !== CURRENT_THUMBNAIL_VERSION) return
-  thumbnailCache.set(id, thumbnail, thumbnail.dataUrl.length * 2)
+  thumbnailCache.set(thumbnailKey(id, variant), thumbnail, thumbnail.dataUrl.length * 2)
+}
+
+/** 清掉一张图两个通道的内存缓存（图片被删除 / 内容重算后的统一入口）。 */
+function clearCachedThumbnail(id: string) {
+  thumbnailCache.delete(thumbnailKey(id, 'full'))
+  thumbnailCache.delete(thumbnailKey(id, 'grid'))
 }
 
 // 同一图片并发加载去重：快速划过网格 / 多个组件同时请求同一 imageId 时，
 // 只发一次 IndexedDB 读取，避免重复读取多 MB 的 dataUrl 记录造成卡顿。
 const imageLoadPromises = new Map<string, Promise<string | undefined>>()
 
-// 缩略图 IndexedDB 读取去重：虚拟列表快速滚动时新挂载的卡片会并发请求同一批缩略图，
-// 这里合并为一次读取，避免一帧内开几十个 IndexedDB 事务。
-const thumbnailLoadPromises = new Map<
-  string,
-  Promise<{ dataUrl: string; width?: number; height?: number } | undefined>
->()
+// 缩略图读取去重（键 `${id}:${variant}`）：虚拟列表快速滚动时新挂载的卡片会并发请求同一批缩略图，
+// 这里合并为一次读取，避免一帧内开几十个 IPC/IndexedDB 事务。
+const thumbnailLoadPromises = new Map<string, Promise<ThumbnailResult | undefined>>()
 
 export function ensureImageCached(id: string): Promise<string | undefined> {
   const cached = getCachedImage(id)
@@ -768,57 +803,159 @@ async function loadAndCacheImage(id: string): Promise<string | undefined> {
   return undefined
 }
 
+// 显示地址解析去重：同一张图可能被 Lightbox 与网格悬停同时请求。
+const imageDisplaySrcPromises = new Map<string, Promise<string | undefined>>()
+
+/**
+ * 展示用原图地址。
+ *
+ * Electron 下优先返回本地图片协议 URL（`doupao://image/`），让 Chromium 直接从磁盘
+ * 流式读取并在解码线程池出图，省掉 `fs:read-file-buffer` 的结构化克隆、Blob 拷贝、
+ * `FileReader.readAsDataURL` 的 base64 编码以及 `<img>` 侧的解码回字节——一张 5MB 原图
+ * 从约 30MB 内存流量降到约 10MB，且不再占用渲染主线程。
+ *
+ * 浏览器环境、缺少 localPath、或路径不在协议服务范围（库根 cache-images/thumbs）内时，
+ * 一律回退到 `ensureImageCached` 的 dataUrl，行为与改动前完全一致。
+ * 调用方仍需在 `<img onError>` 上兜底：文件可能被外部删除，此时协议会 404。
+ */
+export function resolveImageDisplaySrc(id: string): Promise<string | undefined> {
+  const cached = getCachedImage(id)
+  if (cached) return Promise.resolve(cached)
+  const inFlight = imageDisplaySrcPromises.get(id)
+  if (inFlight) return inFlight
+  const promise = loadImageDisplaySrc(id).finally(() => {
+    imageDisplaySrcPromises.delete(id)
+  })
+  imageDisplaySrcPromises.set(id, promise)
+  return promise
+}
+
+async function loadImageDisplaySrc(id: string): Promise<string | undefined> {
+  let rec = await getImage(id)
+  // 兜底：IndexedDB 缺图时从主进程目录恢复 localPath（与 loadAndCacheImage 同口径）。
+  if (!rec?.dataUrl && !rec?.localPath) {
+    const recovered = await resolveImageFromCatalog(id)
+    if (recovered) rec = recovered
+  }
+  // 已有 dataUrl 说明磁盘副本未必存在，走原路径更稳；只有「纯 localPath」才用协议直出。
+  if (rec?.localPath && !rec.dataUrl) {
+    const url = buildLocalImageUrl(rec.localPath)
+    if (url) return url
+  }
+  return ensureImageCached(id)
+}
+
+/**
+ * 取缩略图（带内存缓存 + 滚动闸门 + 并发去重）。
+ * `variant` 决定通道：网格磁贴传 `'grid'`（512px 小图），查看器/详情面板用默认 `'full'`（1024px）。
+ */
 export function ensureImageThumbnailCached(
   id: string,
   backfillPriority: 'visible' | 'background' = 'visible',
-): Promise<{ dataUrl: string; width?: number; height?: number } | undefined> {
-  const cached = getCachedThumbnail(id)
+  variant: ThumbnailVariant = 'full',
+): Promise<ThumbnailResult | undefined> {
+  const key = thumbnailKey(id, variant)
+  const cached = getCachedThumbnail(id, variant)
   if (cached) return Promise.resolve(cached)
 
-  const inFlight = thumbnailLoadPromises.get(id)
+  const inFlight = thumbnailLoadPromises.get(key)
   if (inFlight) return inFlight
 
-  // 滚动闸门：滚动中挂起大缩略图加载（任务卡封面 / Agent 网格 / 收藏夹等全部消费方共享），
+  // 滚动闸门：滚动中挂起缩略图加载（任务卡封面 / Agent 网格 / 收藏夹等全部消费方共享），
   // 滚动停止后按可见优先补齐——避免滚动帧内开几十个 IPC/IDB 事务与离屏解码。
   if (isScrollActive(THUMBNAIL_DEFER_WINDOW_MS)) {
-    const priority = thumbnailSubscribers.has(id) ? 'visible' : backfillPriority
+    const priority = thumbnailSubscribers.has(key) ? 'visible' : backfillPriority
     // Map 重新插入可把刚进入视口的图片放到同优先级队尾；离屏卡片卸载时会取消该项，
     // 因此停滚后不会先处理快速划过时遗留的大批废弃请求。
-    pendingThumbnailIds.delete(id)
-    pendingThumbnailIds.set(id, priority)
+    pendingThumbnailIds.delete(key)
+    pendingThumbnailIds.set(key, { id, variant, priority })
     return new Promise((resolve) => {
-      let waiters = thumbnailWaiters.get(id)
+      let waiters = thumbnailWaiters.get(key)
       if (!waiters) {
         waiters = new Set()
-        thumbnailWaiters.set(id, waiters)
+        thumbnailWaiters.set(key, waiters)
       }
       waiters.add(resolve)
       scheduleThumbnailDrain(priority === 'visible' ? 100 : THUMBNAIL_DEFER_WINDOW_MS)
     })
   }
-  return startThumbnailLoad(id, backfillPriority)
+  return startThumbnailLoad(id, backfillPriority, variant)
+}
+
+/**
+ * grid 未命中时的 full 回退来源：内存缓存 → 磁盘 → IndexedDB（Electron 命中当前版本时懒迁移写盘）。
+ * 先查内存是有意的：页面级预取往往已经把 full 读进内存，这一步能省掉一次磁盘往返。
+ * `fromDisk` 表示记录来自压缩后的 WebP 文件（宽高是缩略图自身尺寸，需要从图片记录补原图尺寸）。
+ */
+async function loadFullThumbnailFallback(id: string): Promise<{ rec?: StoredImageThumbnail; fromDisk: boolean }> {
+  const cached = getCachedThumbnail(id, 'full')
+  if (cached) {
+    return {
+      rec: {
+        id,
+        thumbnailDataUrl: cached.dataUrl,
+        width: cached.width,
+        height: cached.height,
+        thumbnailVersion: cached.thumbnailVersion,
+      },
+      fromDisk: false,
+    }
+  }
+  const disk = isElectronEnv() ? await getFreshThumbnailFromDisk(id, 'full') : undefined
+  if (disk?.thumbnailDataUrl) return { rec: disk, fromDisk: true }
+
+  const stored = await getStoredImageThumbnail(id)
+  // 守卫：只有当前版本才写盘——旧版本缩略图不能以"当前版本"标签落盘（会顶替版本升级后的重建）
+  if (stored?.thumbnailDataUrl && stored.thumbnailVersion === CURRENT_THUMBNAIL_VERSION && isElectronEnv()) {
+    void writeThumbnailToDisk(id, CURRENT_THUMBNAIL_VERSION, stored.thumbnailDataUrl).catch(() => {})
+  }
+  return { rec: stored, fromDisk: false }
 }
 
 function startThumbnailLoad(
   id: string,
   backfillPriority: 'visible' | 'background' = 'visible',
-): Promise<{ dataUrl: string; width?: number; height?: number } | undefined> {
+  variant: ThumbnailVariant = 'full',
+): Promise<ThumbnailResult | undefined> {
+  const key = thumbnailKey(id, variant)
   const promise = (async () => {
-    const cached = getCachedThumbnail(id)
+    const cached = getCachedThumbnail(id, variant)
     if (cached) return cached
 
-    // 磁盘优先（Electron）：库根 thumbs/ 命中直接返回；未命中回退 IndexedDB（命中当前版本时懒迁移回填磁盘）
-    let rec: StoredImageThumbnail | undefined = isElectronEnv() ? await getFreshThumbnailFromDisk(id) : undefined
-    const fromDisk = Boolean(rec?.thumbnailDataUrl)
-    if (!rec?.thumbnailDataUrl) {
+    // ① 目标通道的磁盘文件（库根 thumbs/）：full 与 grid 各自命名空间，命中直接返回
+    let rec: StoredImageThumbnail | undefined = isElectronEnv()
+      ? await getFreshThumbnailFromDisk(id, variant)
+      : undefined
+    let fromDisk = Boolean(rec?.thumbnailDataUrl)
+    // 记录是否真的属于目标通道：grid 回退到 full 时不能把大图塞进 grid 的内存缓存，
+    // 否则网格磁贴会被 1024px 大图长期占位，grid 通道白接通。
+    const matchedTargetChannel = fromDisk
+
+    // ② grid 未命中：先挂后台回填任务补出小图，再照旧用 full 兜底（观感与改动前一致）。
+    //    存量图库的 grid 就是靠这条路径逐步补齐的，不必等 THUMBNAIL_VERSION 升级。
+    //    silent=true：订阅方当前已有图可显示，回填完成只入缓存/落盘，不推送，避免同一张图二次换 src 闪烁。
+    if (!rec?.thumbnailDataUrl && variant === 'grid') {
+      scheduleThumbnailBackfill([{ id, variant, priority: backfillPriority, silent: true }])
+      const fallback = await loadFullThumbnailFallback(id)
+      rec = fallback.rec
+      fromDisk = fallback.fromDisk
+    }
+
+    // ③ full 通道（或 grid 的兜底）：磁盘 → IndexedDB
+    if (!rec?.thumbnailDataUrl && variant === 'full') {
       rec = await getStoredImageThumbnail(id)
+      fromDisk = false
       // 守卫：只有当前版本才写盘——旧版本缩略图不能以"当前版本"标签落盘（会顶替版本升级后的重建）
       if (rec?.thumbnailDataUrl && rec.thumbnailVersion === CURRENT_THUMBNAIL_VERSION && isElectronEnv()) {
         void writeThumbnailToDisk(id, CURRENT_THUMBNAIL_VERSION, rec.thumbnailDataUrl).catch(() => {})
       }
     }
+
+    // ④ 两处都没有：交给既有回填链路（会从原图现场生成）。
+    //    grid 在 ② 已排过一次 silent 任务；这里再排一次以把 silent 降为 false——
+    //    没有任何图可显示时，回填完成必须推送给订阅方，否则卡片会一直停在占位。
     if (!rec?.thumbnailDataUrl) {
-      scheduleThumbnailBackfill([id], backfillPriority)
+      scheduleThumbnailBackfill([{ id, variant, priority: backfillPriority, silent: false }])
       return undefined
     }
 
@@ -846,40 +983,42 @@ function startThumbnailLoad(
       thumbnailVersion: rec.thumbnailVersion,
     }
     if (thumbnail.thumbnailVersion !== CURRENT_THUMBNAIL_VERSION) {
-      scheduleThumbnailBackfill([id], 'background')
+      scheduleThumbnailBackfill([{ id, variant, priority: 'background', silent: false }])
       return thumbnail
     }
 
-    cacheThumbnail(id, thumbnail)
+    cacheThumbnail(id, thumbnail, matchedTargetChannel ? variant : 'full')
     return thumbnail
   })().finally(() => {
-    thumbnailLoadPromises.delete(id)
+    thumbnailLoadPromises.delete(key)
   })
-  thumbnailLoadPromises.set(id, promise)
+  thumbnailLoadPromises.set(key, promise)
   return promise
 }
 
-// 大缩略图（1024px）滚动延迟队列：与网格小图同策略，滚动停止后按可见优先补齐。
+// 缩略图滚动延迟队列：full 与 grid 共用同一条队列（键 `${id}:${variant}`），
+// 滚动停止后按可见优先补齐。
 const THUMBNAIL_DEFER_WINDOW_MS = 300
 const THUMBNAIL_DRAIN_BATCH = 8
-const pendingThumbnailIds = new Map<string, 'visible' | 'background'>()
-const thumbnailWaiters = new Map<
-  string,
-  Set<(thumbnail: { dataUrl: string; width?: number; height?: number } | undefined) => void>
->()
+/** 待读取请求：id + 通道 + 优先级，避免从缓存键里反解。 */
+interface ThumbnailRequest {
+  id: string
+  variant: ThumbnailVariant
+  priority: 'visible' | 'background'
+}
+const pendingThumbnailIds = new Map<string, ThumbnailRequest>()
+const thumbnailWaiters = new Map<string, Set<(thumbnail: ThumbnailResult | undefined) => void>>()
 let thumbnailDrainScheduled = false
-const aheadThumbnailIds = new Set<string>()
+/** 离屏预取窗口：键 → 请求（Map 保序，便于「保留最新窗口」）。 */
+const aheadThumbnailIds = new Map<string, { id: string; variant: ThumbnailVariant }>()
 let aheadThumbnailRunning = 0
 let aheadThumbnailDrainScheduled = false
 const MAX_AHEAD_THUMBNAIL_CONCURRENT = 3
 
-function resolveThumbnailWaiters(
-  id: string,
-  thumbnail: { dataUrl: string; width?: number; height?: number } | undefined,
-) {
-  const waiters = thumbnailWaiters.get(id)
+function resolveThumbnailWaiters(key: string, thumbnail: ThumbnailResult | undefined) {
+  const waiters = thumbnailWaiters.get(key)
   if (!waiters) return
-  thumbnailWaiters.delete(id)
+  thumbnailWaiters.delete(key)
   for (const resolve of waiters) resolve(thumbnail)
 }
 
@@ -895,23 +1034,23 @@ function scheduleThumbnailDrain(delay = THUMBNAIL_DEFER_WINDOW_MS) {
 async function runThumbnailDrain() {
   if (pendingThumbnailIds.size === 0) return
   const scrolling = isScrollActive(THUMBNAIL_DEFER_WINDOW_MS)
-  const visible: string[] = []
-  const background: string[] = []
-  for (const [id, priority] of pendingThumbnailIds) {
-    if (priority === 'visible') visible.push(id)
-    else background.push(id)
+  const visible: ThumbnailRequest[] = []
+  const background: ThumbnailRequest[] = []
+  for (const request of pendingThumbnailIds.values()) {
+    if (request.priority === 'visible') visible.push(request)
+    else background.push(request)
   }
   // 滚动中只读取少量当前可见图，保持画面跟手；离屏预取继续由 ahead 队列负责。
-  const ids = (scrolling ? visible.slice(0, 2) : [...visible, ...background]).slice(0, THUMBNAIL_DRAIN_BATCH)
-  if (ids.length === 0) {
+  const requests = (scrolling ? visible.slice(0, 2) : [...visible, ...background]).slice(0, THUMBNAIL_DRAIN_BATCH)
+  if (requests.length === 0) {
     scheduleThumbnailDrain()
     return
   }
-  for (const id of ids) pendingThumbnailIds.delete(id)
+  for (const request of requests) pendingThumbnailIds.delete(thumbnailKey(request.id, request.variant))
   await Promise.allSettled(
-    ids.map(async (id) => {
-      const result = await startThumbnailLoad(id)
-      resolveThumbnailWaiters(id, result)
+    requests.map(async (request) => {
+      const result = await startThumbnailLoad(request.id, request.priority, request.variant)
+      resolveThumbnailWaiters(thumbnailKey(request.id, request.variant), result)
     }),
   )
   // 已经停滚时连续排空小批次；滚动中保持短间隔，只补当前可见图。
@@ -929,15 +1068,16 @@ function scheduleAheadThumbnailDrain() {
   const run = () => {
     aheadThumbnailDrainScheduled = false
     while (aheadThumbnailRunning < MAX_AHEAD_THUMBNAIL_CONCURRENT && aheadThumbnailIds.size > 0) {
-      const id = aheadThumbnailIds.values().next().value as string | undefined
-      if (!id) break
-      aheadThumbnailIds.delete(id)
-      if (getCachedThumbnail(id) || thumbnailLoadPromises.has(id)) continue
-      pendingThumbnailIds.delete(id)
+      const entry = aheadThumbnailIds.values().next().value as { id: string; variant: ThumbnailVariant } | undefined
+      if (!entry) break
+      const key = thumbnailKey(entry.id, entry.variant)
+      aheadThumbnailIds.delete(key)
+      if (getCachedThumbnail(entry.id, entry.variant) || thumbnailLoadPromises.has(key)) continue
+      pendingThumbnailIds.delete(key)
       aheadThumbnailRunning++
-      void startThumbnailLoad(id, 'visible')
-        .then((result) => resolveThumbnailWaiters(id, result))
-        .catch(() => resolveThumbnailWaiters(id, undefined))
+      void startThumbnailLoad(entry.id, 'visible', entry.variant)
+        .then((result) => resolveThumbnailWaiters(key, result))
+        .catch(() => resolveThumbnailWaiters(key, undefined))
         .finally(() => {
           aheadThumbnailRunning--
           scheduleAheadThumbnailDrain()
@@ -952,12 +1092,24 @@ function scheduleAheadThumbnailDrain() {
   }
 }
 
-export function prefetchImageThumbnails(imageIds: Iterable<string>, mode: 'background' | 'ahead' = 'background'): void {
+/**
+ * 缩略图批量预取：分页加载（如素材库每批 120 张）落地后提前把缩略图读入内存缓存，
+ * 卡片真正挂载时 getCachedThumbnail 同步命中，避免「灰底占位 → 图片」的闪烁。
+ * `variant` 必须与真正渲染的消费方一致，否则预热的是另一条通道、磁贴仍要各读一次盘。
+ */
+export function prefetchImageThumbnails(
+  imageIds: Iterable<string>,
+  mode: 'background' | 'ahead' = 'background',
+  variant: ThumbnailVariant = 'full',
+): void {
   if (mode === 'ahead') {
     // 快速滚动时旧窗口没有继续预取的价值，保留最新窗口避免 FIFO 队列拖住当前视口。
     aheadThumbnailIds.clear()
     for (const id of imageIds) {
-      if (!getCachedThumbnail(id) && !thumbnailLoadPromises.has(id)) aheadThumbnailIds.add(id)
+      const key = thumbnailKey(id, variant)
+      if (!getCachedThumbnail(id, variant) && !thumbnailLoadPromises.has(key)) {
+        aheadThumbnailIds.set(key, { id, variant })
+      }
     }
     scheduleAheadThumbnailDrain()
     return
@@ -965,7 +1117,7 @@ export function prefetchImageThumbnails(imageIds: Iterable<string>, mode: 'backg
 
   const pending: string[] = []
   for (const id of imageIds) {
-    if (!getCachedThumbnail(id)) pending.push(id)
+    if (!getCachedThumbnail(id, variant)) pending.push(id)
   }
   if (pending.length === 0) return
 
@@ -974,7 +1126,7 @@ export function prefetchImageThumbnails(imageIds: Iterable<string>, mode: 'backg
     const batch = pending.slice(index, index + THUMBNAIL_PREFETCH_BATCH_SIZE)
     index += batch.length
     if (batch.length === 0) return
-    void Promise.all(batch.map((id) => ensureImageThumbnailCached(id, 'background'))).then(() => {
+    void Promise.all(batch.map((id) => ensureImageThumbnailCached(id, 'background', variant))).then(() => {
       if (index < pending.length) {
         if ('requestIdleCallback' in globalThis) {
           globalThis.requestIdleCallback(runBatch, { timeout: 2_000 })
@@ -987,41 +1139,64 @@ export function prefetchImageThumbnails(imageIds: Iterable<string>, mode: 'backg
   runBatch()
 }
 
+/** 订阅某张图某条通道的缩略图更新；`variant` 必须与 `ensureImageThumbnailCached` 传的一致。 */
 export function subscribeImageThumbnail(
   id: string,
-  callback: (thumbnail: { dataUrl: string; width?: number; height?: number }) => void,
+  callback: (thumbnail: ThumbnailResult) => void,
+  variant: ThumbnailVariant = 'full',
 ) {
-  let subscribers = thumbnailSubscribers.get(id)
+  const key = thumbnailKey(id, variant)
+  let subscribers = thumbnailSubscribers.get(key)
   if (!subscribers) {
     subscribers = new Set()
-    thumbnailSubscribers.set(id, subscribers)
+    thumbnailSubscribers.set(key, subscribers)
   }
   subscribers.add(callback)
-  if (pendingThumbnailIds.has(id)) {
-    pendingThumbnailIds.delete(id)
-    pendingThumbnailIds.set(id, 'visible')
+  const pending = pendingThumbnailIds.get(key)
+  if (pending) {
+    pendingThumbnailIds.delete(key)
+    pendingThumbnailIds.set(key, { ...pending, priority: 'visible' })
   }
   return () => {
     subscribers?.delete(callback)
     if (subscribers?.size === 0) {
-      thumbnailSubscribers.delete(id)
-      if (pendingThumbnailIds.get(id) === 'visible') {
-        pendingThumbnailIds.delete(id)
-        resolveThumbnailWaiters(id, undefined)
+      thumbnailSubscribers.delete(key)
+      const current = pendingThumbnailIds.get(key)
+      if (current?.priority === 'visible') {
+        pendingThumbnailIds.delete(key)
+        resolveThumbnailWaiters(key, undefined)
       }
     }
   }
 }
 
-function notifyImageThumbnail(id: string, thumbnail: { dataUrl: string; width?: number; height?: number }) {
-  thumbnailSubscribers.get(id)?.forEach((callback) => callback(thumbnail))
+function notifyImageThumbnail(id: string, thumbnail: ThumbnailResult, variant: ThumbnailVariant) {
+  thumbnailSubscribers.get(thumbnailKey(id, variant))?.forEach((callback) => callback(thumbnail))
 }
 
-function scheduleThumbnailBackfill(ids: Iterable<string>, priority: 'visible' | 'background' = 'background') {
-  for (const id of ids) {
-    if (getCachedThumbnail(id) || thumbnailBackfillRunningIds.has(id)) continue
-    const currentPriority = thumbnailBackfillIds.get(id)
-    if (!currentPriority || priority === 'visible') thumbnailBackfillIds.set(id, priority)
+/** 回填任务：`silent` 表示订阅方当前已有可用图（full 兜底），完成后只入缓存不推送。 */
+interface ThumbnailBackfillRequest {
+  id: string
+  variant: ThumbnailVariant
+  priority: 'visible' | 'background'
+  silent: boolean
+}
+
+function scheduleThumbnailBackfill(requests: ThumbnailBackfillRequest[]) {
+  for (const request of requests) {
+    const key = thumbnailKey(request.id, request.variant)
+    if (getCachedThumbnail(request.id, request.variant) || thumbnailBackfillRunningIds.has(key)) continue
+    const current = thumbnailBackfillIds.get(key)
+    if (!current) {
+      thumbnailBackfillIds.set(key, request)
+      continue
+    }
+    thumbnailBackfillIds.set(key, {
+      ...current,
+      priority: request.priority === 'visible' ? 'visible' : current.priority,
+      // 只要出现过一次「当前无图可显示」，回填完成就必须推送，否则卡片会一直停在占位。
+      silent: current.silent && request.silent,
+    })
   }
   scheduleThumbnailBackfillTick()
 }
@@ -1045,34 +1220,34 @@ function scheduleThumbnailBackfillTick() {
 async function processNextThumbnailBackfill() {
   if (thumbnailBackfillRunningIds.size > 0) return
 
-  const ids = await getNextThumbnailBackfillBatch()
-  for (const id of ids) startThumbnailBackfill(id)
+  const requests = await getNextThumbnailBackfillBatch()
+  for (const request of requests) startThumbnailBackfill(request)
 
   if (thumbnailBackfillIds.size > 0) scheduleThumbnailBackfillTick()
 }
 
 async function getNextThumbnailBackfillBatch() {
-  const candidates = getOrderedThumbnailBackfillIds().slice(0, MAX_THUMBNAIL_BACKFILL_CONCURRENT)
+  const candidates = getOrderedThumbnailBackfillRequests().slice(0, MAX_THUMBNAIL_BACKFILL_CONCURRENT)
   if (candidates.length === 0) return []
 
   const sizes = await Promise.all(
-    candidates.map(async (id) => {
+    candidates.map(async ({ id }) => {
       const image = await getImage(id)
       return { width: image?.width, height: image?.height }
     }),
   )
   const concurrency = getThumbnailConcurrencyForBatch(sizes)
   const selected = candidates.slice(0, concurrency)
-  for (const id of selected) thumbnailBackfillIds.delete(id)
+  for (const request of selected) thumbnailBackfillIds.delete(thumbnailKey(request.id, request.variant))
   return selected
 }
 
-function getOrderedThumbnailBackfillIds() {
-  const visible: string[] = []
-  const background: string[] = []
-  for (const [id, priority] of thumbnailBackfillIds) {
-    if (priority === 'visible') visible.push(id)
-    else background.push(id)
+function getOrderedThumbnailBackfillRequests(): ThumbnailBackfillRequest[] {
+  const visible: ThumbnailBackfillRequest[] = []
+  const background: ThumbnailBackfillRequest[] = []
+  for (const request of thumbnailBackfillIds.values()) {
+    if (request.priority === 'visible') visible.push(request)
+    else background.push(request)
   }
   return [...visible, ...background]
 }
@@ -1090,32 +1265,41 @@ function getThumbnailConcurrencyForBatch(sizes: Array<{ width?: number; height?:
   return 4
 }
 
-function startThumbnailBackfill(id: string) {
-  thumbnailBackfillRunningIds.add(id)
+function startThumbnailBackfill(request: ThumbnailBackfillRequest) {
+  const { id, variant, silent } = request
+  const key = thumbnailKey(id, variant)
+  thumbnailBackfillRunningIds.add(key)
 
   void (async () => {
-    if (getCachedThumbnail(id)) return
+    if (getCachedThumbnail(id, variant)) return
 
-    const thumbnail = await getImageThumbnail(id)
-    if (thumbnail?.thumbnailDataUrl) {
-      cacheThumbnail(id, {
-        dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
-        thumbnailVersion: thumbnail.thumbnailVersion,
-      })
-      notifyImageThumbnail(id, {
-        dataUrl: thumbnail.thumbnailDataUrl,
-        width: thumbnail.width,
-        height: thumbnail.height,
-      })
+    // 两条通道共用同一条 full 缩略图记录作源：grid 由它现出小图
+    // （解码 1024px 小图比解码 2K/4K 原图便宜得多，且 full 的生成/LRU 逻辑不需要复制一份）。
+    const source = await getImageThumbnail(id)
+    if (!source?.thumbnailDataUrl) return
+
+    let dataUrl = source.thumbnailDataUrl
+    if (variant === 'grid') {
+      const gridDataUrl = await buildGridThumbnail(id, source.thumbnailDataUrl)
+      if (!gridDataUrl) return
+      dataUrl = gridDataUrl
     }
+    const thumbnail = {
+      dataUrl,
+      width: source.width,
+      height: source.height,
+      thumbnailVersion: CURRENT_THUMBNAIL_VERSION,
+    }
+    cacheThumbnail(id, thumbnail, variant)
+    // silent：订阅方当前显示的是 full 兜底图，同一张图再换一次 src 会白闪一下，
+    // 因此只入缓存/落盘，等下次挂载或缓存淘汰后自然用上小图。
+    if (!silent) notifyImageThumbnail(id, thumbnail, variant)
   })()
     .catch(() => {
       // Keep thumbnail generation best-effort; cards remain on placeholders if it fails.
     })
     .finally(() => {
-      thumbnailBackfillRunningIds.delete(id)
+      thumbnailBackfillRunningIds.delete(key)
       scheduleThumbnailBackfillTick()
     })
 }
@@ -2376,10 +2560,13 @@ function isImageReferencedByState(state: AppState, imageId: string) {
 
 export async function deleteImageIfUnreferenced(imageId: string) {
   imageCache.delete(imageId)
-  thumbnailCache.delete(imageId)
-  thumbnailBackfillIds.delete(imageId)
-  thumbnailBackfillRunningIds.delete(imageId)
-  thumbnailSubscribers.delete(imageId)
+  clearCachedThumbnail(imageId)
+  for (const variant of ['full', 'grid'] as const) {
+    const key = thumbnailKey(imageId, variant)
+    thumbnailBackfillIds.delete(key)
+    thumbnailBackfillRunningIds.delete(key)
+    thumbnailSubscribers.delete(key)
+  }
   if (isImageReferencedByState(useStore.getState(), imageId)) return
   try {
     const graph = await buildStoreImageReferenceGraph()
@@ -4536,6 +4723,17 @@ export function putTask(task: TaskRecord): Promise<IDBValidKey> {
   const persistPromise = dbPutTask(getPersistableTask(task))
   void persistPromise.then(() => enqueueAssetSync(task.id)).catch(() => {})
   return persistPromise
+}
+
+/**
+ * 批量持久化任务：Electron 下合并为一次跨进程提交（`app-data:put-many` 单事务），
+ * 省掉逐条走「渲染→主进程→UtilityProcess→SQLite」的往返。
+ * 语义与逐个 {@link putTask} 一致：先落盘，再逐个排入素材同步队列。
+ */
+export async function putTasks(tasks: TaskRecord[]): Promise<void> {
+  if (tasks.length === 0) return
+  await dbPutTasks(tasks.map((task) => getPersistableTask(task)))
+  for (const task of tasks) enqueueAssetSync(task.id)
 }
 
 export function getCodexCliPromptKey(settings: AppSettings): string {
@@ -7109,7 +7307,7 @@ async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
     if (isImageReferenced(graph, imgId)) continue
     await deleteImage(imgId)
     imageCache.delete(imgId)
-    thumbnailCache.delete(imgId)
+    clearCachedThumbnail(imgId)
   }
 }
 
@@ -7118,7 +7316,7 @@ export async function cleanupAllOrphanedImages(): Promise<number> {
   for (const imgId of orphanIds) {
     await deleteImage(imgId)
     imageCache.delete(imgId)
-    thumbnailCache.delete(imgId)
+    clearCachedThumbnail(imgId)
   }
   return orphanIds.length
 }
@@ -7166,7 +7364,7 @@ export async function cleanupMissingImageRecords(): Promise<number> {
   await deleteThumbnailsFromDisk(ids)
   for (const id of ids) {
     imageCache.delete(id)
-    thumbnailCache.delete(id)
+    clearCachedThumbnail(id)
   }
   useStore.getState().showToast(`已清理 ${toClean.length} 张源文件缺失的图片（含缩略图）`, 'info')
   return toClean.length
@@ -10702,7 +10900,7 @@ export async function updateTasksFavoriteCollections(taskIds: string[], collecti
   })
 
   const tasksToPut = [...finalTasks.filter((task) => changedTaskIds.has(task.id)), ...newFavoriteTasks]
-  await Promise.all(tasksToPut.map((task) => putTask(task)))
+  await putTasks(tasksToPut)
 
   clearSelection()
   showToast(ids.length ? '收藏夹已更新' : '已取消收藏', 'success')
@@ -10775,7 +10973,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
         return ids ? { ...task, favoriteCollectionIds: ids, isFavorite: true } : task
       })
       useStore.getState().setTasks(updated)
-      await Promise.all(updated.filter((task) => idsByTaskToKeep.has(task.id)).map((task) => putTask(task)))
+      await putTasks(updated.filter((task) => idsByTaskToKeep.has(task.id)))
     }
     if (taskIdsToDelete.length) await removeMultipleTasks(taskIdsToDelete)
   } else if (taskIds.length) {
@@ -10791,7 +10989,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
       return { ...task, favoriteCollectionIds: ids, isFavorite: ids.length > 0 }
     })
     state.setTasks(updated)
-    await Promise.all(updated.filter((task) => idsByTaskId.has(task.id)).map((task) => putTask(task)))
+    await putTasks(updated.filter((task) => idsByTaskId.has(task.id)))
   }
   useStore.getState().setSelectedFavoriteCollectionIds((ids) => ids.filter((id) => id !== collectionId))
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
@@ -11259,7 +11457,7 @@ export async function removeMultipleTasks(taskIds: string[]) {
     if (isImageReferenced(graph, imgId)) continue
     await deleteImage(imgId)
     imageCache.delete(imgId)
-    thumbnailCache.delete(imgId)
+    clearCachedThumbnail(imgId)
   }
 
   // 删除任务时连同其生成的素材图片一起永久删除（被其他任务/会话引用的图片安全保留，不自动改动数据）
@@ -11321,7 +11519,7 @@ export async function removeTask(task: TaskRecord) {
     if (isImageReferenced(graph, imgId)) continue
     await deleteImage(imgId)
     imageCache.delete(imgId)
-    thumbnailCache.delete(imgId)
+    clearCachedThumbnail(imgId)
   }
 
   // 删除任务时连同其生成的素材图片一起永久删除（被其他任务/会话引用的图片安全保留，不自动改动数据）
@@ -12549,7 +12747,14 @@ async function importBackupTail(
     })
     await replaceStoredAgentConversations(useStore.getState().agentConversations)
     skipSupportPromptForImportedData(tasks)
-    scheduleThumbnailBackfill(state.importedImageIds)
+    scheduleThumbnailBackfill(
+      Array.from(state.importedImageIds, (id) => ({
+        id,
+        variant: 'full' as const,
+        priority: 'background' as const,
+        silent: false,
+      })),
+    )
   }
 
   if (
@@ -12621,7 +12826,7 @@ async function importBackupTail(
         : {}),
     })
     await hydrateWorkspaceTabsInStore()
-    if (normalizedFavorites.changed) await Promise.all(normalizedFavorites.tasks.map((task) => putTask(task)))
+    if (normalizedFavorites.changed) await putTasks(normalizedFavorites.tasks)
 
     if (data.wordLibraryGroups && data.wordLibraryEntries) {
       // 合并分组：去重，以导入数据中的分组为准（同名覆盖）
@@ -12737,10 +12942,18 @@ export async function createInputImageFromFile(file: File): Promise<InputImage |
 
 /** 添加图片到输入（右键菜单）—— 支持 data/blob/http URL */
 export async function addImageFromUrl(src: string): Promise<void> {
-  const res = await fetch(src)
-  const blob = await res.blob()
-  if (!blob.type.startsWith('image/')) throw new Error('不是有效的图片')
-  const dataUrl = await blobToDataUrl(blob)
+  let dataUrl: string
+  if (isLocalImageUrl(src)) {
+    // 展示用协议地址不能 fetch（CSP connect-src 不含 doupao:）：经 IPC 读回字节再转 dataUrl。
+    const resolved = await localImageUrlToDataUrl(src)
+    if (!resolved) throw new Error('读取图片失败')
+    dataUrl = resolved
+  } else {
+    const res = await fetch(src)
+    const blob = await res.blob()
+    if (!blob.type.startsWith('image/')) throw new Error('不是有效的图片')
+    dataUrl = await blobToDataUrl(blob)
+  }
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
   useStore.getState().addInputImage({ id, dataUrl })

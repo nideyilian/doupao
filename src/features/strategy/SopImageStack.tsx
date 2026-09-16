@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from 'react'
 import { ImageIcon } from '../../design-system/icons'
-import { ensureImageCached, ensureImageThumbnailCached, subscribeImageThumbnail } from '../../store'
+import { ensureImageThumbnailCached, resolveImageDisplaySrc, subscribeImageThumbnail } from '../../store'
 import type { TaskRecord } from '../../types'
 import { getHoverPreviewPosition, getHoverPreviewSize } from '../../lib/hoverPreviewPosition'
 import HoverImagePreview, { type HoverPreviewState } from '../../components/HoverImagePreview'
@@ -87,7 +87,7 @@ export default function SopImageStack({
   const loadPreview = (candidate: SopCoverCandidate, event: PointerEvent<HTMLButtonElement>) => {
     const requestId = previewRequestRef.current + 1
     previewRequestRef.current = requestId
-    void ensureImageCached(candidate.imageId).then((src) => {
+    void resolveImageDisplaySrc(candidate.imageId).then((src) => {
       if (!src || previewRequestRef.current !== requestId) return
       const image = new Image()
       image.onload = () => {

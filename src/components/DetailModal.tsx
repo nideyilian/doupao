@@ -4,6 +4,7 @@ import {
   getCachedImage,
   ensureImageCached,
   ensureImageThumbnailCached,
+  resolveImageDisplaySrc,
   subscribeImageThumbnail,
   reuseConfig,
   editOutputs,
@@ -21,6 +22,7 @@ import { formatImageRatio } from '../lib/size'
 import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
 import { copyImageSourceToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
+import { isLocalImageUrl } from '../lib/localImageUrl'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import {
   downloadImageEntries,
@@ -274,6 +276,15 @@ export default function DetailModal() {
 
   const currentOutputImageId = (imageIndex < taskOutputImages.length ? taskOutputImages[imageIndex] : '') || ''
   const currentOutputPreviewSrc = currentOutputImageId ? outputPreviewSrcs[currentOutputImageId] || '' : ''
+
+  // 输出图走本地文件协议直出，文件被外部删除/移出库根时会 404：回退 dataUrl，避免列表出现破图。
+  const handleOutputPreviewError = (imageId: string) => {
+    if (!isLocalImageUrl(outputPreviewSrcs[imageId])) return
+    void ensureImageCached(imageId).then((dataUrl) => {
+      if (dataUrl) setOutputPreviewSrcs((prev) => ({ ...prev, [imageId]: dataUrl }))
+    })
+  }
+
   const maskTargetId = task?.maskTargetImageId || null
   const maskTargetSrc = maskTargetId ? imageSrcs[maskTargetId] || '' : ''
   const maskSrc = task?.maskImageId ? imageSrcs[task.maskImageId] || '' : ''
@@ -350,7 +361,8 @@ export default function DetailModal() {
         setOutputPreviewSrcs((prev) => ({ ...prev, [imageId]: cached }))
         continue
       }
-      ensureImageCached(imageId).then((dataUrl) => {
+      // 纯展示用：优先本地文件协议直出（IPC 免克隆），拿不到时自动回退 dataUrl。
+      resolveImageDisplaySrc(imageId).then((dataUrl) => {
         if (!cancelled && dataUrl) setOutputPreviewSrcs((prev) => ({ ...prev, [imageId]: dataUrl }))
       })
     }
@@ -793,8 +805,11 @@ export default function DetailModal() {
               <div className="flex-1 w-full h-full p-4 flex items-center justify-center bg-ds-surface/5">
                 <img
                   src={outputPreviewSrcs[task.outputImages[0]] || ''}
+                  data-image-id={task.outputImages[0]}
                   className="max-w-full max-h-full object-contain drop-shadow-md rounded-md"
                   alt="Preview"
+                  decoding="async"
+                  onError={() => handleOutputPreviewError(task.outputImages[0])}
                   onClick={() => setLightboxImageId(task.outputImages[0], task.outputImages)}
                 />
               </div>
@@ -893,6 +908,8 @@ export default function DetailModal() {
                             src={src}
                             data-image-id={imageId}
                             className="saveable-image h-full w-full cursor-pointer object-cover transition duration-150 group-hover:scale-[1.03]"
+                            decoding="async"
+                            onError={() => handleOutputPreviewError(imageId)}
                             onLoad={(e) => {
                               const image = e.currentTarget
                               if (image.naturalWidth > 0 && image.naturalHeight > 0) {

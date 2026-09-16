@@ -20,6 +20,7 @@ const storeMocks = vi.hoisted(() => {
   return {
     useStore,
     ensureImageCached: vi.fn(),
+    resolveImageDisplaySrc: vi.fn(),
     ensureImageThumbnailCached: vi.fn(),
     subscribeImageThumbnail: vi.fn(() => () => {}),
     retryTask: vi.fn(),
@@ -59,7 +60,7 @@ const task: TaskRecord = {
 describe('TaskCard', () => {
   it('falls back to the original image when a single output has no thumbnail', async () => {
     storeMocks.ensureImageThumbnailCached.mockResolvedValueOnce(undefined)
-    storeMocks.ensureImageCached.mockResolvedValueOnce('data:image/png;base64,original')
+    storeMocks.resolveImageDisplaySrc.mockResolvedValueOnce('data:image/png;base64,original')
     let renderer!: ReturnType<typeof create>
 
     await act(async () => {
@@ -69,7 +70,7 @@ describe('TaskCard', () => {
     })
     mountedRenderers.push(renderer)
 
-    expect(storeMocks.ensureImageCached).toHaveBeenCalledWith('image-1')
+    expect(storeMocks.resolveImageDisplaySrc).toHaveBeenCalledWith('image-1')
     expect(renderer.root.findByType('img').props.src).toBe('data:image/png;base64,original')
   })
 

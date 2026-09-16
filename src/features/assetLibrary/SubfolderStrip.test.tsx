@@ -7,6 +7,7 @@ import SubfolderStrip from './SubfolderStrip'
 import { useAssetLibraryStore } from './store'
 
 vi.mock('../../store', () => ({
+  GRID_THUMBNAIL_VARIANT: 'grid',
   ensureImageThumbnailCached: vi.fn(async () => ({ dataUrl: 'data:image/png;base64,cover' })),
 }))
 

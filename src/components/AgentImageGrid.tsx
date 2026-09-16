@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { TaskRecord } from '../types'
-import { ensureImageThumbnailCached, subscribeImageThumbnail, useStore } from '../store'
+import { GRID_THUMBNAIL_VARIANT, ensureImageThumbnailCached, subscribeImageThumbnail, useStore } from '../store'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { Grid } from '../design-system'
 import { getTaskProgressDisplay } from '../lib/taskProgressDisplay'
@@ -61,8 +61,8 @@ function AgentImageTile({ entry, imageList }: { entry: AgentImageGridEntry; imag
     const applyThumbnail = (thumbnail: { dataUrl: string }) => {
       if (!cancelled) setThumbnailSrc(thumbnail.dataUrl)
     }
-    const unsubscribe = subscribeImageThumbnail(imageId, applyThumbnail)
-    ensureImageThumbnailCached(imageId)
+    const unsubscribe = subscribeImageThumbnail(imageId, applyThumbnail, GRID_THUMBNAIL_VARIANT)
+    ensureImageThumbnailCached(imageId, 'visible', GRID_THUMBNAIL_VARIANT)
       .then((thumbnail) => {
         if (thumbnail) applyThumbnail(thumbnail)
       })
@@ -138,8 +138,8 @@ function AgentImagePreviewTile({ entry, imageList }: { entry: AgentImageGridEntr
     const applyThumbnail = (thumbnail: { dataUrl: string }) => {
       if (!cancelled) setThumbnailSrc(thumbnail.dataUrl)
     }
-    const unsubscribe = subscribeImageThumbnail(imageId, applyThumbnail)
-    ensureImageThumbnailCached(imageId)
+    const unsubscribe = subscribeImageThumbnail(imageId, applyThumbnail, GRID_THUMBNAIL_VARIANT)
+    ensureImageThumbnailCached(imageId, 'visible', GRID_THUMBNAIL_VARIANT)
       .then((thumbnail) => {
         if (thumbnail) applyThumbnail(thumbnail)
       })

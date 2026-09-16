@@ -1209,6 +1209,11 @@ export class AssetCatalog {
     this.appData.putMany(namespace, records)
   }
 
+  /** 跨命名空间批量写（单事务）：见 AppDataStore.putBatch 的说明。 */
+  appDataPutBatch(entries: Array<{ namespace: string; id: string; value: unknown }>): void {
+    this.appData.putBatch(entries)
+  }
+
   appDataReplace(namespace: string, records: Array<{ id: string; value: unknown }>): void {
     this.appData.replace(namespace, records)
   }

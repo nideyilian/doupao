@@ -13,6 +13,7 @@ import { renderCompositeV2ToJpegDataUrl } from './compositeRendererV2'
 import { getEffectiveOutputRuleGroups, getEnabledOutputRules } from './compositeOutputRulesV2'
 import type { CompositeV2ExportTask, CompositeV2FailureItem, CompositeV2SuccessItem } from './compositeV2Types'
 import { archiveRenderedAsset } from '../../../lib/assetDerivation'
+import { saveCompositeImage } from '../../../lib/localSave'
 import { computeContentHash } from '../../../lib/imageFingerprint'
 
 export type CompositeV2ExportRuntimeCallbacks = {
@@ -249,7 +250,7 @@ export async function exportSingleItem(
     const directoryParts = [outputRoot, ...pathParts.subfolders]
     const outputPath = await resolveCollision(api, directoryParts, pathParts.filename, ctx.usedPaths)
 
-    const saved = await api.saveCompositeImage(outputPath, rendered.dataUrl)
+    const saved = await saveCompositeImage(api, outputPath, rendered.dataUrl)
     if (!saved) throw new Error('图片写入失败')
     // 默认不归档：成图只写入预设的输出文件夹，不进入素材库（IndexedDB + cache-images）。
     // 需要把导出成图纳入素材库管理（可搜索、可复用）时再开启「归档到素材库」。

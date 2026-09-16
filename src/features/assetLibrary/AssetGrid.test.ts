@@ -6,6 +6,7 @@ import AssetGrid, { buildAssetMasonryLayout } from './AssetGrid'
 import { useAssetLibraryStore } from './store'
 
 const thumbnailMocks = vi.hoisted(() => ({
+  GRID_THUMBNAIL_VARIANT: 'grid',
   ensureImageCached: vi.fn(async () => null),
   ensureImageThumbnailCached: vi.fn(async () => null),
   getCachedThumbnail: vi.fn(() => null),

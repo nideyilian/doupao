@@ -34,6 +34,7 @@ import {
   ALL_FAVORITES_COLLECTION_ID,
   getTaskFavoriteCollectionIds,
   prefetchImageThumbnails,
+  GRID_THUMBNAIL_VARIANT,
 } from '../../store'
 import { FavoriteCollectionsView } from '../../components/FavoriteCollections'
 
@@ -341,7 +342,11 @@ function AssetLibraryWorkspaceInner() {
           if (!active) return
           const ranked = items.map((item) => item.asset)
           applyUpsertedAssets(ranked)
-          prefetchImageThumbnails(ranked.map((asset) => asset.imageId))
+          prefetchImageThumbnails(
+            ranked.map((asset) => asset.imageId),
+            'background',
+            GRID_THUMBNAIL_VARIANT,
+          )
           setCatalogPage({
             assets: ranked,
             totalCount: ranked.length,
@@ -369,7 +374,11 @@ function AssetLibraryWorkspaceInner() {
       .then((page) => {
         if (!active) return
         applyUpsertedAssets(page.assets)
-        prefetchImageThumbnails(page.assets.map((asset) => asset.imageId))
+        prefetchImageThumbnails(
+          page.assets.map((asset) => asset.imageId),
+          'background',
+          GRID_THUMBNAIL_VARIANT,
+        )
         // mutationVersion 变化（删除/移动/入库）重跑本查询：刷新计数，并把查询结果里的
         // 新素材合并进当前分页（按 id 去重 + 按当前排序稳定重排）——新生成的图片立即
         // 出现在网格中，无需切换文件夹；已加载素材保持相对顺序，避免整页替换导致
@@ -427,7 +436,11 @@ function AssetLibraryWorkspaceInner() {
       })
       .then((page) => {
         applyUpsertedAssets(page.assets)
-        prefetchImageThumbnails(page.assets.map((asset) => asset.imageId))
+        prefetchImageThumbnails(
+          page.assets.map((asset) => asset.imageId),
+          'background',
+          GRID_THUMBNAIL_VARIANT,
+        )
         setCatalogPage((current) =>
           current
             ? {

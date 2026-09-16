@@ -77,6 +77,25 @@ export class AppDataStore {
     }
   }
 
+  /**
+   * 跨命名空间批量写入：一次事务提交不同 namespace 的记录。
+   *
+   * 生成一张图会产生「image 记录 + thumbnail 记录」两条不同命名空间的写入，
+   * 逐条 put 会各起一次事务（同时各走一遍渲染→主进程→worker 的往返）；
+   * 合并成一次提交后写入仍是原子的，但往返与事务开销都减半。
+   */
+  putBatch(entries: Array<{ namespace: string; id: string; value: unknown }>): void {
+    if (entries.length === 0) return
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const entry of entries) this.putWithinTransaction(entry.namespace, { id: entry.id, value: entry.value })
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   putManyInTransaction(namespace: string, records: AppDataRecord[]): void {
     for (const record of records) this.putWithinTransaction(namespace, record)
   }

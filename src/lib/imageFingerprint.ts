@@ -31,11 +31,36 @@ function parseDataUrl(dataUrl: string): DecodedDataUrl {
   return { mime, isBase64, data: rest }
 }
 
-/** 将 data URL 解码为原始字节（对 base64 解码，对文本（极少见）按 UTF-8 编码）。 */
+type FromBase64Fn = (base64: string) => Uint8Array
+
+/**
+ * 平台原生 base64 解码（`Uint8Array.fromBase64`）。
+ * Chromium 133+ / Electron 43+ 已实现；Node 22 的测试环境没有，此时返回 undefined 走回退。
+ * 每次调用重新读取：避免捕获到过期的实现，也便于测试注入。
+ */
+function getNativeFromBase64(): FromBase64Fn | undefined {
+  return (Uint8Array as unknown as { fromBase64?: FromBase64Fn }).fromBase64
+}
+
+/**
+ * 将 data URL 解码为原始字节（对 base64 解码，对文本（极少见）按 UTF-8 编码）。
+ *
+ * 优先走原生 `Uint8Array.fromBase64`：不再创建中间二进制字符串，也不需要在 JS 里
+ * 逐字符 `charCodeAt`——一张 4MB 图原实现要跑约 530 万次循环迭代，且它发生在
+ * 「每张新图都要算一次 contentHash」的热路径上。
+ */
 export function decodeDataUrlToBytes(dataUrl: string): Uint8Array {
   const { isBase64, data } = parseDataUrl(dataUrl)
   if (!isBase64) {
     return new TextEncoder().encode(data)
+  }
+  const nativeFromBase64 = getNativeFromBase64()
+  if (nativeFromBase64) {
+    try {
+      return nativeFromBase64.call(Uint8Array, data)
+    } catch {
+      // 非法 base64：交回下方 atob 抛出，保持原有失败语义
+    }
   }
   const binary = atob(data)
   const bytes = new Uint8Array(binary.length)

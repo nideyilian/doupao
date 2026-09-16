@@ -6,7 +6,9 @@ import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 import GalleryImageTile, { HOVER_FULL_IMAGE_DEBOUNCE_MS, type GalleryImageItem } from './GalleryImageTile'
 
 const storeMocks = vi.hoisted(() => ({
+  GRID_THUMBNAIL_VARIANT: 'grid',
   ensureImageCached: vi.fn(() => new Promise<string | undefined>(() => {})),
+  resolveImageDisplaySrc: vi.fn(() => new Promise<string | undefined>(() => {})),
   ensureImageThumbnailCached: vi.fn(() => new Promise(() => {})),
   getCachedThumbnail: vi.fn(() => null),
   subscribeImageThumbnail: vi.fn(() => () => {}),
@@ -41,6 +43,7 @@ const originalDecode = HTMLImageElement.prototype.decode
 beforeEach(() => {
   HTMLImageElement.prototype.decode = vi.fn(async () => {}) as typeof originalDecode
   storeMocks.ensureImageCached.mockClear()
+  storeMocks.resolveImageDisplaySrc.mockClear()
   storeMocks.ensureImageThumbnailCached.mockClear()
 })
 
@@ -82,7 +85,7 @@ describe('GalleryImageTile interactions', () => {
       width: 1024,
       height: 1024,
     })
-    storeMocks.ensureImageCached.mockResolvedValueOnce('data:image/png;base64,full-resolution')
+    storeMocks.resolveImageDisplaySrc.mockResolvedValueOnce('data:image/png;base64,full-resolution')
     let renderer!: ReturnType<typeof create>
 
     await act(async () => {
@@ -131,6 +134,7 @@ describe('GalleryImageTile interactions', () => {
 
     const image = renderer.root.findByType('img')
     expect(image.props.src).toBe('data:image/webp;base64,thumbnail')
+    expect(storeMocks.resolveImageDisplaySrc).not.toHaveBeenCalled()
     expect(storeMocks.ensureImageCached).not.toHaveBeenCalled()
   })
 
@@ -161,6 +165,7 @@ describe('GalleryImageTile interactions', () => {
 
     const image = renderer.root.findByType('img')
     expect(image.props.src).toBe('data:image/webp;base64,thumbnail')
+    expect(storeMocks.resolveImageDisplaySrc).not.toHaveBeenCalled()
     expect(storeMocks.ensureImageCached).not.toHaveBeenCalled()
   })
 })

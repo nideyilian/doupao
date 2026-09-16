@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { FolderIcon } from '../../design-system/icons'
-import { ensureImageThumbnailCached } from '../../store'
+import { GRID_THUMBNAIL_VARIANT, ensureImageThumbnailCached } from '../../store'
 import { sortCollections, isCollectionTrashed } from '../../lib/assetLibraryModel'
 import { useAssetLibraryStore } from './store'
 import type { AssetSidebarCounts } from './query'
@@ -94,7 +94,8 @@ function SubfolderCard({
     let cancelled = false
     if (!coverImageId) return
     setCoverSrc('')
-    ensureImageThumbnailCached(coverImageId)
+    // 文件夹封面只有 160×96：读 grid 小图即可
+    ensureImageThumbnailCached(coverImageId, 'visible', GRID_THUMBNAIL_VARIANT)
       .then((thumbnail) => {
         if (!cancelled && thumbnail) setCoverSrc(thumbnail.dataUrl)
       })

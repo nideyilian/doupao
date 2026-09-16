@@ -1,6 +1,12 @@
 import { memo, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
 import type { GeneratedAsset } from '../../types'
-import { ensureImageCached, ensureImageThumbnailCached, getCachedThumbnail, subscribeImageThumbnail } from '../../store'
+import {
+  GRID_THUMBNAIL_VARIANT,
+  ensureImageCached,
+  ensureImageThumbnailCached,
+  getCachedThumbnail,
+  subscribeImageThumbnail,
+} from '../../store'
 import { decodeImageDataUrl } from '../../lib/imageHover'
 import { isScrollActive } from '../../lib/scrollActivity'
 import { CheckIcon, ImageIcon, StarIcon } from '../../design-system/icons'
@@ -67,7 +73,10 @@ function AssetTile({
   suppressClickUntilRef,
   loadFullOnHover = true,
 }: AssetTileProps) {
-  const [thumbnailSrc, setThumbnailSrc] = useState(() => getCachedThumbnail(asset.imageId)?.dataUrl ?? '')
+  // 网格磁贴只读 grid 通道（512px 小图）；hover 预览仍是原图（ensureImageCached）。
+  const [thumbnailSrc, setThumbnailSrc] = useState(
+    () => getCachedThumbnail(asset.imageId, GRID_THUMBNAIL_VARIANT)?.dataUrl ?? '',
+  )
   const [fullSrc, setFullSrc] = useState('')
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoveredRef = useRef(false)
@@ -82,10 +91,10 @@ function AssetTile({
     // 仅当 imageId 变化时复位；挂载时保留 useState 同步读取的缓存值，避免先闪占位再加载
     if (loadedImageIdRef.current !== asset.imageId) {
       loadedImageIdRef.current = asset.imageId
-      setThumbnailSrc(getCachedThumbnail(asset.imageId)?.dataUrl ?? '')
+      setThumbnailSrc(getCachedThumbnail(asset.imageId, GRID_THUMBNAIL_VARIANT)?.dataUrl ?? '')
     }
-    const unsubscribe = subscribeImageThumbnail(asset.imageId, applyThumbnail)
-    ensureImageThumbnailCached(asset.imageId)
+    const unsubscribe = subscribeImageThumbnail(asset.imageId, applyThumbnail, GRID_THUMBNAIL_VARIANT)
+    ensureImageThumbnailCached(asset.imageId, 'visible', GRID_THUMBNAIL_VARIANT)
       .then((thumbnail) => {
         if (thumbnail) applyThumbnail(thumbnail)
       })

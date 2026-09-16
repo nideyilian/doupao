@@ -309,6 +309,10 @@ export class CatalogClient {
     return this.call('appDataPutMany', [namespace, records])
   }
 
+  appDataPutBatch(entries: Array<{ namespace: string; id: string; value: unknown }>): Promise<void> {
+    return this.call('appDataPutBatch', [entries])
+  }
+
   appDataReplace(namespace: string, records: Array<{ id: string; value: unknown }>): Promise<void> {
     return this.call('appDataReplace', [namespace, records])
   }

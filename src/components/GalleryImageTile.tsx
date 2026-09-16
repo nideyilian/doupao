@@ -1,6 +1,14 @@
 import { memo, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
-import { ensureImageCached, ensureImageThumbnailCached, getCachedThumbnail, subscribeImageThumbnail } from '../store'
+import {
+  GRID_THUMBNAIL_VARIANT,
+  ensureImageCached,
+  ensureImageThumbnailCached,
+  getCachedThumbnail,
+  resolveImageDisplaySrc,
+  subscribeImageThumbnail,
+} from '../store'
 import { decodeImageDataUrl } from '../lib/imageHover'
+import { isLocalImageUrl } from '../lib/localImageUrl'
 import type { TaskRecord } from '../types'
 import { CheckIcon, ImageIcon } from '../design-system/icons'
 
@@ -45,7 +53,10 @@ function GalleryImageTile({
   style,
   loadFullOnHover = true,
 }: GalleryImageTileProps) {
-  const [thumbnailSrc, setThumbnailSrc] = useState(() => getCachedThumbnail(item.imageId)?.dataUrl ?? '')
+  // 网格磁贴只读 grid 通道（512px 小图）：滚动期单张读取量约为 full 的 1/3。
+  const [thumbnailSrc, setThumbnailSrc] = useState(
+    () => getCachedThumbnail(item.imageId, GRID_THUMBNAIL_VARIANT)?.dataUrl ?? '',
+  )
   const [fullImageSrc, setFullImageSrc] = useState('')
   const hoverTimerRef = useRef<number | null>(null)
   const hoveredRef = useRef(false)
@@ -60,7 +71,7 @@ function GalleryImageTile({
     // 仅当 imageId 变化时复位；挂载时保留 useState 同步读取的缓存值，避免先闪占位再加载
     if (loadedImageIdRef.current !== item.imageId) {
       loadedImageIdRef.current = item.imageId
-      setThumbnailSrc(getCachedThumbnail(item.imageId)?.dataUrl ?? '')
+      setThumbnailSrc(getCachedThumbnail(item.imageId, GRID_THUMBNAIL_VARIANT)?.dataUrl ?? '')
       setFullImageSrc('')
     }
     const applyThumbnail = (thumbnail: { dataUrl: string; width?: number; height?: number }) => {
@@ -68,8 +79,8 @@ function GalleryImageTile({
       setThumbnailSrc(thumbnail.dataUrl)
       if (thumbnail.width && thumbnail.height) onAspectRatioChangeRef.current?.(thumbnail.width / thumbnail.height)
     }
-    const unsubscribe = subscribeImageThumbnail(item.imageId, applyThumbnail)
-    ensureImageThumbnailCached(item.imageId)
+    const unsubscribe = subscribeImageThumbnail(item.imageId, applyThumbnail, GRID_THUMBNAIL_VARIANT)
+    ensureImageThumbnailCached(item.imageId, 'visible', GRID_THUMBNAIL_VARIANT)
       .then((thumbnail) => {
         if (thumbnail) applyThumbnail(thumbnail)
       })
@@ -110,7 +121,8 @@ function GalleryImageTile({
       hoverTimerRef.current = null
       if (!hoveredRef.current) return
       const version = ++hoverLoadVersionRef.current
-      void ensureImageCached(item.imageId)
+      // Electron 下优先拿本地文件协议地址：原图不再经 IPC 克隆 + base64 往返，扫过网格时省下大量拷贝。
+      void resolveImageDisplaySrc(item.imageId)
         .then(async (dataUrl) => {
           if (!dataUrl || version !== hoverLoadVersionRef.current || !hoveredRef.current) return
           // 离屏解码完成后再换 src，杜绝解码期间的空白闪烁。
@@ -122,6 +134,14 @@ function GalleryImageTile({
           // Keep the thumbnail visible when the original image cannot be loaded.
         })
     }, HOVER_FULL_IMAGE_DEBOUNCE_MS)
+  }
+
+  // 协议地址 404（文件被外部删除/移出库根）时回退 dataUrl；dataUrl 本身失败则不再重试。
+  const handleImageError = () => {
+    if (!isLocalImageUrl(imageSrc)) return
+    void ensureImageCached(item.imageId).then((dataUrl) => {
+      if (dataUrl) setFullImageSrc(dataUrl)
+    })
   }
 
   const selectFromMouse = (event: MouseEvent<HTMLElement>) => {
@@ -175,6 +195,7 @@ function GalleryImageTile({
           decoding="async"
           fetchPriority="low"
           draggable={false}
+          onError={handleImageError}
           data-image-id={item.imageId}
           data-image-quality={fullImageSrc ? 'full' : 'thumbnail'}
           data-output-image-ids={item.task.outputImages.join(',')}

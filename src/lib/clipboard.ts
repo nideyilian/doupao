@@ -25,7 +25,13 @@ export async function copyBlobToClipboard(blob: Blob | Promise<Blob>) {
 }
 
 export async function copyImageSourceToClipboard(src: string | Promise<string | undefined>) {
-  const resolvedSrc = await Promise.resolve(src)
+  const resolvedInput = await Promise.resolve(src)
+  if (!resolvedInput) throw new Error('Image source is not available')
+
+  // 展示用协议地址拿不到字节（fetch 会被 CSP 拦、nativeImage 也只认 data URL），
+  // 先经 IPC 读回真实 dataUrl；非协议地址原样返回。与下面 localSave 同样用动态导入。
+  const { localImageUrlToDataUrl } = await import('./localImageUrl')
+  const resolvedSrc = (await localImageUrlToDataUrl(resolvedInput)) ?? ''
   if (!resolvedSrc) throw new Error('Image source is not available')
 
   // Electron：主进程原生写入（nativeImage + clipboard.writeImage），无浏览器剪贴板权限限制

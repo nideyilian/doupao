@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AssetCollection, AssetTag, GeneratedAsset, TaskRecord } from '../types'
 import {
+  CURRENT_THUMBNAIL_VERSION,
   batchGetCompositeAssets,
   batchGetImages,
+  buildGridThumbnail,
   commitImportedRecords,
   deleteGeneratedAsset,
   getCompositeAsset,
   getGeneratedAsset,
   getImage,
+  getFreshThumbnailFromDisk,
   getLegacyImageBatch,
   getStorageRecordCounts,
   loadTasksIncrementally,
@@ -17,6 +20,8 @@ import {
   putCompositeAssets,
   putGeneratedAssets,
   putImage,
+  putImageRecords,
+  putTasks,
 } from './db'
 
 type MutableRequest<T = unknown> = {
@@ -673,3 +678,185 @@ function requestWithResult<T>(result: T) {
   })
   return request
 }
+
+describe('缩略图磁盘通道（full / grid）', () => {
+  /** 注入带缩略图读写 API 的 Electron window；返回清理函数。 */
+  function useElectronWindow(api: Record<string, unknown>) {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { electronAPI: { isElectron: true, ...api } },
+    })
+    return () => Reflect.deleteProperty(globalThis, 'window')
+  }
+
+  it('getFreshThumbnailFromDisk 把 variant 透传给主进程（默认 full）', async () => {
+    const readThumbnail = vi.fn(async (_id: string, _version: number, variant?: string) =>
+      variant === 'grid' ? { dataUrl: 'data:image/webp;base64,GRID', width: 288, height: 288 } : null,
+    )
+    const restore = useElectronWindow({ readThumbnail })
+    try {
+      const grid = await getFreshThumbnailFromDisk('grid-read-1', 'grid')
+      expect(grid?.thumbnailDataUrl).toBe('data:image/webp;base64,GRID')
+      expect(readThumbnail).toHaveBeenCalledWith('grid-read-1', CURRENT_THUMBNAIL_VERSION, 'grid')
+
+      const fallbackFull = await getFreshThumbnailFromDisk('grid-read-1')
+      expect(fallbackFull).toBeUndefined()
+      expect(readThumbnail).toHaveBeenCalledWith('grid-read-1', CURRENT_THUMBNAIL_VERSION, 'full')
+    } finally {
+      restore()
+    }
+  })
+
+  it('buildGridThumbnail 以 variant=grid 命名空间写盘，并返回可入内存缓存的小图', async () => {
+    const writeThumbnail = vi.fn(async () => true)
+    const restore = useElectronWindow({ writeThumbnail })
+    try {
+      // node 测试环境没有 canvas：createImageThumbnailDataUrl 失败后原样返回入参，
+      // 这里只验证「拿到 dataUrl → 以 grid 通道落盘」这条链路。
+      const dataUrl = await buildGridThumbnail('grid-write-1', 'data:image/webp;base64,FULL')
+      expect(dataUrl).toBe('data:image/webp;base64,FULL')
+      expect(writeThumbnail).toHaveBeenCalledWith(
+        'grid-write-1',
+        CURRENT_THUMBNAIL_VERSION,
+        'data:image/webp;base64,FULL',
+        'grid',
+      )
+    } finally {
+      restore()
+    }
+  })
+})
+
+// 生成一张图会产生「images 记录 + thumbnails 记录」两条不同命名空间的写入。逐条 put 各走一次
+// 渲染→主进程→UtilityProcess→SQLite 的完整往返；这里锁定合并通道与逐级回退的分支。
+describe('应用记录批量写通道（跨命名空间 put-batch / 同命名空间 put-many）', () => {
+  const IMAGE = {
+    id: 'batch-image',
+    localPath: 'cache-images/batch-image.png',
+    createdAt: 1,
+    source: 'generated' as const,
+  }
+  const THUMBNAIL = {
+    id: 'batch-image',
+    thumbnailDataUrl: 'data:image/webp;base64,T',
+    width: 1024,
+    height: 1024,
+    thumbnailVersion: CURRENT_THUMBNAIL_VERSION,
+  }
+
+  /**
+   * 注入「完整」的 Electron 应用记录 API（getElectronAppDataApi 要求所有必需通道都在，
+   * 缺一个就会整体退化为 IndexedDB）。meta 预置迁移完成标记，跳过遗留数据迁移。
+   */
+  function useElectronWindow(extra: Record<string, unknown> = {}) {
+    const api = {
+      isElectron: true,
+      appDataGet: vi.fn(async (_namespace: string, id: string) =>
+        id === 'electron-app-data-migrated-v1' ? { id, status: 'completed' } : undefined,
+      ),
+      appDataGetAll: vi.fn(async () => []),
+      appDataGetMany: vi.fn(async () => []),
+      appDataPut: vi.fn(async () => ({ success: true })),
+      appDataPutMany: vi.fn(async () => ({ success: true })),
+      appDataReplace: vi.fn(async () => ({ success: true })),
+      appDataDelete: vi.fn(async () => ({ success: true })),
+      appDataDeleteMany: vi.fn(async () => ({ success: true })),
+      appDataClear: vi.fn(async () => ({ success: true })),
+      appDataImportStores: vi.fn(async () => ({ success: true })),
+      ...extra,
+    }
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { electronAPI: api } })
+    return { api, restore: () => Reflect.deleteProperty(globalThis, 'window') }
+  }
+
+  it('图片 + 缩略图合并为一次跨命名空间提交', async () => {
+    const appDataPutBatch = vi.fn(async (_entries: Array<{ namespace: string; id: string; value: unknown }>) => ({
+      success: true,
+    }))
+    const { api, restore } = useElectronWindow({ appDataPutBatch })
+    try {
+      await putImageRecords(IMAGE, THUMBNAIL)
+
+      expect(appDataPutBatch).toHaveBeenCalledTimes(1)
+      expect(appDataPutBatch.mock.calls[0][0]).toEqual([
+        { namespace: 'images', id: 'batch-image', value: IMAGE },
+        { namespace: 'thumbnails', id: 'batch-image', value: THUMBNAIL },
+      ])
+      // 关键回归点：合并通道生效时不能再逐条写一遍
+      expect(api.appDataPut).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('只写图片记录时批量载荷里不含缩略图条目', async () => {
+    const appDataPutBatch = vi.fn(async (_entries: Array<{ namespace: string; id: string; value: unknown }>) => ({
+      success: true,
+    }))
+    const { restore } = useElectronWindow({ appDataPutBatch })
+    try {
+      await putImageRecords(IMAGE, null)
+      expect(appDataPutBatch.mock.calls[0][0]).toEqual([{ namespace: 'images', id: 'batch-image', value: IMAGE }])
+    } finally {
+      restore()
+    }
+  })
+
+  it('两条记录都为空时一次通道都不调', async () => {
+    const appDataPutBatch = vi.fn(async (_entries: Array<{ namespace: string; id: string; value: unknown }>) => ({
+      success: true,
+    }))
+    const { api, restore } = useElectronWindow({ appDataPutBatch })
+    try {
+      await putImageRecords(null, null)
+      expect(appDataPutBatch).not.toHaveBeenCalled()
+      expect(api.appDataPut).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('旧 preload 没有 put-batch 时回退为逐条写入，语义不变', async () => {
+    const { api, restore } = useElectronWindow()
+    try {
+      await putImageRecords(IMAGE, THUMBNAIL)
+
+      expect(api.appDataPut).toHaveBeenNthCalledWith(1, 'images', 'batch-image', IMAGE)
+      expect(api.appDataPut).toHaveBeenNthCalledWith(2, 'thumbnails', 'batch-image', THUMBNAIL)
+    } finally {
+      restore()
+    }
+  })
+
+  it('批量写任务记录走一次 put-many，而不是 N 次 put', async () => {
+    const { api, restore } = useElectronWindow()
+    try {
+      const tasks = [
+        { id: 't1', status: 'done', outputImages: [] },
+        { id: 't2', status: 'done', outputImages: [] },
+        { id: 't3', status: 'done', outputImages: [] },
+      ] as unknown as Parameters<typeof putTasks>[0]
+
+      await putTasks(tasks)
+
+      expect(api.appDataPutMany).toHaveBeenCalledTimes(1)
+      const [namespace, records] = api.appDataPutMany.mock.calls[0] as unknown as [string, Array<{ id: string }>]
+      expect(namespace).toBe('tasks')
+      expect(records.map((record) => record.id)).toEqual(['t1', 't2', 't3'])
+      expect(api.appDataPut).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('空任务数组不产生任何写入', async () => {
+    const { api, restore } = useElectronWindow()
+    try {
+      await putTasks([])
+      expect(api.appDataPutMany).not.toHaveBeenCalled()
+      expect(api.appDataPut).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+})

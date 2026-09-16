@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { ipcMain } from 'electron'
 import os from 'os'
 import path from 'path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -782,5 +783,158 @@ describe('ipc deleteLocalImageFiles', () => {
     expect(parseDeleteLocalImageFilesPayload!({ filePaths: ['a.png', 'b.jpg'] })).toEqual(['a.png', 'b.jpg'])
     expect(parseDeleteLocalImageFilesPayload!({ filePaths: ['ok.png', 1] })).toBeNull()
     expect(parseDeleteLocalImageFilesPayload!(null)).toBeNull()
+  })
+})
+
+// listCompositeImageFiles 原实现用 readdirSync + 逐张 readFileSync 同步读满整个目录，
+// 目录稍大就会冻结主进程（200 张 4MB 图 ≈ 读 800MB）。以下用例锁定异步 + 上限行为。
+describe('listCompositeImageFiles 上限与异步读取', () => {
+  const listDir = path.join(allowedRoot, 'list-fixtures')
+
+  type ListedFile = { path: string; name: string; dataUrl: string }
+
+  async function list(dirPath: string): Promise<ListedFile[]> {
+    const mod = await import('./ipc-handlers')
+    const fn = (mod as { listCompositeImageFiles?: (dir: string) => Promise<ListedFile[]> }).listCompositeImageFiles
+    expect(fn).toBeTypeOf('function')
+    return fn!(dirPath)
+  }
+
+  beforeEach(() => {
+    rmSync(listDir, { recursive: true, force: true })
+    mkdirSync(listDir, { recursive: true })
+  })
+
+  it('只列举受支持的图片扩展名，并按名称稳定排序', async () => {
+    writeFixtureFile(path.join(listDir, 'b.jpg'))
+    writeFixtureFile(path.join(listDir, 'a.PNG'))
+    writeFixtureFile(path.join(listDir, 'c.webp'))
+    writeFixtureFile(path.join(listDir, 'ignore.txt'))
+    mkdirSync(path.join(listDir, 'folder.png'), { recursive: true })
+
+    const files = await list(listDir)
+    expect(files.map((file) => file.name)).toEqual(['a.PNG', 'b.jpg', 'c.webp'])
+    expect(files[0].dataUrl).toBe(`data:image/png;base64,${Buffer.from('fixture').toString('base64')}`)
+  })
+
+  it('目录不存在或不是目录时返回空数组而不抛错', async () => {
+    expect(await list(path.join(listDir, 'missing'))).toEqual([])
+    writeFixtureFile(path.join(listDir, 'plain.png'))
+    expect(await list(path.join(listDir, 'plain.png'))).toEqual([])
+  })
+
+  it('跳过超过单张体积上限的图片，其余照常返回', async () => {
+    writeFixtureFile(path.join(listDir, 'small.png'))
+    // 24MB + 1：超过 MAX_COMPOSITE_IMAGE_BYTES，应被跳过而不是读进内存
+    writeFileSync(path.join(listDir, 'huge.jpg'), Buffer.alloc(24 * 1024 * 1024 + 1))
+
+    const files = await list(listDir)
+    expect(files.map((file) => file.name)).toEqual(['small.png'])
+  })
+
+  it('图片数量超过上限时只读取前 N 张，避免一次性读满整个目录', async () => {
+    const total = 305
+    for (let i = 0; i < total; i++) {
+      writeFixtureFile(path.join(listDir, `img-${String(i).padStart(4, '0')}.png`))
+    }
+
+    const files = await list(listDir)
+    expect(files).toHaveLength(300)
+    expect(files[0].name).toBe('img-0000.png')
+    expect(files[299].name).toBe('img-0299.png')
+  })
+})
+
+// 写整张图的主进程侧改动：渲染进程改用原生 base64 解码后 IPC 直接搬字节
+// （`imageBytesFromPayload` 零拷贝建视图 + `fsPromises.writeFile` 异步写盘），
+// 不再在主进程事件循环上同步解码 6.7M 字符 base64 并 writeFileSync。
+describe('图片写盘通道：fs:save-image 与 composite:save-image（字节优先 / dataUrl 回退）', () => {
+  const saveDir = path.join(allowedRoot, 'save-image-fixtures')
+
+  /** 可信发送方：与 trusted-renderer 打包版判定一致的 file:// 渲染页地址。 */
+  const trustedUrl = new URL('../dist/index.html', import.meta.url).href
+
+  function trustedEvent() {
+    const frame = { url: trustedUrl }
+    return { senderFrame: frame, sender: { mainFrame: frame } }
+  }
+
+  /** 注册全部 handler 后取出指定通道的监听器（handleChecked 已包好发送方校验）。 */
+  async function resolveHandler<T>(channel: string): Promise<(event: unknown, payload: T) => Promise<unknown>> {
+    vi.mocked(ipcMain.handle).mockClear()
+    const mod = await import('./ipc-handlers')
+    mod.registerIpcHandlers()
+    const call = vi.mocked(ipcMain.handle).mock.calls.find(([name]) => name === channel)
+    expect(call).toBeTruthy()
+    return call![1] as unknown as (event: unknown, payload: T) => Promise<unknown>
+  }
+
+  beforeEach(() => {
+    rmSync(saveDir, { recursive: true, force: true })
+  })
+
+  it('imageBytesFromPayload 对 Uint8Array / 子视图 / ArrayBuffer / dataUrl 都能取到同一份字节', async () => {
+    const { imageBytesFromPayload } = await import('./ipc-handlers')
+    const bytes = new Uint8Array([1, 2, 3, 4, 5])
+    // 带偏移的子视图：必须只取视图区间，不能把整个底层 buffer 写出去
+    const view = new Uint8Array(bytes.buffer, 1, 3)
+    expect(Array.from(imageBytesFromPayload({ bytes })!)).toEqual([1, 2, 3, 4, 5])
+    expect(Array.from(imageBytesFromPayload({ bytes: view })!)).toEqual([2, 3, 4])
+    expect(Array.from(imageBytesFromPayload({ bytes: bytes.buffer })!)).toEqual([1, 2, 3, 4, 5])
+    expect(Array.from(imageBytesFromPayload({ dataUrl: 'data:image/png;base64,AQIDBAU=' })!)).toEqual([1, 2, 3, 4, 5])
+    // 字节优先于 dataUrl：两者都给时用字节
+    expect(Array.from(imageBytesFromPayload({ bytes: view, dataUrl: 'data:image/png;base64,AQIDBAU=' })!)).toEqual([
+      2, 3, 4,
+    ])
+    expect(imageBytesFromPayload({})).toBeNull()
+    expect(imageBytesFromPayload({ dataUrl: '' })).toBeNull()
+  })
+
+  it('传字节时异步写盘并自动创建目录，内容与字节一致', async () => {
+    const handler = await resolveHandler<{ filePath: string; bytes: Uint8Array }>('fs:save-image')
+    // 目标目录刻意不存在：验证 mkdir recursive 这一步
+    const target = path.join(saveDir, 'nested', 'image.png')
+    const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+
+    await expect(handler(trustedEvent(), { filePath: target, bytes })).resolves.toBe(true)
+    expect(existsSync(target)).toBe(true)
+    expect(Array.from(readFileSync(target))).toEqual(Array.from(bytes))
+  })
+
+  it('只传 dataUrl 的旧调用方仍可写盘（回退兼容）', async () => {
+    const handler = await resolveHandler<{ filePath: string; dataUrl: string }>('fs:save-image')
+    const target = path.join(saveDir, 'legacy.png')
+
+    await expect(
+      handler(trustedEvent(), { filePath: target, dataUrl: 'data:image/png;base64,AQIDBAU=' }),
+    ).resolves.toBe(true)
+    expect(Array.from(readFileSync(target))).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('composite:save-image 同样支持字节通道，导出成图不再让主进程解 base64', async () => {
+    const handler = await resolveHandler<{ filePath: string; bytes: Uint8Array }>('composite:save-image')
+    const target = path.join(saveDir, 'export', 'frame.jpg')
+    const bytes = new Uint8Array([255, 216, 255, 224])
+
+    await expect(handler(trustedEvent(), { filePath: target, bytes })).resolves.toBe(true)
+    expect(Array.from(readFileSync(target))).toEqual(Array.from(bytes))
+
+    // 旧调用方（只传 dataUrl）保持可用
+    const legacyTarget = path.join(saveDir, 'export', 'legacy.jpg')
+    await expect(
+      handler(trustedEvent(), { filePath: legacyTarget, dataUrl: 'data:image/jpeg;base64,AQIDBAU=' }),
+    ).resolves.toBe(true)
+    expect(Array.from(readFileSync(legacyTarget))).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('缺少图片数据或路径越界时返回 false 且不落盘', async () => {
+    const handler = await resolveHandler<{ filePath: string; bytes?: Uint8Array }>('fs:save-image')
+    const empty = path.join(saveDir, 'empty.png')
+    await expect(handler(trustedEvent(), { filePath: empty })).resolves.toBe(false)
+    expect(existsSync(empty)).toBe(false)
+
+    const outside = path.join(os.tmpdir(), 'doupao-outside.png')
+    await expect(handler(trustedEvent(), { filePath: outside, bytes: new Uint8Array([1]) })).resolves.toBe(false)
+    expect(existsSync(outside)).toBe(false)
   })
 })

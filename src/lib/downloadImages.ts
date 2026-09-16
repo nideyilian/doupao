@@ -8,11 +8,24 @@ import {
   exportZipToPath,
   fileExistsOnDisk,
   isElectron,
+  readFileBuffer,
   saveImage,
   selectLocalSaveDirectory,
   selectSavePath,
   selectZipSavePath,
 } from './localSave'
+import { localImagePathFromUrl } from './localImageUrl'
+
+/** 协议地址回读字节时按扩展名还原 MIME（与 local-image-protocol.ts 的白名单一致）。 */
+const EXTENSION_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
+}
 
 const MIME_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
@@ -317,6 +330,16 @@ function getPathBaseName(value?: string): string | null {
 }
 
 async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
+  // 展示用协议地址（doupao://image/）不能走 fetch：CSP 的 connect-src 不含 doupao:，
+  // 会被浏览器直接拦掉。这里还原出本地路径，经 IPC 读字节后自己组装 Blob。
+  const protocolPath = localImagePathFromUrl(imageIdOrUrl)
+  if (protocolPath) {
+    const file = await readFileBuffer(protocolPath)
+    if (!file) throw new Error(`读取图片失败：${imageIdOrUrl}`)
+    const extension = protocolPath.slice(protocolPath.lastIndexOf('.')).toLowerCase()
+    return new Blob([file.data], { type: EXTENSION_MIME[extension] ?? 'image/png' })
+  }
+
   let src = imageIdOrUrl
   if (
     !imageIdOrUrl.startsWith('data:') &&

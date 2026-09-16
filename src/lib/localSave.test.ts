@@ -3,8 +3,12 @@ import { DEFAULT_PARAMS, type AgentConversation, type AgentRound, type TaskRecor
 import {
   formatAgentRoundSummaryMarkdown,
   getLocalImageSaveDirectoryForSegments,
+  readThumbnailFromDisk,
   saveAgentRoundSummaryToLocal,
+  saveCompositeImage,
+  saveImage,
   saveImageToLocal,
+  writeThumbnailToDisk,
 } from './localSave'
 
 describe('local image saving', () => {
@@ -190,5 +194,137 @@ describe('local image saving', () => {
     const savedPath = await saveAgentRoundSummaryToLocal(conversation, round, [task])
     expect(savedPath).toBe('D:\\LocalSaves\\agent\\conversation-a\\round-001-round-a.md')
     expect(globalThis.window.electronAPI?.saveText).toHaveBeenCalledWith(savedPath, markdown)
+  })
+})
+
+describe('缩略图磁盘读写通道（full / grid）', () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        electronAPI: {
+          isElectron: true,
+          readThumbnail: vi.fn(async (id: string, version: number, variant: string) => ({
+            dataUrl: `data:image/webp;base64,${variant.toUpperCase()}`,
+            width: variant === 'grid' ? 288 : 1024,
+            height: variant === 'grid' ? 288 : 1024,
+          })),
+          writeThumbnail: vi.fn(async () => true),
+        },
+      },
+    })
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, 'window')
+  })
+
+  it('读缩略图默认走 full 通道，显式传 grid 时按小图通道读', async () => {
+    const full = await readThumbnailFromDisk('thumb-1', 5)
+    expect(full?.dataUrl).toBe('data:image/webp;base64,FULL')
+    expect(globalThis.window.electronAPI?.readThumbnail).toHaveBeenCalledWith('thumb-1', 5, 'full')
+
+    const grid = await readThumbnailFromDisk('thumb-1', 5, 'grid')
+    expect(grid?.width).toBe(288)
+    expect(globalThis.window.electronAPI?.readThumbnail).toHaveBeenCalledWith('thumb-1', 5, 'grid')
+  })
+
+  it('写缩略图带 variant，两条通道各自独立命名空间', async () => {
+    await writeThumbnailToDisk('thumb-2', 5, 'data:image/webp;base64,FULL')
+    expect(globalThis.window.electronAPI?.writeThumbnail).toHaveBeenCalledWith(
+      'thumb-2',
+      5,
+      'data:image/webp;base64,FULL',
+      'full',
+    )
+
+    await writeThumbnailToDisk('thumb-2', 5, 'data:image/webp;base64,GRID', 'grid')
+    expect(globalThis.window.electronAPI?.writeThumbnail).toHaveBeenCalledWith(
+      'thumb-2',
+      5,
+      'data:image/webp;base64,GRID',
+      'grid',
+    )
+  })
+})
+
+// 写整张图的热点路径：渲染进程用原生 base64 解码出字节后经 `saveImageBytes` 一次性交给主进程，
+// 主进程不再对整张图的 base64 字符串做同步解码。这里锁定「字节优先 + 逐级回退」的分支。
+describe('图片写盘：字节优先、dataUrl 回退', () => {
+  const DATA_URL = 'data:image/png;base64,AQIDBAU='
+
+  function useElectronWindow(api: Record<string, unknown>) {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { electronAPI: { isElectron: true, ...api } },
+    })
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, 'window')
+  })
+
+  it('新 preload 存在时走 saveImageBytes，字节与 dataUrl 解码结果一致', async () => {
+    const saveImageBytes = vi.fn(async () => true)
+    const legacySaveImage = vi.fn(async () => true)
+    useElectronWindow({ saveImageBytes, saveImage: legacySaveImage })
+
+    await expect(saveImage('/lib/a.png', DATA_URL)).resolves.toBe(true)
+    expect(saveImageBytes).toHaveBeenCalledTimes(1)
+    const [filePath, bytes] = saveImageBytes.mock.calls[0] as unknown as [string, Uint8Array]
+    expect(filePath).toBe('/lib/a.png')
+    expect(Array.from(bytes)).toEqual([1, 2, 3, 4, 5])
+    // 字节通道成功时不该再走 base64 字符串通道
+    expect(legacySaveImage).not.toHaveBeenCalled()
+  })
+
+  it('解码或字节通道失败时回退到 dataUrl 通道，保住原有容错行为', async () => {
+    const saveImageBytes = vi.fn(async () => {
+      throw new Error('channel unavailable')
+    })
+    const legacySaveImage = vi.fn(async () => true)
+    useElectronWindow({ saveImageBytes, saveImage: legacySaveImage })
+
+    await expect(saveImage('/lib/b.png', DATA_URL)).resolves.toBe(true)
+    expect(legacySaveImage).toHaveBeenCalledWith('/lib/b.png', DATA_URL)
+  })
+
+  it('旧 preload 没有 saveImageBytes 时直接用 dataUrl 通道', async () => {
+    const legacySaveImage = vi.fn(async () => true)
+    useElectronWindow({ saveImage: legacySaveImage })
+
+    await expect(saveImage('/lib/c.png', DATA_URL)).resolves.toBe(true)
+    expect(legacySaveImage).toHaveBeenCalledWith('/lib/c.png', DATA_URL)
+  })
+
+  it('非 Electron 环境返回 false 且不触碰任何通道', async () => {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {} })
+    await expect(saveImage('/lib/d.png', DATA_URL)).resolves.toBe(false)
+  })
+})
+
+// 合成图导出：调用方自带注入的 electronAPI，同样走「字节优先 + dataUrl 回退」。
+describe('导出成图写盘：字节优先、dataUrl 回退', () => {
+  const DATA_URL = 'data:image/jpeg;base64,AQIDBAU='
+  type Api = NonNullable<Window['electronAPI']>
+
+  it('存在字节通道时解码后直传字节，不再让主进程解 base64', async () => {
+    const saveCompositeImageBytes = vi.fn(async () => true)
+    const legacy = vi.fn(async () => true)
+    const api = { saveCompositeImageBytes, saveCompositeImage: legacy } as unknown as Api
+
+    await expect(saveCompositeImage(api, '/out/frame.jpg', DATA_URL)).resolves.toBe(true)
+    const [filePath, bytes] = saveCompositeImageBytes.mock.calls[0] as unknown as [string, Uint8Array]
+    expect(filePath).toBe('/out/frame.jpg')
+    expect(Array.from(bytes)).toEqual([1, 2, 3, 4, 5])
+    expect(legacy).not.toHaveBeenCalled()
+  })
+
+  it('字节通道失败（旧 preload / 解码异常）时回退 dataUrl', async () => {
+    const api = {
+      saveCompositeImage: vi.fn(async () => true),
+    } as unknown as Api
+    await expect(saveCompositeImage(api, '/out/legacy.jpg', DATA_URL)).resolves.toBe(true)
+    expect(api.saveCompositeImage).toHaveBeenCalledWith('/out/legacy.jpg', DATA_URL)
   })
 })

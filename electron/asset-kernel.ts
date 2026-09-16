@@ -23,6 +23,7 @@ import type {
 } from '../src/types'
 import { AssetCatalog, assetSearchText, type AssetCatalogUpsert } from './asset-catalog'
 import { CatalogClient } from './catalog-client'
+import { serveLocalImageRequest } from './local-image-protocol'
 import { AssetApiServer, type ExternalAssetCommand } from './asset-api-server'
 import { assertTrustedSender } from './ipc-guard'
 import { resolveCatalogDbPath } from './library-paths'
@@ -76,6 +77,16 @@ function appDataRecords(value: unknown): Array<{ id: string; value: unknown }> {
     if (!record || typeof record !== 'object') throw new Error('invalid app data record')
     const item = record as { id?: unknown; value?: unknown }
     return { id: appDataId(item.id), value: item.value }
+  })
+}
+
+/** 跨命名空间批量写载荷：每条自带 namespace，其余校验与单命名空间版一致。 */
+function appDataBatchEntries(value: unknown): Array<{ namespace: string; id: string; value: unknown }> {
+  if (!Array.isArray(value)) throw new Error('invalid app data batch')
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') throw new Error('invalid app data batch entry')
+    const item = entry as { namespace?: unknown; id?: unknown; value?: unknown }
+    return { namespace: appDataNamespace(item.namespace), id: appDataId(item.id), value: item.value }
   })
 }
 
@@ -288,6 +299,11 @@ export class AssetKernelManager {
       this.catalog.appDataPutMany(appDataNamespace(namespace), appDataRecords(records))
       return { success: true }
     })
+    // 跨命名空间批量写：生成一张图的「image + thumbnail」两条记录合并为一次往返 + 一个事务
+    handle<[Array<{ namespace: string; id: string; value: unknown }>]>('app-data:put-batch', (entries) => {
+      this.catalog.appDataPutBatch(appDataBatchEntries(entries))
+      return { success: true }
+    })
     handle<[string, Array<{ id: string; value: unknown }>]>('app-data:replace', (namespace, records) => {
       this.catalog.appDataReplace(appDataNamespace(namespace), appDataRecords(records))
       return { success: true }
@@ -433,6 +449,10 @@ export class AssetKernelManager {
     protocol.handle('doupao', async (request) => {
       try {
         const url = new URL(request.url)
+        // 同一 scheme 只能有一个 protocol.handle，所以按主机名在这里统一分流。
+        // image → 库根本地图片（原图/缩略图直出，见 local-image-protocol.ts）
+        const localImageResponse = await serveLocalImageRequest(url)
+        if (localImageResponse) return localImageResponse
         if (url.hostname !== 'assets') return new Response('Not found', { status: 404 })
         const assetId = decodeURIComponent(url.pathname.replace(/^\//, ''))
         const details = await this.catalog.getAsset(assetId)

@@ -705,6 +705,13 @@ export interface StoredImageThumbnail {
   thumbnailVersion?: number
 }
 
+/**
+ * 缩略图通道（库根 thumbs/ 两条独立版本线，互不覆盖、互不清理）：
+ * - `full`：详情大图，最长边 1024px，查看器 / 详情面板 / 卡片封面用。
+ * - `grid`：网格小图，最长边 512px，网格磁贴用——滚动期单张读取量约为 full 的 1/3。
+ */
+export type ThumbnailVariant = 'full' | 'grid'
+
 export interface StoredCompositeAsset {
   id: string
   blob: Blob

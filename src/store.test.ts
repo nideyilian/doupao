@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, unzipSync, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultScheduleRows } from './lib/schedule'
@@ -65,6 +65,14 @@ vi.mock('./lib/db', () => {
       tasks.set(task.id, task)
       return task.id
     },
+    // 批量任务写：与逐个 putTask 同一份存储，语义一致（store.putTasks 会优先走它）
+    putTasks: async (values: TaskRecord[]) => {
+      if (dbMockState.putTaskFailuresRemaining > 0) {
+        dbMockState.putTaskFailuresRemaining--
+        throw new Error('task persistence failed')
+      }
+      for (const task of values) tasks.set(task.id, task)
+    },
     deleteTask: async (id: string) => {
       tasks.delete(id)
     },
@@ -101,7 +109,10 @@ vi.mock('./lib/db', () => {
     getImageThumbnail: async (id: string) => thumbnails.get(id),
     getStoredFreshImageThumbnail: async (id: string) => thumbnails.get(id),
     getStoredImageThumbnail: async (id: string) => thumbnails.get(id),
-    getFreshThumbnailFromDisk: async () => undefined,
+    // 默认不命中磁盘（走 IndexedDB）；grid 通道测试用 vi.mocked 覆盖成按 variant 返回。
+    getFreshThumbnailFromDisk: vi.fn(async () => undefined),
+    // 真实实现要走 canvas（node 测试环境没有）；这里退化成可识别的标记串。
+    buildGridThumbnail: vi.fn(async (_id: string, fullThumbnailDataUrl: string) => `${fullThumbnailDataUrl}#grid`),
     getAllImageIds: async () => [...images.keys()],
     getAllImages: async () => [...images.values()],
     getAllLocalImagePaths: async () =>
@@ -299,7 +310,9 @@ import {
   getAllAgentConversations,
   getAllImageIds,
   getAllTasks,
+  buildGridThumbnail,
   getCompositeAsset,
+  getFreshThumbnailFromDisk,
   putAgentConversation,
   putCompositeAssets,
   putImage,
@@ -341,6 +354,10 @@ import {
   updateTaskInStore,
   updateTasksFavoriteCollections,
   ensureImageThumbnailCached,
+  getCachedThumbnail,
+  subscribeImageThumbnail,
+  GRID_THUMBNAIL_VARIANT,
+  resolveImageDisplaySrc,
   purgeGeneratedAssets,
   useStore,
 } from './store'
@@ -5044,5 +5061,156 @@ describe('folder-scoped gallery input isolation', () => {
       delete g.window
     }
     expect(writeThumbnail).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveImageDisplaySrc（展示用原图地址）', () => {
+  function useElectronWindow(api: Record<string, unknown> | null) {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: api ? { electronAPI: api } : {},
+    })
+  }
+
+  it('库内已有本地文件时返回协议地址，绕过 IPC 结构化克隆与 base64 往返', async () => {
+    useElectronWindow({ isElectron: true })
+    const localPath = 'D:\\LocalSaves\\cache-images\\display-src-1.png'
+    await putImage({ id: 'display-src-1', localPath, createdAt: 1, source: 'generated' })
+
+    await expect(resolveImageDisplaySrc('display-src-1')).resolves.toBe(
+      `doupao://image/?path=${encodeURIComponent(localPath)}`,
+    )
+  })
+
+  it('只有 dataUrl 的图片照旧返回 dataUrl（行为不变）', async () => {
+    useElectronWindow({ isElectron: true })
+    await putImage({ id: 'display-src-2', dataUrl: 'data:image/png;base64,TWO', createdAt: 1, source: 'upload' })
+
+    await expect(resolveImageDisplaySrc('display-src-2')).resolves.toBe('data:image/png;base64,TWO')
+  })
+
+  it('localPath 在协议服务范围外时不返回协议地址（避免注定 404 的请求）', async () => {
+    useElectronWindow({ isElectron: true, readFileBuffer: vi.fn(async () => null) })
+    await putImage({ id: 'display-src-3', localPath: 'D:\\Output\\task-1.png', createdAt: 1, source: 'generated' })
+
+    const src = await resolveImageDisplaySrc('display-src-3')
+    expect(src ?? '').not.toContain('doupao://')
+  })
+
+  it('非 Electron 环境不返回协议地址', async () => {
+    useElectronWindow(null)
+    const localPath = 'D:\\LocalSaves\\cache-images\\display-src-4.png'
+    await putImage({ id: 'display-src-4', localPath, createdAt: 1, source: 'generated' })
+
+    const src = await resolveImageDisplaySrc('display-src-4')
+    expect(src ?? '').not.toContain('doupao://')
+  })
+})
+
+describe('缩略图 grid 通道（网格小图）', () => {
+  const FULL_THUMB = 'data:image/webp;base64,FULL_1024'
+  const GRID_THUMB = 'data:image/webp;base64,GRID_288'
+
+  /** 注入带 readThumbnail 的 Electron window（store 只在 Electron 环境读磁盘缩略图）。 */
+  function useElectronWindow(api: Record<string, unknown> = {}) {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { electronAPI: { isElectron: true, ...api } },
+    })
+  }
+
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  /** 回填走 idle 回调 + 250ms 定时器 + 分批队列，落地时刻不确定，用轮询断言代替固定等待。 */
+  async function waitFor(assertion: () => void, timeoutMs = 2_000) {
+    const startedAt = Date.now()
+    for (;;) {
+      try {
+        assertion()
+        return
+      } catch (error) {
+        if (Date.now() - startedAt > timeoutMs) throw error
+        await wait(50)
+      }
+    }
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, 'window')
+    vi.mocked(getFreshThumbnailFromDisk).mockReset()
+    vi.mocked(getFreshThumbnailFromDisk).mockImplementation(async () => undefined)
+    vi.mocked(buildGridThumbnail).mockReset()
+    vi.mocked(buildGridThumbnail).mockImplementation(
+      async (_id, fullThumbnailDataUrl) => `${fullThumbnailDataUrl}#grid`,
+    )
+  })
+
+  it('full 与 grid 两条通道各自分键入缓存，大图不会顶掉小图', async () => {
+    useElectronWindow()
+    vi.mocked(getFreshThumbnailFromDisk).mockImplementation(async (id, variant) =>
+      variant === 'grid'
+        ? { id, thumbnailDataUrl: GRID_THUMB, width: 288, height: 288, thumbnailVersion: 2 }
+        : { id, thumbnailDataUrl: FULL_THUMB, width: 1024, height: 1024, thumbnailVersion: 2 },
+    )
+
+    const grid = await ensureImageThumbnailCached('pair-thumb', 'visible', GRID_THUMBNAIL_VARIANT)
+    expect(grid?.dataUrl).toBe(GRID_THUMB)
+    expect(getCachedThumbnail('pair-thumb', GRID_THUMBNAIL_VARIANT)?.dataUrl).toBe(GRID_THUMB)
+    // 网格请求命中磁盘小图后，full 通道不应该被占用
+    expect(getCachedThumbnail('pair-thumb')).toBeUndefined()
+    // grid 已命中磁盘，不该再触发回填（否则每次滚过都要白生成一遍小图）
+    expect(buildGridThumbnail).not.toHaveBeenCalled()
+
+    const full = await ensureImageThumbnailCached('pair-thumb')
+    expect(full?.dataUrl).toBe(FULL_THUMB)
+    expect(getCachedThumbnail('pair-thumb')?.dataUrl).toBe(FULL_THUMB)
+    // 关键回归点：读 full 之后 grid 缓存仍在（分键而非互相覆盖）
+    expect(getCachedThumbnail('pair-thumb', GRID_THUMBNAIL_VARIANT)?.dataUrl).toBe(GRID_THUMB)
+  })
+
+  it('grid 未命中时回退 full 显示，且不把 full 塞进 grid 缓存（否则小图通道白接通）', async () => {
+    useElectronWindow()
+    vi.mocked(getFreshThumbnailFromDisk).mockImplementation(async (id, variant) =>
+      variant === 'grid'
+        ? undefined
+        : { id, thumbnailDataUrl: FULL_THUMB, width: 1024, height: 1024, thumbnailVersion: 2 },
+    )
+
+    const grid = await ensureImageThumbnailCached('fallback-thumb', 'visible', GRID_THUMBNAIL_VARIANT)
+    expect(grid?.dataUrl).toBe(FULL_THUMB)
+    expect(getCachedThumbnail('fallback-thumb', GRID_THUMBNAIL_VARIANT)).toBeUndefined()
+    expect(getCachedThumbnail('fallback-thumb')?.dataUrl).toBe(FULL_THUMB)
+  })
+
+  it('存量库懒回填：grid 缺失时后台由 full 现出小图并入缓存（订阅方不被二次推送）', async () => {
+    useElectronWindow()
+    const { putImageThumbnail } = await import('./lib/db')
+    await putImageThumbnail({
+      id: 'lazy-thumb',
+      thumbnailDataUrl: FULL_THUMB,
+      width: 1024,
+      height: 1024,
+      thumbnailVersion: 2,
+    })
+
+    const notifications: string[] = []
+    const unsubscribe = subscribeImageThumbnail(
+      'lazy-thumb',
+      (thumbnail) => notifications.push(thumbnail.dataUrl),
+      GRID_THUMBNAIL_VARIANT,
+    )
+    try {
+      // 先照旧拿 full 兜底，保证磁贴不出现「无图可显示」
+      const first = await ensureImageThumbnailCached('lazy-thumb', 'visible', GRID_THUMBNAIL_VARIANT)
+      expect(first?.dataUrl).toBe(FULL_THUMB)
+
+      await waitFor(() => expect(buildGridThumbnail).toHaveBeenCalledWith('lazy-thumb', FULL_THUMB))
+      expect(getCachedThumbnail('lazy-thumb', GRID_THUMBNAIL_VARIANT)?.dataUrl).toBe(`${FULL_THUMB}#grid`)
+      // silent 回填：订阅方当前显示的就是这张 full 兜底图，再推一次只会白闪
+      expect(notifications).toEqual([])
+      // 落盘由 db 侧负责（见 buildGridThumbnail 的单测），store 只负责入内存缓存
+    } finally {
+      unsubscribe()
+    }
   })
 })

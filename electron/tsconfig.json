@@ -28,6 +28,7 @@
     "secure-api-secrets.ts",
     "library-image-watcher.ts",
     "library-paths.ts",
+    "local-image-protocol.ts",
     "catalog-migration.ts",
     "library-integrity.ts",
     "project-tree-export.ts",

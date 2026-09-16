@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useStore, getCachedImage, ensureImageCached } from '../store'
+import { useStore, getCachedImage, ensureImageCached, resolveImageDisplaySrc } from '../store'
+import { isLocalImageUrl } from '../lib/localImageUrl'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
@@ -50,7 +51,8 @@ export default function Lightbox() {
     if (cached) {
       setSrc(cached)
     } else {
-      ensureImageCached(imageId).then((url) => {
+      // 优先本地文件协议直出（Chromium 从磁盘流式加载），拿不到时自动回退 dataUrl。
+      resolveImageDisplaySrc(imageId).then((url) => {
         if (!cancelled && url) setSrc(url)
       })
     }
@@ -104,7 +106,13 @@ export default function Lightbox() {
       return
     }
 
-    createMaskPreviewDataUrl(src, maskImageSrc)
+    // 协议地址与应用页面不同源，画进 canvas 会污染画布导致 toDataURL 抛错，
+    // 所以合成前先取回真实 dataUrl（仅遮罩场景触发，普通浏览不会走这条）。
+    const baseSrcPromise =
+      isLocalImageUrl(src) && lightboxImageId ? ensureImageCached(lightboxImageId) : Promise.resolve(src)
+
+    baseSrcPromise
+      .then((baseSrc) => (baseSrc ? createMaskPreviewDataUrl(baseSrc, maskImageSrc) : ''))
       .then((url) => {
         if (!cancelled) setMaskPreviewSrc(url)
       })
@@ -115,7 +123,7 @@ export default function Lightbox() {
     return () => {
       cancelled = true
     }
-  }, [src, maskImageSrc])
+  }, [src, maskImageSrc, lightboxImageId])
 
   // 导航
   const currentIndex = lightboxImageId ? lightboxImageList.indexOf(lightboxImageId) : -1
@@ -208,6 +216,16 @@ function LightboxInner({
   const containerRef = useRef<HTMLDivElement>(null)
   const openedAtRef = useRef(Date.now())
   useDialogFocusTrap(true, containerRef)
+
+  // 协议地址可能因文件被外部删除/移出库根而 404：回退 dataUrl，避免查看器里破图。
+  const [fallbackSrc, setFallbackSrc] = useState('')
+  useEffect(() => setFallbackSrc(''), [src])
+  const handleImageError = useCallback(() => {
+    if (!isLocalImageUrl(src)) return
+    void ensureImageCached(imageId).then((url) => {
+      if (url) setFallbackSrc(url)
+    })
+  }, [src, imageId])
 
   // 打开后立即把焦点拉进查看器：否则（单图无按钮可聚焦）空格仍会被背后卡片捕获，
   // 导致「按空格想关闭却没反应」，要等后续按 Esc/点击才关闭，看起来像延迟缩回。
@@ -677,9 +695,11 @@ function LightboxInner({
           }}
         >
           <img
-            src={src}
+            src={fallbackSrc || src}
             data-image-id={imageId}
             className="saveable-image max-w-[85vw] max-h-[85vh] object-contain rounded-lg shadow-2xl"
+            decoding="async"
+            onError={handleImageError}
             onDragStart={(e) => e.preventDefault()}
             alt=""
           />

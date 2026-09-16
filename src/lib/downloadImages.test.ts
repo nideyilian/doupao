@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type { TaskRecord, WorkspaceTab } from '../types'
 import { DEFAULT_PARAMS } from '../types'
-import { getGeneratedImageDownloadEntries, downloadImageEntries } from './downloadImages'
+import { getGeneratedImageDownloadEntries, downloadImageEntries, downloadImageIds } from './downloadImages'
 import * as localSave from './localSave'
 import * as db from './db'
 
@@ -11,6 +11,7 @@ vi.mock('./localSave', () => ({
   exportImagesToFolder: vi.fn(async () => ({ saved: 0, failed: [], total: 0 })),
   fileExistsOnDisk: vi.fn(async () => true),
   exportZipToPath: vi.fn(),
+  readFileBuffer: vi.fn(),
   saveImage: vi.fn(),
   selectSavePath: vi.fn(),
   selectZipSavePath: vi.fn(),
@@ -201,5 +202,55 @@ describe('folder export fallback (Electron 批量导出到文件夹)', () => {
     expect(result).toEqual({ successCount: 2, failCount: 0 })
     const files = vi.mocked(localSave.exportImagesToFolder).mock.calls[0]![1]
     expect(files.every((file) => typeof file.dataUrl === 'string' && !file.sourcePath)).toBe(true)
+  })
+})
+
+describe('协议地址下载（doupao://image/）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(localSave.isElectron).mockReturnValue(true)
+    // Node 测试环境没有 FileReader：blobToDataUrl 需要它，给一个最小实现
+    class FakeFileReader {
+      result = ''
+      onload: (() => void) | null = null
+      readAsDataURL(blob: Blob) {
+        // 带出 blob.type，才能验证协议分支还原出的 MIME 是否正确
+        this.result = `data:${blob.type};base64,AAAA`
+        this.onload?.()
+      }
+    }
+    vi.stubGlobal('FileReader', FakeFileReader)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('经 IPC 读回字节后保存，不把协议地址丢给 fetch（CSP 会拦）', async () => {
+    const localPath = 'D:\\LocalSaves\\cache-images\\a1.webp'
+    const protocolUrl = `doupao://image/?path=${encodeURIComponent(localPath)}`
+    vi.mocked(localSave.readFileBuffer).mockResolvedValue({
+      data: new Uint8Array([1, 2, 3]).buffer,
+      name: 'a1.webp',
+    })
+    vi.mocked(localSave.selectSavePath).mockResolvedValue('/out/a1.webp')
+    vi.mocked(localSave.saveImage).mockResolvedValue(true)
+
+    const result = await downloadImageIds([protocolUrl], 'shot')
+
+    expect(result).toEqual({ successCount: 1, failCount: 0 })
+    expect(localSave.readFileBuffer).toHaveBeenCalledWith(localPath)
+    const saved = vi.mocked(localSave.saveImage).mock.calls[0]!
+    expect(saved[1]).toMatch(/^data:image\/webp;base64,/)
+  })
+
+  it('文件已被删除时记为失败，而不是抛出未捕获异常', async () => {
+    const protocolUrl = `doupao://image/?path=${encodeURIComponent('D:\\LocalSaves\\cache-images\\gone.png')}`
+    vi.mocked(localSave.readFileBuffer).mockResolvedValue(null)
+
+    const result = await downloadImageIds([protocolUrl], 'shot')
+
+    expect(result).toEqual({ successCount: 0, failCount: 1 })
+    expect(localSave.saveImage).not.toHaveBeenCalled()
   })
 })

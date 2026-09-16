@@ -1,4 +1,4 @@
-import type { AgentConversation, AgentRound, TaskRecord } from '../types'
+import type { AgentConversation, AgentRound, TaskRecord, ThumbnailVariant } from '../types'
 import type { UpdateStatus } from '../hooks/useAutoUpdate'
 import type { ApiSecretBundle } from './apiSecrets'
 import type {
@@ -12,6 +12,7 @@ import type {
   GeneratedAsset,
 } from '../types'
 import { sanitizeGeneratedImageFilenamePart } from './generatedImageFilename'
+import { decodeDataUrlToBytes } from './imageFingerprint'
 
 type ElectronAPI = {
   apiFetch?: (
@@ -35,9 +36,13 @@ type ElectronAPI = {
   selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
   selectFiles: (filters?: { name: string; extensions: string[] }[]) => Promise<string[] | null>
   saveImage: (filePath: string, dataUrl: string) => Promise<boolean>
+  /** 同 saveImage，但直接传已解码字节，省掉主进程的 base64 解码（大图热点路径） */
+  saveImageBytes?: (filePath: string, bytes: Uint8Array) => Promise<boolean>
   /** 硬链接：同一物理文件、两个目录入口，不占额外磁盘空间 */
   linkFile?: (sourcePath: string, targetPath: string) => Promise<boolean>
   saveCompositeImage: (filePath: string, dataUrl: string, maxSizeKb?: number) => Promise<boolean>
+  /** 同 saveCompositeImage，但直接传已解码字节；导出成图是大图热点，省掉主进程同步 base64 解码 */
+  saveCompositeImageBytes?: (filePath: string, bytes: Uint8Array) => Promise<boolean>
   authorizeCompositeOutputDirectory?: (dirPath: string) => Promise<boolean>
   saveJson: (filePath: string, data: unknown) => Promise<boolean>
   saveText: (filePath: string, content: string) => Promise<boolean>
@@ -166,6 +171,8 @@ type ElectronAPI = {
   appDataGetMany?: (namespace: string, ids: string[]) => Promise<unknown[]>
   appDataPut?: (namespace: string, id: string, value: unknown) => Promise<{ success: boolean }>
   appDataPutMany?: (namespace: string, records: Array<{ id: string; value: unknown }>) => Promise<{ success: boolean }>
+  /** 跨命名空间批量写：一次往返提交多条不同 namespace 的记录，用于合并「图片 + 缩略图」 */
+  appDataPutBatch?: (entries: Array<{ namespace: string; id: string; value: unknown }>) => Promise<{ success: boolean }>
   appDataReplace?: (namespace: string, records: Array<{ id: string; value: unknown }>) => Promise<{ success: boolean }>
   appDataDelete?: (namespace: string, id: string) => Promise<{ success: boolean }>
   appDataDeleteMany?: (namespace: string, ids: string[]) => Promise<{ success: boolean }>
@@ -235,14 +242,14 @@ type ElectronAPI = {
     thumbsBytes: number
     thumbsCount: number
   }>
-  /** 读磁盘缩略图（库根 thumbs/，webp）；未命中返回 null。variant='grid' 走网格小图命名空间 */
+  /** 读磁盘缩略图（库根 thumbs/，webp）；未命中返回 null。variant 决定通道（默认 full） */
   readThumbnail?: (
     id: string,
     version: number,
-    variant?: 'grid',
+    variant?: ThumbnailVariant,
   ) => Promise<{ dataUrl: string; width?: number; height?: number } | null>
-  /** 写磁盘缩略图（webp 字节）；variant='grid' 走网格小图命名空间 */
-  writeThumbnail?: (id: string, version: number, dataUrl: string, variant?: 'grid') => Promise<boolean>
+  /** 写磁盘缩略图（webp 字节）；variant 决定通道（默认 full） */
+  writeThumbnail?: (id: string, version: number, dataUrl: string, variant?: ThumbnailVariant) => Promise<boolean>
   /** 删除图片的全部磁盘缩略图（full + grid 所有版本），返回删除数量 */
   deleteThumbnails?: (imageIds: string[]) => Promise<{ deleted: number }>
   /** 文件存在性检查（主进程 fs.existsSync，路径限库内） */
@@ -369,11 +376,61 @@ export async function selectFile(filters?: { name: string; extensions: string[] 
   return api.selectFile(filters)
 }
 
+/**
+ * 图片写盘统一入口。
+ *
+ * 主进程过去要在自己的事件循环上对整张图的 base64 字符串做 `Buffer.from(..., 'base64')`
+ * （5MB 图 ≈ 6.7M 字符）后再同步 `writeFileSync`——解码与写盘两段都阻塞主进程，
+ * 而主进程一卡整窗都卡。现在解码改在渲染进程走 `Uint8Array.fromBase64` 原生快路径
+ * （见 `imageFingerprint.decodeDataUrlToBytes`），IPC 只搬原始字节（比重 1/3 的 base64 字符串更小），
+ * 主进程只剩一次异步写盘。
+ *
+ * 仍保留 dataUrl 回退：① 旧 preload 没有该通道；② 入参不是合法 base64（能力探测/异常数据）时，
+ * 继续交给主进程解析，保持改动前的容错行为。
+ */
+async function saveImageViaApi(
+  api: NonNullable<ReturnType<typeof getAPI>>,
+  filePath: string,
+  dataUrl: string,
+): Promise<boolean> {
+  if (api.saveImageBytes) {
+    try {
+      return await api.saveImageBytes(filePath, decodeDataUrlToBytes(dataUrl))
+    } catch {
+      // 落到下面的 dataUrl 通道
+    }
+  }
+  return api.saveImage(filePath, dataUrl)
+}
+
+/**
+ * 导出成图写盘（合成图导出运行时自带注入的 `electronAPI`，故这里显式接收）。
+ *
+ * 与 `saveImage` 同策略：优先在渲染进程解码后走字节通道（导出成图常有 10MB+，
+ * 主进程同步解码 base64 会连带卡住窗口消息与其它 IPC），缺通道或失败时回退 dataUrl。
+ * `archiveExportsToLibrary` 归档仍复用同一份 dataUrl，不额外解码。
+ */
+export async function saveCompositeImage(
+  api: NonNullable<Window['electronAPI']>,
+  filePath: string,
+  dataUrl: string,
+): Promise<boolean> {
+  const saveBytes = api.saveCompositeImageBytes
+  if (saveBytes) {
+    try {
+      return await saveBytes(filePath, decodeDataUrlToBytes(dataUrl))
+    } catch {
+      // 落到下面的 dataUrl 通道
+    }
+  }
+  return api.saveCompositeImage(filePath, dataUrl)
+}
+
 /** 原生保存图片（Electron，主进程写盘）；非 Electron 环境返回 false。 */
 export async function saveImage(filePath: string, dataUrl: string): Promise<boolean> {
   const api = getAPI()
   if (!api) return false
-  return api.saveImage(filePath, dataUrl)
+  return saveImageViaApi(api, filePath, dataUrl)
 }
 
 /** 写文本文件（Electron，主进程写盘，无 .bak 自动备份）；非 Electron 环境返回 false。 */
@@ -554,7 +611,7 @@ export async function saveRawCacheImageToLocal(id: string, dataUrl: string): Pro
   const ext = getImageExtensionFromDataUrl(dataUrl)
   const filePath = await api.pathJoin(cacheDir, `${id}.${ext}`)
 
-  const success = await api.saveImage(filePath, dataUrl)
+  const success = await saveImageViaApi(api, filePath, dataUrl)
   return success ? filePath : null
 }
 
@@ -656,7 +713,7 @@ export async function saveImageToLocal(
   return saveImageExclusively(imagesDir, async () => {
     const filePath = await resolveLocalImageTargetPath(imagesDir, taskId, imageIndex, ext, fileNameBase)
     if (!filePath) return null
-    const success = await api.saveImage(filePath, dataUrl)
+    const success = await saveImageViaApi(api, filePath, dataUrl)
     return success ? filePath : null
   })
 }
@@ -1076,26 +1133,32 @@ export async function reconcileRawCacheImages(referencedFileNames: string[]): Pr
   if (api?.reconcileCacheImages) await api.reconcileCacheImages(referencedFileNames)
 }
 
-/** 读磁盘缩略图（库根 thumbs/）；非 Electron 或未命中返回 null。 */
+/** 读磁盘缩略图（库根 thumbs/）；非 Electron 或未命中返回 null。variant 决定通道（默认 full）。 */
 export async function readThumbnailFromDisk(
   id: string,
   version: number,
+  variant: ThumbnailVariant = 'full',
 ): Promise<{ dataUrl: string; width?: number; height?: number } | null> {
   const api = getAPI()
   if (!api?.readThumbnail) return null
   try {
-    return await api.readThumbnail(id, version)
+    return await api.readThumbnail(id, version, variant)
   } catch {
     return null
   }
 }
 
-/** 写磁盘缩略图（webp 字节）；非 Electron 或失败返回 false。 */
-export async function writeThumbnailToDisk(id: string, version: number, dataUrl: string): Promise<boolean> {
+/** 写磁盘缩略图（webp 字节）；非 Electron 或失败返回 false。variant 决定通道（默认 full）。 */
+export async function writeThumbnailToDisk(
+  id: string,
+  version: number,
+  dataUrl: string,
+  variant: ThumbnailVariant = 'full',
+): Promise<boolean> {
   const api = getAPI()
   if (!api?.writeThumbnail) return false
   try {
-    return await api.writeThumbnail(id, version, dataUrl)
+    return await api.writeThumbnail(id, version, dataUrl, variant)
   } catch {
     return false
   }

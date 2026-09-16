@@ -580,6 +580,24 @@ function dataUrlToBuffer(dataUrl: string): { buffer: Buffer; mime: string } {
   }
 }
 
+/**
+ * 图片落盘载荷解码：优先接受渲染进程已解码好的字节，只在调用方仍传 dataUrl 时回退解析。
+ *
+ * 主进程对整张图的 base64 字符串做 `Buffer.from(..., 'base64')`（5MB 图 ≈ 6.7M 字符）
+ * 是在事件循环上同步跑的，批量出图时会明显卡主进程；改由渲染进程的原生
+ * `Uint8Array.fromBase64` 解码后，IPC 只搬原始字节（约为 base64 字符串的 3/4），
+ * 这里直接零拷贝建视图。
+ */
+export function imageBytesFromPayload(payload: { dataUrl?: string; bytes?: Uint8Array | ArrayBuffer }): Buffer | null {
+  const { bytes, dataUrl } = payload
+  if (bytes instanceof ArrayBuffer) return Buffer.from(bytes)
+  if (bytes && typeof bytes === 'object' && 'byteLength' in bytes) {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  }
+  if (typeof dataUrl === 'string' && dataUrl) return dataUrlToBuffer(dataUrl).buffer
+  return null
+}
+
 const COMPOSITE_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
 const COMPOSITE_DELETE_EXTENSIONS = new Set(['.jpg', '.jpeg'])
 
@@ -726,10 +744,29 @@ function isCompositeDeletePath(filePath: string): boolean {
   return COMPOSITE_DELETE_EXTENSIONS.has(path.extname(filePath).toLowerCase())
 }
 
-function readImageFilePayload(filePath: string) {
+/** 参考图文件夹单次列举上限：只读取前 N 张，避免一次性把整个目录读进内存。 */
+const MAX_COMPOSITE_LIST_FILES = 300
+/** 单张参考图体积上限（24MB）：超过视为异常素材，跳过并告警，避免 base64 峰值内存失控。 */
+const MAX_COMPOSITE_IMAGE_BYTES = 24 * 1024 * 1024
+/** 并发读取数：限制同时打开的文件句柄数与 base64 峰值内存。 */
+const COMPOSITE_READ_CONCURRENCY = 4
+
+/**
+ * 单张图片读为 dataUrl。
+ * 全程异步 fs（不阻塞主进程事件循环）；maxBytes 用于批量场景下跳过异常大文件。
+ */
+async function readImageFilePayload(filePath: string, maxBytes?: number) {
   const safeFilePath = assertAllowedPath(filePath)
-  if (!existsSync(safeFilePath) || !statSync(safeFilePath).isFile() || !isCompositeImagePath(safeFilePath)) return null
-  const buffer = readFileSync(safeFilePath)
+  if (!isCompositeImagePath(safeFilePath)) return null
+  const stat = await fsPromises.stat(safeFilePath).catch(() => null)
+  if (!stat?.isFile()) return null
+  if (maxBytes !== undefined && stat.size > maxBytes) {
+    console.warn(
+      `[composite] 跳过超限图片（${Math.round(stat.size / 1024 / 1024)}MB > ${Math.round(maxBytes / 1024 / 1024)}MB）：${safeFilePath}`,
+    )
+    return null
+  }
+  const buffer = await fsPromises.readFile(safeFilePath)
   return {
     path: safeFilePath,
     name: path.basename(safeFilePath),
@@ -737,26 +774,47 @@ function readImageFilePayload(filePath: string) {
   }
 }
 
-function listCompositeImageFiles(dirPath: string) {
+/**
+ * 列出目录下的候选图片路径（只做 readdir + 扩展名过滤，不读取文件内容）。
+ * 排序保证列举与「随机 / 顺序抽取」结果稳定可复现。
+ */
+async function listCompositeImagePaths(dirPath: string): Promise<string[]> {
   const safeDirPath = assertAllowedPath(dirPath)
-  if (!existsSync(safeDirPath) || !statSync(safeDirPath).isDirectory()) return []
-  return readdirSync(safeDirPath)
+  const dirStat = await fsPromises.stat(safeDirPath).catch(() => null)
+  if (!dirStat?.isDirectory()) return []
+  const names = await fsPromises.readdir(safeDirPath).catch(() => [])
+  return names
+    .filter((name) => isCompositeImagePath(name))
+    .sort()
     .map((name) => path.join(safeDirPath, name))
-    .filter((filePath) => {
-      try {
-        return statSync(filePath).isFile() && isCompositeImagePath(filePath)
-      } catch {
-        return false
-      }
-    })
-    .map((filePath) => {
-      const buffer = readFileSync(filePath)
-      return {
-        path: filePath,
-        name: path.basename(filePath),
-        dataUrl: `data:${mimeFromImagePath(filePath)};base64,${buffer.toString('base64')}`,
-      }
-    })
+}
+
+/**
+ * 列出目录下的图片并读为 dataUrl。
+ * 异步 fs + 受控并发 + 文件数/单张体积上限：原实现用 readdirSync + 逐张 readFileSync，
+ * 目录稍大就会同步读满整个目录（200 张 4MB 图 ≈ 读 800MB、生成 1GB base64），主进程事件循环
+ * 被占住数十秒，窗口/菜单/全部 IPC 一起停等，严重时 OOM。
+ */
+export async function listCompositeImageFiles(dirPath: string) {
+  const paths = await listCompositeImagePaths(dirPath)
+  if (paths.length > MAX_COMPOSITE_LIST_FILES) {
+    console.warn(
+      `[composite:list-image-files] 目录图片过多，仅读取前 ${MAX_COMPOSITE_LIST_FILES} 张（共 ${paths.length} 张）：${dirPath}`,
+    )
+  }
+
+  const targets = paths.slice(0, MAX_COMPOSITE_LIST_FILES)
+  const results: Array<{ path: string; name: string; dataUrl: string }> = []
+  for (let i = 0; i < targets.length; i += COMPOSITE_READ_CONCURRENCY) {
+    const batch = targets.slice(i, i + COMPOSITE_READ_CONCURRENCY)
+    const payloads = await Promise.all(
+      batch.map((filePath) => readImageFilePayload(filePath, MAX_COMPOSITE_IMAGE_BYTES)),
+    )
+    for (const payload of payloads) {
+      if (payload) results.push(payload)
+    }
+  }
+  return results
 }
 
 export function listCompositeBackgroundFiles(dirPath: string, recursive: boolean): CompositeBackgroundFile[] {
@@ -1052,19 +1110,24 @@ export function registerIpcHandlers(): void {
     return result.filePaths
   })
 
-  handleChecked('fs:save-image', async (_event, { filePath, dataUrl }: { filePath: string; dataUrl: string }) => {
-    try {
-      const safeFilePath = assertAllowedPath(filePath)
-      const { buffer } = dataUrlToBuffer(dataUrl)
-      const dir = path.dirname(safeFilePath)
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-      writeFileSync(safeFilePath, buffer)
-      return true
-    } catch (err) {
-      console.error('保存图片失败:', err)
-      return false
-    }
-  })
+  handleChecked(
+    'fs:save-image',
+    async (_event, payload: { filePath: string; dataUrl?: string; bytes?: Uint8Array | ArrayBuffer }) => {
+      try {
+        const safeFilePath = assertAllowedPath(payload.filePath)
+        const buffer = imageBytesFromPayload(payload)
+        if (!buffer) return false
+        const dir = path.dirname(safeFilePath)
+        // 异步建目录 + 异步写盘：写整张图是热点路径，同步 fs 会连带卡住窗口消息与所有其它 IPC。
+        await fsPromises.mkdir(dir, { recursive: true })
+        await fsPromises.writeFile(safeFilePath, buffer)
+        return true
+      } catch (err) {
+        console.error('保存图片失败:', err)
+        return false
+      }
+    },
+  )
 
   // 硬链接：同一物理文件、两个目录入口，不占额外磁盘空间。
   // 用于「按工作区目录提供原图」——cache-images 保持唯一原图，工作区目录只挂链接。
@@ -1219,16 +1282,18 @@ export function registerIpcHandlers(): void {
     ) => {
       try {
         const safePath = assertAllowedPath(inputPath)
-        const stat = statSync(safePath)
-        if (stat.isFile()) return readImageFilePayload(safePath)
+        const stat = await fsPromises.stat(safePath).catch(() => null)
+        if (!stat) return null
+        if (stat.isFile()) return await readImageFilePayload(safePath)
         if (!stat.isDirectory()) return null
-        const files = listCompositeImageFiles(safePath)
-        if (!files.length) return null
+        // 只列文件名再读抽中的那一张：原实现为了随机抽一张而把整个目录读成了 dataUrl。
+        const paths = await listCompositeImagePaths(safePath)
+        if (!paths.length) return null
         const picked =
           mode === 'random'
-            ? files[Math.floor(Math.random() * files.length)]
-            : files[((index % files.length) + files.length) % files.length]
-        return readImageFilePayload(picked.path)
+            ? paths[Math.floor(Math.random() * paths.length)]
+            : paths[((index % paths.length) + paths.length) % paths.length]
+        return await readImageFilePayload(picked)
       } catch (err) {
         console.error('抽取合成图片失败:', err)
         return null
@@ -1266,8 +1331,12 @@ export function registerIpcHandlers(): void {
   handleChecked('fs:read-file-buffer', async (_event, { filePath }: { filePath: string }) => {
     try {
       const safeFilePath = assertAllowedPath(filePath)
-      if (!existsSync(safeFilePath)) return null
-      const buffer = readFileSync(safeFilePath)
+      const stat = await fsPromises.stat(safeFilePath).catch(() => null)
+      if (!stat?.isFile()) return null
+      // 异步读：原同步 readFileSync 会占住主进程事件循环，读一张大图期间窗口拖拽、
+      // 菜单、托盘与所有 IPC 全部停等（渲染层优化再好也救不回来）。
+      const buffer = await fsPromises.readFile(safeFilePath)
+      // 切出独立 ArrayBuffer：Buffer 可能来自 Node 的共享内存池，直接跨 IPC 克隆会把整个池一起传过去。
       const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
       return { data: arrayBuffer, name: path.basename(safeFilePath) }
     } catch (err) {
@@ -1278,13 +1347,17 @@ export function registerIpcHandlers(): void {
 
   handleChecked(
     'composite:save-image',
-    async (_event, { filePath, dataUrl }: { filePath: string; dataUrl: string; maxSizeKb?: number }) => {
+    async (
+      _event,
+      payload: { filePath: string; dataUrl?: string; bytes?: Uint8Array | ArrayBuffer; maxSizeKb?: number },
+    ) => {
       try {
-        const safeFilePath = assertAllowedPath(filePath)
-        const { buffer } = dataUrlToBuffer(dataUrl)
-        const dir = path.dirname(safeFilePath)
-        if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-        writeFileSync(safeFilePath, buffer)
+        const safeFilePath = assertAllowedPath(payload.filePath)
+        // 与 fs:save-image 同一策略：字节优先（导出成图常有 10MB+，主进程同步解 base64 会卡事件循环）
+        const buffer = imageBytesFromPayload(payload)
+        if (!buffer) return false
+        await fsPromises.mkdir(path.dirname(safeFilePath), { recursive: true })
+        await fsPromises.writeFile(safeFilePath, buffer)
         return true
       } catch (err) {
         console.error('保存合成图片失败:', err)

@@ -43,6 +43,61 @@ describe('decodeDataUrlToBytes', () => {
   })
 })
 
+// decodeDataUrlToBytes 在 Chromium 133+（Electron 43）上走原生 Uint8Array.fromBase64，
+// Node 22 的测试环境没有该 API，因此这里注入/移除它来验证两条路径。
+describe('decodeDataUrlToBytes 原生 base64 快路径', () => {
+  const typedArrayWithBase64 = Uint8Array as unknown as { fromBase64?: (base64: string) => Uint8Array }
+
+  function withNative(impl: (base64: string) => Uint8Array, run: () => void) {
+    const original = typedArrayWithBase64.fromBase64
+    typedArrayWithBase64.fromBase64 = impl
+    try {
+      run()
+    } finally {
+      if (original === undefined) delete typedArrayWithBase64.fromBase64
+      else typedArrayWithBase64.fromBase64 = original
+    }
+  }
+
+  it('存在原生实现时优先使用它', () => {
+    const calls: string[] = []
+    withNative(
+      (base64) => {
+        calls.push(base64)
+        return new Uint8Array([7, 7, 7])
+      },
+      () => {
+        const bytes = decodeDataUrlToBytes('data:image/png;base64,AAAA')
+        expect(calls).toEqual(['AAAA'])
+        expect(Array.from(bytes)).toEqual([7, 7, 7])
+      },
+    )
+  })
+
+  it('原生实现抛出时回退 atob，结果与原生一致', () => {
+    const dataUrl = toDataUrl(new Uint8Array([200, 1, 99, 254]), 'image/png')
+    withNative(
+      () => {
+        throw new Error('native failed')
+      },
+      () => {
+        expect(Array.from(decodeDataUrlToBytes(dataUrl))).toEqual([200, 1, 99, 254])
+      },
+    )
+  })
+
+  it('无原生实现时走 atob 回退', () => {
+    const original = typedArrayWithBase64.fromBase64
+    delete typedArrayWithBase64.fromBase64
+    try {
+      const dataUrl = toDataUrl(new Uint8Array([11, 22, 33]), 'image/webp')
+      expect(Array.from(decodeDataUrlToBytes(dataUrl))).toEqual([11, 22, 33])
+    } finally {
+      if (original !== undefined) typedArrayWithBase64.fromBase64 = original
+    }
+  })
+})
+
 describe('computeContentHash', () => {
   it('is identical for same decoded bytes under different mime (re-encoded)', async () => {
     const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9, 9, 9])
