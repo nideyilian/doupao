@@ -1760,7 +1760,10 @@ export default function GallerySopBatchModal({
     generationAbortRef.current = generationController
     generationPausedRef.current = false
     releasePauseWaiters()
-    const allocations = allocateSopPromptCounts(effectivePromptTarget, selectedSources.length)
+    // 系列模式先按「组」分配，再换算为画面数，避免一个组被拆到不同参考图或变成半组。
+    const allocations = activeSeriesMode
+      ? allocateSopPromptCounts(targetCount, selectedSources.length).map((groupCount) => groupCount * seriesCount)
+      : allocateSopPromptCounts(effectivePromptTarget, selectedSources.length)
     const retrySource = retrySourceId
       ? currentSources.find((entry) => entry.source.id === retrySourceId)?.source
       : undefined

@@ -568,6 +568,77 @@ describe('SOP prompt batch', () => {
     expect(request).toContain('内容为主体')
   })
 
+  it('tells the model a filled value is locked for every group, not just this one', () => {
+    const request = buildSopPromptBatchRequest(sop, 2, '', {
+      seriesConfig: {
+        imageCount: 3,
+        fixedDimensions: ['画风', '构图'],
+        variableDimensions: ['主体', '文案内容'],
+        fixedValues: { 构图: '中心对称' },
+      },
+    })
+
+    // 填了值＝全局硬锁：组间差异只能靠未锁定的固定维度与变化维度，锁定值本身不得被改写
+    expect(request).toContain('用户已填值的固定项是全局锁定')
+    expect(request).toContain('组间差异只能来自未锁定的固定维度与各组的可变维度')
+    expect(request).toContain('固定块只写其余固定维度（画风）的完整视觉规则')
+    expect(request).not.toContain('组间差异只能由可变维度')
+  })
+
+  it('points the group difference at variable dimensions when every fixed dimension is locked', () => {
+    const request = buildSopPromptBatchRequest(sop, 2, '', {
+      seriesConfig: {
+        imageCount: 2,
+        fixedDimensions: ['画风', '构图'],
+        variableDimensions: ['主体', '背景'],
+        fixedValues: { 画风: '3D 皮克斯风', 构图: '中心对称' },
+      },
+    })
+
+    expect(request).toContain('本次固定维度已被用户全部锁定，组间差异只能由可变维度（主体、背景）承担')
+  })
+
+  it('warns against invented differences when nothing is allowed to vary', () => {
+    const request = buildSopPromptBatchRequest(sop, 2, '', {
+      seriesConfig: {
+        imageCount: 2,
+        fixedDimensions: ['画风', '主体'],
+        variableDimensions: [],
+        fixedValues: { 画风: '3D 皮克斯风', 主体: '奶茶杯' },
+      },
+    })
+
+    expect(request).toContain('各组画面应当保持一致，不要自行制造差异')
+  })
+
+  it('asks in groups rather than single prompts when the batch is a series', () => {
+    const request = buildSopPromptBatchRequest(sop, 3, '', {
+      totalPromptCount: 3,
+      seriesConfig: {
+        imageCount: 3,
+        fixedDimensions: ['画风', '构图'],
+        variableDimensions: ['主体', '背景'],
+      },
+    })
+
+    // 系列模式下一批的单位是「组」：文案必须跟着换单位，否则模型会把 3 组读成 3 条
+    expect(request).toContain('生成 3 组系列图（每组 3 条成员提示词，共 9 条）')
+    expect(request).toContain('本轮总目标：3 组系列图（每组 3 条）')
+    expect(request).toContain('series 数组必须正好 3 组，每组 prompts 必须正好 3 条')
+    expect(request).not.toContain('生成 3 条')
+  })
+
+  it('keeps the per-prompt wording when only one group member is regenerated', () => {
+    const request = buildSopPromptBatchRequest(sop, 1, '', {
+      seriesConfig: { imageCount: 3, fixedDimensions: ['画风'], variableDimensions: ['主体'] },
+      seriesFixedBlock: '画风：3D 皮克斯风',
+      seriesMemberOnly: true,
+    })
+
+    expect(request).toContain('生成 1 条彼此不同')
+    expect(request).toContain('固定块与画面文字必须逐字沿用上面已锁定的原文')
+  })
+
   it('asks the model for an empty fixed block when every fixed dimension is locked', () => {
     const request = buildSopPromptBatchRequest(sop, 1, '', {
       seriesConfig: {

@@ -171,9 +171,10 @@ function buildSeriesPromptTextFormat(quantity: number, seriesCount: number) {
             type: 'object',
             properties: {
               fixed: { type: 'string' },
+              fixedCopy: { type: 'string' },
               prompts: { type: 'array', minItems: seriesCount, maxItems: seriesCount, items: { type: 'string' } },
             },
-            required: ['fixed', 'prompts'],
+            required: ['fixed', 'fixedCopy', 'prompts'],
             additionalProperties: false,
           },
         },

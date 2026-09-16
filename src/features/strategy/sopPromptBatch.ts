@@ -513,6 +513,12 @@ export function buildSopPromptBatchRequest(
       : [...comparisonPrompts.slice(0, 3), ...comparisonPrompts.slice(-9)]
   const seriesConfig = context.seriesConfig
   const seriesMemberCount = seriesConfig ? (context.seriesMemberOnly ? 1 : seriesConfig.imageCount) : 0
+  /**
+   * 系列模式下 count 的单位是「组」而不是「条」：下发文案必须跟着换单位，
+   * 否则模型会把「N 组」读成「N 条提示词」，组数与组内条数都会写错。
+   * 单成员重生成只补组内一张，仍按「条」表述。
+   */
+  const seriesGroupMode = Boolean(seriesConfig) && !context.seriesMemberOnly
   const seriesFixedBlock = normalizeSopSeriesFixedBlock(context.seriesFixedBlock ?? '')
   const seriesCopyBlock = normalizeSopSeriesFixedBlock(context.seriesCopyBlock ?? '')
   // 用户手工填了值的固定维度：由客户端直接拼进固定块，不交给模型改写。
@@ -520,19 +526,51 @@ export function buildSopPromptBatchRequest(
   // 用户手工填了的文案：客户端直接拼成画面文字段，模型只负责照写。
   const lockedCopy = seriesConfig ? buildSopSeriesLockedCopy(seriesConfig) : ''
   const freeFixedDimensions = seriesConfig ? getSopSeriesFreeFixedDimensions(seriesConfig) : []
+  const seriesMemberSamples = Array.from(
+    { length: seriesMemberCount },
+    (_, index) => `"系列图${index + 1}变化部分"`,
+  ).join(',')
+  const seriesGroupSample = `{"fixed":"本组固定块原文","fixedCopy":"本组画面文字，没有则空字符串","prompts":[${seriesMemberSamples}]}`
+  // 示例里至少摆两组：只摆一组时模型很容易把「N 组」当成「N 条」，
+  // 把组内一致、组间差异的要求写丢。
+  const seriesJsonSamples = Array.from({ length: Math.min(count, 2) }, () => seriesGroupSample).join(',')
+  /**
+   * 组内一致 + 组间差异的规则。用户填了值的固定维度是**全局硬锁**：所有组逐字沿用，
+   * 组间差异只能来自未锁定的固定维度与各组的可变维度；两者都不剩时明确要求各组一致，
+   * 免得模型为了「不同组要有区别」去改写用户锁死的值。
+   */
+  const seriesDifferenceInstruction = seriesConfig
+    ? [
+        '每组独立规划自己的固定块；不同组不得机械复用同一套未锁定的构图、视角、色彩或光线。',
+        '组间差异只能来自未锁定的固定维度与各组的可变维度：只要二者允许，至少在一个维度上形成清晰差异。',
+        '用户已填值的固定项是全局锁定，必须在所有组中原样出现，不得为了制造组间差异而改写、增删或重新措辞；SOP 明确要求全局统一的规则同样在所有组中保持一致。',
+        freeFixedDimensions.length === 0 && lockedFixedBlock
+          ? seriesConfig.variableDimensions.length
+            ? `本次固定维度已被用户全部锁定，组间差异只能由可变维度（${seriesConfig.variableDimensions.join('、')}）承担。`
+            : '本次固定维度已被用户全部锁定、也没有可变维度，各组画面应当保持一致，不要自行制造差异。'
+          : '',
+      ]
+        .filter(Boolean)
+        .join('')
+    : ''
   const seriesInstruction = seriesConfig
     ? [
         `当前 SOP 是系列组图模式：每组必须输出 ${seriesMemberCount} 条提示词。`,
         buildSopSeriesFixedInstruction({ seriesConfig, seriesFixedBlock, lockedFixedBlock, freeFixedDimensions }),
+        seriesDifferenceInstruction,
         buildSopSeriesCopyInstruction({ seriesConfig, seriesCopyBlock, lockedCopy }),
         buildSopSeriesVariableInstruction(seriesConfig),
-        `只返回合法 JSON：{"series":[{"fixed":"本组固定块原文","fixedCopy":"本组画面文字，没有则空字符串","prompts":["系列图1变化部分"${seriesMemberCount >= 2 ? ',"系列图2变化部分"' : ''}${seriesMemberCount === 3 ? ',"系列图3变化部分"' : ''}]}]}`,
+        `只返回合法 JSON：{"series":[${seriesJsonSamples}]}，series 数组必须正好 ${count} 组，每组 prompts 必须正好 ${seriesMemberCount} 条。`,
       ].join('\n')
     : ''
   return [
-    `任务：依据 SOP 生成 ${count} 条彼此不同、可直接用于图片生成模型的提示词。`,
+    seriesGroupMode
+      ? `任务：依据 SOP 生成 ${count} 组系列图（每组 ${seriesMemberCount} 条成员提示词，共 ${count * seriesMemberCount} 条），组内保持一致、组间彼此不同，且可直接用于图片生成模型。`
+      : `任务：依据 SOP 生成 ${count} 条彼此不同、可直接用于图片生成模型的提示词。`,
     context.totalPromptCount
-      ? `本轮总目标提示词数量：${context.totalPromptCount} 条。当前只生成分配给本参考图的 ${count} 条。`
+      ? seriesGroupMode
+        ? `本轮总目标：${context.totalPromptCount} 组系列图（每组 ${seriesMemberCount} 条）。当前只生成分配给本参考图的 ${count} 组。`
+        : `本轮总目标提示词数量：${context.totalPromptCount} 条。当前只生成分配给本参考图的 ${count} 条。`
       : '',
     context.sourceLabel
       ? `当前参考图：${context.sourceLabel}${context.sourceIndex && context.sourceCount ? `（${context.sourceIndex}/${context.sourceCount}）` : ''}。将图中可见事实作为内容依据，并用 SOP 规定的视觉规则组织提示词。`
@@ -566,7 +604,9 @@ ${JSON.stringify(boundedComparisonPrompts)}
     '',
     '输出前逐条自检：SOP 明确硬约束无遗漏、禁止项未违反、事实未臆造、每条都能脱离上下文独立使用。',
     context.seriesConfig
-      ? `严格生成 ${count} 组系列图，每组 ${seriesMemberCount} 条成员提示词；同组每条提示词必须共用同一段固定块原文。`
+      ? seriesGroupMode
+        ? `严格生成 ${count} 组系列图，每组 ${seriesMemberCount} 条成员提示词；同组每条提示词必须共用同一段固定块原文，不同组必须使用有明确差异的未锁定固定条件。`
+        : '只输出 1 条提示词：它是本组系列图的一员，固定块与画面文字必须逐字沿用上面已锁定的原文，不要重新规划，只写本张的变化部分。'
       : `只返回合法 JSON：{"prompts":["完整提示词 1","完整提示词 2","共严格 ${count} 条"]}`,
     '禁止 Markdown 代码围栏、解释、标题和列表编号；禁止使用“同上”“保持一致”等省略表达。',
   ]

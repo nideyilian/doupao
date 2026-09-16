@@ -7,11 +7,17 @@ import {
   SOP_SERIES_DIMENSIONS,
 } from './sopSeriesDimensions'
 
-/** 系列一致性配置：哪些维度组内固定、固定成什么值。 */
+/**
+ * 系列一致性配置：哪些维度组内固定、固定成什么值。
+ *
+ * 两个层级的「固定」必须区分清楚，否则用户会以为填了值只有组内统一：
+ * - 维度点亮、值留空 → 模型为**每组**单独定一套，组内共用、组间有区别；
+ * - 维度点亮、值填了 → 该值**所有组**逐字一致（全局硬锁），组间差异只能由其它未锁定维度承担。
+ */
 export interface SeriesConsistencyValue {
   /** 组内固定维度；维度库里的其余维度每张变化。 */
   fixedDimensions: string[]
-  /** 固定维度上用户填的具体值，留空表示交给模型补全。 */
+  /** 固定维度上用户填的具体值：填了就是全局锁定，留空表示交给模型按组补全。 */
   fixedValues: Record<string, string>
 }
 
@@ -76,8 +82,8 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
         onClick={() => setOpen((current) => !current)}
         disabled={disabled}
         aria-expanded={open}
-        aria-label={`系列一致性：${fixedCount} 项组内固定，其余每张变化`}
-        title="设置哪些维度在一组内保持一致、哪些每张变化"
+        aria-label={`系列一致性：${fixedCount} 项组内固定，其中 ${lockedCount} 项所有组统一，其余每张变化`}
+        title="设置哪些维度在一组内保持一致、哪些每张变化；给固定维度填上值则所有组都一致"
         className={cx(
           'flex h-ds-control-md items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-[background-color,border-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-focus disabled:cursor-not-allowed disabled:opacity-50',
           fixedCount > 0
@@ -124,6 +130,7 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
           </div>
 
           <p className="mt-1.5 text-xs leading-4 text-ds-muted">点亮＝一组内一致，灰色＝每张不同。</p>
+          <p className="mt-1 text-xs leading-4 text-ds-muted">给点亮项填上值＝所有组一致（全局锁定）。</p>
 
           <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="系列一致性维度">
             {SOP_SERIES_DIMENSIONS.map((dimension) => {
@@ -134,7 +141,9 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
                   type="button"
                   role="switch"
                   aria-checked={fixed}
-                  aria-label={`${dimension}${fixed ? '组内固定' : '每张变化'}`}
+                  aria-label={`${dimension}${
+                    fixed ? (value.fixedValues[dimension]?.trim() ? '所有组统一' : '组内固定') : '每张变化'
+                  }`}
                   onClick={() => toggleDimension(dimension)}
                   className={cx(
                     'h-ds-control-sm rounded-ds-md border px-2 text-xs transition-[background-color,border-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ds-focus',
@@ -152,7 +161,7 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
           {fixedCount > 0 ? (
             <>
               <div className="my-2.5 border-t border-ds-border" />
-              <p className="mb-1.5 text-xs text-ds-muted">固定成什么（留空＝模型决定）</p>
+              <p className="mb-1.5 text-xs text-ds-muted">固定成什么（留空＝每组自己定，组间有区别）</p>
               <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
                 {value.fixedDimensions.map((dimension) => (
                   <label
@@ -176,10 +185,13 @@ export default function SeriesConsistencyControl({ value, onChange, disabled }: 
                 ))}
               </div>
               {lockedCount > 0 && (
-                <p className="mt-2 text-xs leading-4 text-ds-muted">填了值的固定项会逐字写进提示词，模型不会改写。</p>
+                <p className="mt-2 text-xs leading-4 text-ds-muted">填了值的固定项逐字写进每一组，模型不会改写。</p>
               )}
               {copyFixed && (
-                <p className="mt-1.5 text-xs leading-4 text-ds-muted">固定的文案会逐字画在图上，一组内每张都一样。</p>
+                <>
+                  <p className="mt-1.5 text-xs leading-4 text-ds-muted">固定的文案会逐字画在图上，一组内每张都一样。</p>
+                  <p className="mt-1 text-xs leading-4 text-ds-muted">给文案填上值＝所有组共用同一句。</p>
+                </>
               )}
             </>
           ) : (
