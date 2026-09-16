@@ -188,3 +188,76 @@ describe('AssetCardMenu batch actions (Eagle-style selection)', () => {
     await act(async () => renderer!.unmount())
   })
 })
+
+describe('AssetCardMenu action scope (图片模式单选 / 多选)', () => {
+  const countButton = (root: ReactTestRenderer['root'], text: string) =>
+    root.findAll((node) => node.type === 'button' && nodeText(node).includes(text)).length
+
+  it('多选时隐藏只作用于单张的操作，只留可批量的操作', async () => {
+    let renderer: ReactTestRenderer
+    await act(async () => {
+      renderer = create(
+        <AssetCardMenu
+          x={0}
+          y={0}
+          asset={makeAsset('a')}
+          assetIds={['a', 'b']}
+          actionScope="multi"
+          onClose={vi.fn()}
+        />,
+      )
+    })
+
+    const root = renderer!.root
+    // 单张专属：查看大图 / 找相似 / 复制图片 / 复用提示词 / 打开文件位置 —— 多选时整组隐藏，
+    // 否则会出现「选了 5 张，点下去只作用 1 张」的误导
+    expect(countButton(root, '查看大图')).toBe(0)
+    expect(countButton(root, '找相似图片')).toBe(0)
+    expect(countButton(root, '复制图片')).toBe(0)
+    expect(countButton(root, '复用提示词与参数')).toBe(0)
+    expect(countButton(root, '打开文件位置')).toBe(0)
+    // 可批量的操作保留，并带上张数
+    expect(countButton(root, '已选 2 张素材')).toBe(1)
+    expect(countButton(root, '收藏（2 张）')).toBe(1)
+    expect(countButton(root, '添加到项目（2 张）')).toBe(1)
+    expect(countButton(root, '发送到后期处理（2 张）')).toBe(1)
+    expect(countButton(root, '导出原图（2 张）')).toBe(1)
+    expect(countButton(root, '移入回收站（2 张）')).toBe(1)
+
+    await act(async () => renderer!.unmount())
+  })
+
+  it('单选时展示全部单张操作，且不出现批量标题', async () => {
+    let renderer: ReactTestRenderer
+    await act(async () => {
+      renderer = create(
+        <AssetCardMenu x={0} y={0} asset={makeAsset('a')} assetIds={['a']} actionScope="single" onClose={vi.fn()} />,
+      )
+    })
+
+    const root = renderer!.root
+    expect(countButton(root, '查看大图')).toBe(1)
+    expect(countButton(root, '找相似图片')).toBe(1)
+    expect(countButton(root, '复制图片')).toBe(1)
+    expect(countButton(root, '复用提示词与参数')).toBe(1)
+    expect(countButton(root, '打开文件位置')).toBe(1)
+    expect(countButton(root, '收藏')).toBe(1)
+    expect(countButton(root, '已选')).toBe(0)
+
+    await act(async () => renderer!.unmount())
+  })
+
+  it('未传 actionScope 时保持全量菜单（分组视图任务卡片整卡批量仍要单张入口）', async () => {
+    let renderer: ReactTestRenderer
+    await act(async () => {
+      renderer = create(<AssetCardMenu x={0} y={0} asset={makeAsset('a')} assetIds={['a', 'b']} onClose={vi.fn()} />)
+    })
+
+    const root = renderer!.root
+    expect(countButton(root, '查看大图')).toBe(1)
+    expect(countButton(root, '打开文件位置')).toBe(1)
+    expect(countButton(root, '收藏（2 张）')).toBe(1)
+
+    await act(async () => renderer!.unmount())
+  })
+})

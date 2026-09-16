@@ -45,6 +45,7 @@ import AssetTile, { type TileSelectMode } from './AssetTile'
 import AssetCardMenu from './AssetCardMenu'
 import { AssetListRow } from './AssetListView'
 import { getAssetGridColumns } from './AssetGrid'
+import { resolveAssetContextMenuScope, type AssetMenuActionScope } from './assetContextMenuTarget'
 import { useDragSelect, getMarqueeBoxStyle } from '../../hooks/useDragSelect'
 
 /** 任务卡片固定行高（与旧画廊 TASK_CARD_ROW_HEIGHT 一致）；卡片高度固定保证虚拟化布局确定性 */
@@ -405,7 +406,13 @@ function AssetGroupedView({
   const [snapshots, setSnapshots] = useState<ReadonlyMap<string, SopBatchSnapshot>>(new Map())
   const [layoutWidth, setLayoutWidth] = useState(0)
   const [viewport, setViewport] = useState({ top: 0, height: 800 })
-  const [menu, setMenu] = useState<{ x: number; y: number; asset: GeneratedAsset; assetIds?: string[] } | null>(null)
+  const [menu, setMenu] = useState<{
+    x: number
+    y: number
+    asset: GeneratedAsset
+    assetIds?: string[]
+    actionScope?: AssetMenuActionScope
+  } | null>(null)
   const [highlightGroupId, setHighlightGroupId] = useState<string | null>(null)
   const [batchDetailGroup, setBatchDetailGroup] = useState<AssetBatchGroup | null>(null)
   // 图片砖·列表行形式的组头参数摘要需要实时耗时（运行中的任务每秒刷新一次）
@@ -855,14 +862,9 @@ function AssetGroupedView({
   /** 图片砖·列表行形式的单张图片砖右键：Eagle 式（未选中 → 以该砖为唯一选中；已选中 → 作用于选区） */
   const handleTileMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, asset: GeneratedAsset) => {
     const selection = useAssetLibraryStore.getState().selectedAssetIds
-    const included = selection.includes(asset.id)
-    if (!included) useAssetLibraryStore.getState().replaceSelection([asset.id])
-    setMenu({
-      x: event.clientX,
-      y: event.clientY,
-      asset,
-      assetIds: included && selection.length > 1 ? selection : [asset.id],
-    })
+    const target = resolveAssetContextMenuScope(selection, asset.id)
+    if (!selection.includes(asset.id)) useAssetLibraryStore.getState().replaceSelection([asset.id])
+    setMenu({ x: event.clientX, y: event.clientY, asset, assetIds: target.assetIds, actionScope: target.actionScope })
   }, [])
 
   /**
@@ -889,7 +891,8 @@ function AssetGroupedView({
       const included = groupIds.some((id) => selection.includes(id))
       if (!included) useAssetLibraryStore.getState().replaceSelection(groupIds)
       const assetIds = included && selection.length > 0 ? Array.from(new Set([...selection, ...groupIds])) : groupIds
-      setMenu({ x: event.clientX, y: event.clientY, asset: first, assetIds })
+      // 'full'：整卡多图按批量口径出菜单，但保留单张入口（查看大图 / 打开文件位置以首张为入口）
+      setMenu({ x: event.clientX, y: event.clientY, asset: first, assetIds, actionScope: 'full' })
     },
     [handleTileMenu],
   )
@@ -1254,6 +1257,7 @@ function AssetGroupedView({
           y={menu.y}
           asset={menu.asset}
           assetIds={menu.assetIds}
+          actionScope={menu.actionScope}
           assetIdList={assets.map((asset) => asset.id)}
           onPurgeRequest={onPurgeRequest}
           onFindSimilar={onFindSimilar}

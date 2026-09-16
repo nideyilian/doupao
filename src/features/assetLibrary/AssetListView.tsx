@@ -14,6 +14,7 @@ import AssetCardMenu from './AssetCardMenu'
 import { getColorLabelHex } from './colorLabels'
 import { useDragSelect, getMarqueeBoxStyle } from '../../hooks/useDragSelect'
 import { startAssetDrag, type TileSelectMode } from './AssetTile'
+import { resolveAssetContextMenuScope, type AssetMenuActionScope } from './assetContextMenuTarget'
 
 const ROW_HEIGHT = 64
 const OVERSCAN_ROWS = 8
@@ -163,7 +164,13 @@ function AssetListView({
   const suppressClickUntilRef = useRef(0)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
-  const [menu, setMenu] = useState<{ x: number; y: number; asset: GeneratedAsset; assetIds?: string[] } | null>(null)
+  const [menu, setMenu] = useState<{
+    x: number
+    y: number
+    asset: GeneratedAsset
+    assetIds?: string[]
+    actionScope?: AssetMenuActionScope
+  } | null>(null)
 
   const selected = useMemo(() => new Set(selectedAssetIds), [selectedAssetIds])
 
@@ -218,14 +225,9 @@ function AssetListView({
   const handleOpenMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, asset: GeneratedAsset) => {
     // Eagle 式：右键未选中的卡片 → 以该卡片为唯一选中；右键选中的卡片 → 菜单作用于整个选区
     const selection = useAssetLibraryStore.getState().selectedAssetIds
-    const included = selection.includes(asset.id)
-    if (!included) useAssetLibraryStore.getState().replaceSelection([asset.id])
-    setMenu({
-      x: event.clientX,
-      y: event.clientY,
-      asset,
-      assetIds: included && selection.length > 1 ? selection : [asset.id],
-    })
+    const target = resolveAssetContextMenuScope(selection, asset.id)
+    if (!selection.includes(asset.id)) useAssetLibraryStore.getState().replaceSelection([asset.id])
+    setMenu({ x: event.clientX, y: event.clientY, asset, assetIds: target.assetIds, actionScope: target.actionScope })
   }, [])
 
   const handleRowKeyDown = useCallback(
@@ -390,6 +392,7 @@ function AssetListView({
           y={menu.y}
           asset={menu.asset}
           assetIds={menu.assetIds}
+          actionScope={menu.actionScope}
           assetIdList={assets.map((asset) => asset.id)}
           onPurgeRequest={onPurgeRequest}
           onFindSimilar={onFindSimilar}

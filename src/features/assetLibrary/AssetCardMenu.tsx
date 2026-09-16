@@ -19,6 +19,7 @@ import { downloadImageEntries } from '../../lib/downloadImages'
 import { isCollectionTrashed } from '../../lib/assetLibraryModel'
 import { buildCollectionTree } from './AssetLibrarySidebar'
 import type { CollectionTreeNode } from '../../lib/assetSidebarUtils'
+import type { AssetMenuActionScope } from './assetContextMenuTarget'
 import { useAssetLibraryStore } from './store'
 
 export interface AssetCardMenuProps {
@@ -28,6 +29,16 @@ export interface AssetCardMenuProps {
   asset: GeneratedAsset
   /** 批量操作目标：右键命中素材在选区内时 = 全部选中素材；否则 = 仅该素材 */
   assetIds?: string[]
+  /**
+   * 菜单展示哪一套操作：
+   * - `'single'`：只作用于右键命中的那一张，展示全部单张操作（图片模式单选）；
+   * - `'multi'`：作用于整个多选选区，隐藏单张专属操作（查看大图 / 找相似图片 / 复制图片 /
+   *   复用提示词与参数 / 打开文件位置），避免「多选了却只作用一张」的误导（图片模式多选）；
+   * - `'full'`：批量口径但保留单张入口（分组视图任务卡片整卡右键 —— 整卡多图是「一次生成的
+   *   一组结果」，看大图 / 打开位置仍需以首张为入口）；
+   * - 省略：按 `assetIds` 长度推断（等价于 `'full'`，保持历史行为）。
+   */
+  actionScope?: AssetMenuActionScope
   /** 当前查询结果中的素材 id 列表，用于查看器前后浏览 */
   assetIdList?: string[]
   /** 请求打开永久删除确认弹窗（展示引用冲突） */
@@ -40,6 +51,7 @@ export interface AssetCardMenuProps {
 type MenuView = 'main' | 'collections'
 
 function AssetCardMenuInner({
+  actionScope,
   asset,
   assetIds = [],
   assetIdList = [],
@@ -77,9 +89,13 @@ function AssetCardMenuInner({
     [collections],
   )
 
-  // 批量操作目标：右键命中的素材在选区内 → 整个选区；否则仅该素材（Eagle 式）
+  // 批量操作目标：右键命中的素材在选区内 → 整个选区；否则仅该素材（Eagle 式）。
   const targetIds = assetIds.length > 0 ? assetIds : [asset.id]
-  const multi = targetIds.length > 1
+  // 多张口径（张数标签 + 「已选 N 张素材」标题）：图片模式由 actionScope 显式给出；
+  // 分组视图任务卡片整卡右键（'full' / 未传）按目标数量推断。
+  const multi = actionScope === 'single' ? false : actionScope === 'multi' ? true : targetIds.length > 1
+  // 单张专属操作只在「明确的多选菜单」里隐藏，分组视图整卡批量仍保留单张入口。
+  const showSingleActions = actionScope !== 'multi'
   const targetAssets = targetIds.map((id) => assetsById[id]).filter((item): item is GeneratedAsset => item != null)
   const allFavorite = targetAssets.length > 0 && targetAssets.every((item) => item.favorite)
 
@@ -251,7 +267,7 @@ function AssetCardMenuInner({
           {renderCollectionNodes(collectionTree, 0)}
         </Menu>
       ) : (
-        <Menu label={`素材操作：${asset.id}`}>
+        <Menu label={multi ? `批量素材操作：已选 ${targetIds.length} 张` : `素材操作：${asset.id}`}>
           {multi && (
             <>
               <MenuItem disabled>
@@ -260,21 +276,27 @@ function AssetCardMenuInner({
               <MenuSeparator />
             </>
           )}
-          <MenuItem onClick={openLightbox} icon={<EyeIcon size={14} />}>
-            查看大图
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              onClose()
-              onFindSimilar?.(asset.id)
-            }}
-            icon={<Wand2Icon size={14} />}
-          >
-            找相似图片
-          </MenuItem>
-          <MenuItem onClick={() => void copyImage()} icon={<CopyIcon size={14} />}>
-            复制图片
-          </MenuItem>
+          {/* 以下三项只作用于右键命中的那一张：多选（actionScope='multi'）时整组隐藏，
+              避免「选了一堆却只操作一张」 */}
+          {showSingleActions && (
+            <>
+              <MenuItem onClick={openLightbox} icon={<EyeIcon size={14} />}>
+                查看大图
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  onClose()
+                  onFindSimilar?.(asset.id)
+                }}
+                icon={<Wand2Icon size={14} />}
+              >
+                找相似图片
+              </MenuItem>
+              <MenuItem onClick={() => void copyImage()} icon={<CopyIcon size={14} />}>
+                复制图片
+              </MenuItem>
+            </>
+          )}
           <MenuItem onClick={toggleFavorite} icon={<StarIcon size={14} fill={allFavorite ? 'currentColor' : 'none'} />}>
             {multi
               ? allFavorite
@@ -298,21 +320,26 @@ function AssetCardMenuInner({
           >
             发送到后期处理{batchLabel}
           </MenuItem>
-          <MenuItem
-            onClick={() => {
-              void assetCommands.reuseGenerationConfig(asset.id)
-              onClose()
-            }}
-            icon={<Wand2Icon size={14} />}
-          >
-            复用提示词与参数
-          </MenuItem>
+          {/* 复用提示词与参数、打开文件位置都只能定位到单张，多选时一并隐藏 */}
+          {showSingleActions && (
+            <MenuItem
+              onClick={() => {
+                void assetCommands.reuseGenerationConfig(asset.id)
+                onClose()
+              }}
+              icon={<Wand2Icon size={14} />}
+            >
+              复用提示词与参数
+            </MenuItem>
+          )}
           <MenuItem onClick={downloadAll} icon={<DownloadIcon size={14} />}>
             导出原图{batchLabel}
           </MenuItem>
-          <MenuItem onClick={() => void revealInExplorer()} icon={<FolderOpenIcon size={14} />}>
-            打开文件位置
-          </MenuItem>
+          {showSingleActions && (
+            <MenuItem onClick={() => void revealInExplorer()} icon={<FolderOpenIcon size={14} />}>
+              打开文件位置
+            </MenuItem>
+          )}
           <MenuSeparator />
           {asset.status === 'trashed' ? (
             <>

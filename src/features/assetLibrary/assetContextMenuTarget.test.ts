@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import type { GeneratedAsset } from '../../types'
-import { findCardImageAsset } from './assetContextMenuTarget'
+import { findCardImageAsset, resolveAssetContextMenuScope } from './assetContextMenuTarget'
 
 function makeAsset(id: string, imageId: string): GeneratedAsset {
   return {
@@ -74,5 +74,30 @@ describe('findCardImageAsset', () => {
   it('卡片没有素材时返回 undefined', () => {
     const { img } = mountCardImage('img-1')
     expect(findCardImageAsset(img, [])).toBeUndefined()
+  })
+})
+
+describe('resolveAssetContextMenuScope', () => {
+  it('右键未选中的图片 → 只操作这一张（单选菜单）', () => {
+    expect(resolveAssetContextMenuScope(['a2', 'a3'], 'a1')).toEqual({ assetIds: ['a1'], actionScope: 'single' })
+  })
+
+  it('右键已选中的图片且选区不止一张 → 操作整个选区（多选菜单）', () => {
+    expect(resolveAssetContextMenuScope(['a1', 'a2', 'a3'], 'a2')).toEqual({
+      assetIds: ['a1', 'a2', 'a3'],
+      actionScope: 'multi',
+    })
+  })
+
+  it('右键已选中的图片但选区只有一张 → 仍是单选菜单', () => {
+    expect(resolveAssetContextMenuScope(['a1'], 'a1')).toEqual({ assetIds: ['a1'], actionScope: 'single' })
+  })
+
+  it('没有任何选中时按单选处理', () => {
+    expect(resolveAssetContextMenuScope([], 'a1')).toEqual({ assetIds: ['a1'], actionScope: 'single' })
+  })
+
+  it('选区里混有不在当前结果中的 id 时原样带出，交给菜单按 assetsById 过滤', () => {
+    expect(resolveAssetContextMenuScope(['a1', 'gone'], 'a1').assetIds).toEqual(['a1', 'gone'])
   })
 })
