@@ -3,6 +3,7 @@ import { hydrateDesktopApiSecrets, initStore, exportDataToPath, removeDeletedLoc
 import { useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
 import { mergeImportedSettings } from './lib/apiProfiles'
+import { applyWorkspaceEdit, readWorkspaceState } from './lib/externalWorkspaceCommand'
 import { getCustomProviderConfigUrl, loadCustomProviderSettingsFromUrl } from './lib/customProviderConfigUrl'
 import {
   isElectron as isElectronEnv,
@@ -203,34 +204,11 @@ export default function App() {
             const count = await useAssetLibraryStore.getState().importExternalPaths(command.paths ?? [])
             return { imported: count }
           }
-          case 'getAppState': {
-            const state = useStore.getState()
-            return {
-              appMode: state.appMode,
-              activeTabId: state.activeWorkspaceTabId,
-              tabs: state.workspaceTabs.map((tab) => ({
-                id: tab.id,
-                name: tab.name,
-                prompt: tab.prompt,
-                params: tab.params,
-                taskCount: tab.tasks.length,
-              })),
-            }
-          }
+          case 'getAppState':
+            return readWorkspaceState(() => useStore.getState())
           case 'setPrompt':
-          case 'setParams': {
-            // 写入作用于「当前活动标签页」：带 tabId 时先切过去，让用户看得见改动落在哪一页。
-            const before = useStore.getState()
-            if (command.tabId && command.tabId !== before.activeWorkspaceTabId) {
-              if (!before.workspaceTabs.some((tab) => tab.id === command.tabId)) throw new Error('tab not found')
-              before.setActiveWorkspaceTabId(command.tabId)
-            }
-            const target = useStore.getState()
-            if (command.action === 'setPrompt') target.setPrompt(command.prompt ?? '')
-            else target.setParams(command.params ?? {})
-            const after = useStore.getState()
-            return { activeTabId: after.activeWorkspaceTabId, prompt: after.prompt, params: after.params }
-          }
+          case 'setParams':
+            return applyWorkspaceEdit(command, () => useStore.getState())
           default:
             throw new Error('unsupported external asset command')
         }

@@ -1013,7 +1013,9 @@ npx tsc --noEmit
   `getAppState` 返回 appMode、活动标签页 id 与每个标签页的 prompt/params/taskCount；`setPrompt`/`setParams`
   写入活动标签页（可选 `tabId` 先切页，让用户看得见改动落在哪一页），`params` 只接受 `DEFAULT_PARAMS` 里已有的键。
   命令契约定义在 `src/types.ts`（单一事实来源），主进程 API server、MCP 与渲染进程 IPC 桥同源引用，
-  避免各处手写镜像类型漂移。渲染端分发在 `src/App.tsx` 的 `onExternalAssetCommand` 回调里，回执携带真实 payload
+  避免各处手写镜像类型漂移。渲染端分发在 `src/App.tsx` 的 `onExternalAssetCommand` 回调里，
+  应用级读写抽到 `src/lib/externalWorkspaceCommand.ts`（`readWorkspaceState` / `applyWorkspaceEdit`，
+  注入最小 `WorkspaceAccess` 接口以便单测）；回执携带真实 payload
   （不再只回 `{ success }`，否则 agent 拿不到 collectionId / 应用状态）。
 - **MCP**（`electron/asset-mcp.ts`）：`run_asset_command` 工具枚举同步扩展（组织/导入命令 + 可选参数 name/parentId/color/paths
   - 应用级 setPrompt/setParams + tabId），并新增只读工具 `get_app_state`。
