@@ -52,23 +52,104 @@ jobs:
       # latest.yml 是 electron-updater 判断「有没有新版本」的唯一入口，缺了它所有存量用户
       # 都收不到更新，而构建本身仍然显示 success（v0.8.15 就是这么坏的：自动更新与安装包
       # 下载同时失效）。这里做一次端到端校验，让坏发布直接失败而不是静默通过。
+      #
+      # 校验分两层，避开一个已经踩到的坑：
+      # 1) **附件层（权威）**：走 GitHub API 列 Release 附件，要求 latest.yml / 安装包 /
+      #    blockmap 都存在且大小与 latest.yml 记录一致。这一步不依赖 downloads 域。
+      # 2) **下载层（补充）**：尝试真实 URL 下载并解析 latest.yml，确认公开下载链路可用。
+      #
+      # ⚠️ 不要再把「下载层」当唯一判据：`releases/download/...` 会 302 到
+      # objects.githubusercontent.com，资产以 application/octet-stream 下发，PowerShell 7 的
+      # `Invoke-WebRequest.Content` 在该组合下会拿到空串（v0.8.17 首发即因此误报失败，而实际
+      # latest.yml 完好、auto-update 正常）。所以解析正文一律走 `RawContentStream`，
+      # 且第 2 层失败时只要第 1 层通过就仍判成功，只在两层都失败时才报错。
       - name: Verify release assets are downloadable
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $ErrorActionPreference = 'Stop'
           $tag = "${{ github.ref_name }}"
-          if (-not $tag.StartsWith('v')) { $tag = 'v' + (node -p "require('./package.json').version") }
-          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/latest.yml"
+          $version = node -p "require('./package.json').version"
+          if (-not $tag.StartsWith('v')) { $tag = 'v' + $version }
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag"
+          $apiBase = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag"
+
+          $apiHeaders = @{
+            Authorization          = "Bearer $env:GH_TOKEN"
+            Accept                 = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+
+          # ── 第 1 层：附件必须齐全（走 API，结果权威） ─────────────────────────
+          $release = $null
           for ($i = 1; $i -le 5; $i++) {
             try {
-              $r = Invoke-WebRequest -Uri $url -UseBasicParsing -ErrorAction Stop
-              if ($r.StatusCode -eq 200 -and $r.Content -match 'version:') {
-                Write-Host "OK: $url"
-                exit 0
-              }
-              Write-Host "unexpected content on attempt ${i}"
+              $release = Invoke-RestMethod -Uri $apiBase -Headers $apiHeaders -ErrorAction Stop
+              break
             } catch {
-              Write-Host "attempt ${i} failed: $($_.Exception.Message)"
+              Write-Host "列举 Release 附件失败（第 ${i} 次）：$($_.Exception.Message)"
+              Start-Sleep -Seconds 10
+            }
+          }
+          if (-not $release) { throw "无法读取 Release $tag 的附件列表：$apiBase" }
+
+          $assets = @{}
+          foreach ($a in $release.assets) { $assets[$a.name] = $a }
+
+          $required = @(
+            'latest.yml',
+            "DOUPAO-V2-Setup-$version.exe",
+            "DOUPAO-V2-Setup-$version.exe.blockmap",
+            "DOUPAO-V2-$version.exe"
+          )
+          foreach ($name in $required) {
+            if (-not $assets.ContainsKey($name)) { throw "Release $tag 缺少附件：$name" }
+            if ($assets[$name].state -ne 'uploaded') { throw "附件 $name 状态异常：$($assets[$name].state)" }
+          }
+
+          # ── 第 2 层：解析 latest.yml 正文，校验版本与安装包大小一致 ──────────────
+          $ymlText = $null
+          for ($i = 1; $i -le 3; $i++) {
+            try {
+              $resp = Invoke-WebRequest -Uri "$base/latest.yml" -UseBasicParsing -ErrorAction Stop
+              if ($resp.StatusCode -ne 200) { throw "HTTP $($resp.StatusCode)" }
+              # 关键：不要用 .Content（见上方注释），从字节流解码
+              if ($resp.RawContentStream -and $resp.RawContentStream.Length -gt 0) {
+                $bytes = $resp.RawContentStream.ToArray()
+                $ymlText = [System.Text.Encoding]::UTF8.GetString($bytes)
+              } elseif ($resp.Content -is [string] -and $resp.Content.Length -gt 0) {
+                $ymlText = $resp.Content
+              }
+              if ($ymlText) { break }
+              Write-Host "latest.yml 正文为空（第 ${i} 次）"
+            } catch {
+              Write-Host "下载 latest.yml 失败（第 ${i} 次）：$($_.Exception.Message)"
             }
             Start-Sleep -Seconds 10
           }
-          throw "latest.yml 无法下载，发布不完整（安装包与自动更新均会失效）：$url"
+
+          if ($ymlText) {
+            if ($ymlText -notmatch 'version:') { throw "latest.yml 缺少 version 字段：$base/latest.yml" }
+            if ($ymlText -notmatch 'sha512:') { throw "latest.yml 缺少 sha512 字段：$base/latest.yml" }
+            if ($ymlText -notmatch [regex]::Escape($version)) {
+              throw "latest.yml 版本与 package.json 不一致（期望 $version）：$base/latest.yml"
+            }
+            $match = [regex]::Match($ymlText, 'size:\s*(\d+)')
+            if ($match.Success) {
+              $ymlSize = [int64]$match.Groups[1].Value
+              $assetSize = [int64]$assets["DOUPAO-V2-Setup-$version.exe"].size
+              if ($ymlSize -ne $assetSize) {
+                throw "安装包大小与 latest.yml 不一致（yml=$ymlSize 附件=$assetSize）"
+              }
+            }
+            Write-Host "OK：附件齐全 + latest.yml 正文与下载链路校验通过（version=$version）"
+            exit 0
+          }
+
+          # 第 2 层拿不到正文时，只要第 1 层通过就仍判成功——公开下载域偶发不可达不应阻断发布
+          Write-Host "警告：latest.yml 公开下载校验未取到正文，但附件齐全且状态正常，判定发布有效。"
+          Write-Host "      若需人工复核请访问：$base/latest.yml"
+          foreach ($name in $required) {
+            Write-Host ("  {0}  {1} bytes  state={2}" -f $name, $assets[$name].size, $assets[$name].state)
+          }
