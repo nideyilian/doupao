@@ -26,6 +26,7 @@ import {
 } from './localSave'
 import type { MigrationJournal } from './migrations/registry'
 import { computeContentHash } from './imageFingerprint'
+import { blobToDataUrl, dataUrlToBlob } from './blobDataUrl'
 
 const DB_NAME = 'gpt-image-playground'
 const DB_VERSION = 15
@@ -251,6 +252,21 @@ function readLegacyCursorStore<T>(storeName: string): Promise<T[]> {
   )
 }
 
+/**
+ * 迁移专用：把 IndexedDB 里的复合资源转成可 JSON 落库的形态后再交给主进程。
+ * 直接把 Blob 传过去会被主进程的 JSON.stringify 变成 {}，字节永久丢失。
+ * 已损坏（blob 不是 Blob 且没有 data URL）的记录跳过，不再写入空壳。
+ */
+async function readLegacyCompositeAssetsForMigration(): Promise<PersistedCompositeAsset[]> {
+  const values = await dbTransaction<unknown[]>(STORE_COMPOSITE_ASSETS, 'readonly', (store) => store.getAll())
+  const records: PersistedCompositeAsset[] = []
+  for (const value of values) {
+    const asset = fromPersistedCompositeAsset(value)
+    if (asset) records.push(await toPersistedCompositeAsset(asset))
+  }
+  return records
+}
+
 async function migrateLegacyIndexedDbToSqlite(api: ElectronAppDataApi) {
   const migrated = await api.appDataGet(STORE_META, APP_DATA_MIGRATION_ID)
   if (migrated) return
@@ -267,9 +283,7 @@ async function migrateLegacyIndexedDbToSqlite(api: ElectronAppDataApi) {
     [STORE_WORD_LIBRARY]: await dbTransaction<StoredWordLibraryState[]>(STORE_WORD_LIBRARY, 'readonly', (store) =>
       store.getAll(),
     ),
-    [STORE_COMPOSITE_ASSETS]: await dbTransaction<StoredCompositeAsset[]>(STORE_COMPOSITE_ASSETS, 'readonly', (store) =>
-      store.getAll(),
-    ),
+    [STORE_COMPOSITE_ASSETS]: await readLegacyCompositeAssetsForMigration(),
     [STORE_META]: await dbTransaction<MigrationJournal[]>(STORE_META, 'readonly', (store) => store.getAll()),
     [STORE_SOP_BATCH_SNAPSHOTS]: await dbTransaction<SopBatchSnapshot[]>(
       STORE_SOP_BATCH_SNAPSHOTS,
@@ -612,16 +626,69 @@ export function putWordLibraryState(state: Omit<StoredWordLibraryState, 'id' | '
 
 // ===== Composite assets =====
 
+/**
+ * 复合资源（后期处理的预设图层 / Logo）的字节以 base64 data URL 落库。
+ *
+ * 为什么不能直接存 Blob：Electron 端的应用数据存储是 SQLite + 主进程 `JSON.stringify`
+ * （electron/app-data-store.ts），`Blob` 会被序列化成 `{}`，字节与 MIME 全部丢失，
+ * 读回后交给 `URL.createObjectURL` 就抛 "Overload resolution failed"。
+ * 存储格式固定为 `{ id, createdAt, blobDataUrl }`（与 thumbnails 命名空间同一套路）。
+ */
+type PersistedCompositeAsset = {
+  id: string
+  createdAt: number
+  blobDataUrl: string
+}
+
+async function toPersistedCompositeAsset(asset: StoredCompositeAsset): Promise<PersistedCompositeAsset> {
+  return { id: asset.id, createdAt: asset.createdAt, blobDataUrl: await blobToDataUrl(asset.blob) }
+}
+
+/**
+ * 还原复合资源；无法还原时返回 undefined，由调用方按「资源缺失」处理。
+ *
+ * 兼容三种历史形态：data URL（当前）、真实 Blob（浏览器 IndexedDB 直存）、
+ * 以及被 JSON 序列化破坏的 `blob: {}`——后者字节已不可恢复，但绝不能再传给 createObjectURL。
+ */
+function fromPersistedCompositeAsset(value: unknown): StoredCompositeAsset | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as { id?: unknown; createdAt?: unknown; blob?: unknown; blobDataUrl?: unknown }
+  if (typeof record.id !== 'string') return undefined
+  const createdAt = typeof record.createdAt === 'number' ? record.createdAt : 0
+  if (typeof record.blobDataUrl === 'string') {
+    try {
+      return { id: record.id, blob: dataUrlToBlob(record.blobDataUrl), createdAt }
+    } catch {
+      return undefined
+    }
+  }
+  if (record.blob instanceof Blob) return { id: record.id, blob: record.blob, createdAt }
+  return undefined
+}
+
+function toCompositeAssetMap(records: Map<string, unknown>): Map<string, StoredCompositeAsset> {
+  const result = new Map<string, StoredCompositeAsset>()
+  for (const [id, value] of records) {
+    const asset = fromPersistedCompositeAsset(value)
+    if (asset) result.set(id, asset)
+  }
+  return result
+}
+
 export function getCompositeAsset(id: string): Promise<StoredCompositeAsset | undefined> {
-  const electron = readElectronRecord<StoredCompositeAsset>(STORE_COMPOSITE_ASSETS, id)
-  if (electron) return electron
-  return dbTransaction(STORE_COMPOSITE_ASSETS, 'readonly', (s) => s.get(id))
+  const electron = readElectronRecord<unknown>(STORE_COMPOSITE_ASSETS, id)
+  if (electron) return electron.then((value) => fromPersistedCompositeAsset(value))
+  return dbTransaction<unknown>(STORE_COMPOSITE_ASSETS, 'readonly', (s) => s.get(id)).then((value) =>
+    fromPersistedCompositeAsset(value),
+  )
 }
 
 export function putCompositeAsset(asset: StoredCompositeAsset): Promise<IDBValidKey> {
-  const electron = writeElectronRecord(STORE_COMPOSITE_ASSETS, asset.id, asset)
-  if (electron) return electron
-  return dbTransaction(STORE_COMPOSITE_ASSETS, 'readwrite', (s) => s.put(asset))
+  return toPersistedCompositeAsset(asset).then((record) => {
+    const electron = writeElectronRecord(STORE_COMPOSITE_ASSETS, record.id, record)
+    if (electron) return electron
+    return dbTransaction<IDBValidKey>(STORE_COMPOSITE_ASSETS, 'readwrite', (s) => s.put(record))
+  })
 }
 
 export function deleteCompositeAsset(id: string): Promise<undefined> {
@@ -632,8 +699,8 @@ export function deleteCompositeAsset(id: string): Promise<undefined> {
 
 export function batchGetCompositeAssets(ids: string[]): Promise<Map<string, StoredCompositeAsset>> {
   if (ids.length === 0) return Promise.resolve(new Map())
-  const electron = readManyElectronRecords<StoredCompositeAsset>(STORE_COMPOSITE_ASSETS, ids)
-  if (electron) return electron
+  const electron = readManyElectronRecords<unknown>(STORE_COMPOSITE_ASSETS, ids)
+  if (electron) return electron.then(toCompositeAssetMap)
   const uniqueIds = Array.from(new Set(ids))
   return openDB().then(
     (db) =>
@@ -644,7 +711,8 @@ export function batchGetCompositeAssets(ids: string[]): Promise<Map<string, Stor
         for (const id of uniqueIds) {
           const req = store.get(id)
           req.onsuccess = () => {
-            if (req.result) result.set(id, req.result as StoredCompositeAsset)
+            const asset = fromPersistedCompositeAsset(req.result)
+            if (asset) result.set(id, asset)
             if (--pending === 0) resolve(result)
           }
           req.onerror = () => reject(req.error)
@@ -655,19 +723,21 @@ export function batchGetCompositeAssets(ids: string[]): Promise<Map<string, Stor
 
 export function putCompositeAssets(assets: StoredCompositeAsset[]): Promise<void> {
   if (assets.length === 0) return Promise.resolve()
-  const electron = writeManyElectronRecords(STORE_COMPOSITE_ASSETS, assets)
-  if (electron) return electron
-  return openDB().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_COMPOSITE_ASSETS, 'readwrite')
-        const store = tx.objectStore(STORE_COMPOSITE_ASSETS)
-        for (const asset of assets) store.put(asset)
-        tx.oncomplete = () => resolve()
-        tx.onerror = () => reject(tx.error)
-        tx.onabort = () => reject(tx.error)
-      }),
-  )
+  return Promise.all(assets.map(toPersistedCompositeAsset)).then((records) => {
+    const electron = writeManyElectronRecords(STORE_COMPOSITE_ASSETS, records)
+    if (electron) return electron
+    return openDB().then(
+      (db) =>
+        new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_COMPOSITE_ASSETS, 'readwrite')
+          const store = tx.objectStore(STORE_COMPOSITE_ASSETS)
+          for (const record of records) store.put(record)
+          tx.oncomplete = () => resolve()
+          tx.onerror = () => reject(tx.error)
+          tx.onabort = () => reject(tx.error)
+        }),
+    )
+  })
 }
 
 // ===== Images =====

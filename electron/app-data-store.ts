@@ -234,7 +234,10 @@ export class AppDataStore {
   }
 
   private putWithinTransaction(namespace: string, record: AppDataRecord): void {
-    const json = JSON.stringify(record.value)
+    const json = JSON.stringify(record.value, (key, value) => {
+      assertJsonSerializable(namespace, record.id, value)
+      return value
+    })
     if (json === undefined) throw new Error(`无法序列化应用记录：${namespace}/${record.id}`)
     this.db
       .prepare(
@@ -257,4 +260,16 @@ function recordId(value: unknown): string | null {
   if (!value || typeof value !== 'object') return null
   const id = (value as { id?: unknown }).id
   return typeof id === 'string' && id.length > 0 ? id : null
+}
+
+/**
+ * JSON 存储承载不了二进制：Blob 会被 `JSON.stringify` 静默变成 `{}`，TypedArray 会变成
+ * `{"0":..,"1":..}`，字节全丢且读回时无从察觉（曾导致后期处理复合资源整批损坏、
+ * 读回后 createObjectURL 抛 "Overload resolution failed"）。这里宁可写入失败并报错，
+ * 也不允许静默丢数据——调用方必须先转成 base64 data URL 再落库。
+ */
+function assertJsonSerializable(namespace: string, id: string, value: unknown): void {
+  if (value instanceof Blob || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    throw new Error(`应用记录含二进制数据，无法写入 JSON 存储：${namespace}/${id}`)
+  }
 }

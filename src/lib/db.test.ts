@@ -341,6 +341,71 @@ describe('composite assets', () => {
     expect(transaction).toHaveBeenCalledWith('compositeAssets', 'readwrite')
     expect(put.mock.calls.map(([asset]) => asset.id)).toEqual(['asset-a', 'asset-b'])
   })
+
+  // 应用数据存储是 SQLite + JSON.stringify：Blob 会被序列化成 {}，字节永久丢失。
+  // 所以落库前必须转成 data URL，读回时再还原成 Blob。
+  it('persists composite asset bytes as a data URL instead of a Blob', async () => {
+    const put = vi.fn()
+    let complete: (() => void) | undefined
+    const tx = {
+      objectStore: () => ({ put }),
+      set oncomplete(value: (() => void) | null) {
+        complete = value ?? undefined
+        queueMicrotask(() => complete?.())
+      },
+      onerror: null,
+      onabort: null,
+    }
+    vi.stubGlobal('indexedDB', { open: () => requestWithResult({ transaction: () => tx }) })
+
+    await putCompositeAssets([{ id: 'asset-a', blob: new Blob(['a'], { type: 'image/png' }), createdAt: 7 }])
+
+    expect(put.mock.calls[0]![0]).toEqual({
+      id: 'asset-a',
+      createdAt: 7,
+      blobDataUrl: 'data:image/png;base64,YQ==',
+    })
+  })
+
+  it('restores composite asset bytes from a stored data URL', async () => {
+    const get = vi.fn(() =>
+      requestWithResult({ id: 'asset-a', createdAt: 1, blobDataUrl: 'data:image/png;base64,YQ==' }),
+    )
+    vi.stubGlobal('indexedDB', {
+      open: () => requestWithResult({ transaction: () => ({ objectStore: () => ({ get }) }) }),
+    })
+
+    const asset = await getCompositeAsset('asset-a')
+
+    expect(asset?.blob).toBeInstanceOf(Blob)
+    expect(asset?.blob.type).toBe('image/png')
+    expect(asset?.createdAt).toBe(1)
+    await expect(asset!.blob.text()).resolves.toBe('a')
+  })
+
+  it('treats a JSON-damaged composite asset record as missing', async () => {
+    const get = vi.fn(() => requestWithResult({ id: 'asset-a', createdAt: 1, blob: {} }))
+    vi.stubGlobal('indexedDB', {
+      open: () => requestWithResult({ transaction: () => ({ objectStore: () => ({ get }) }) }),
+    })
+
+    await expect(getCompositeAsset('asset-a')).resolves.toBeUndefined()
+  })
+
+  it('skips damaged composite assets when reading a batch', async () => {
+    const records = new Map([
+      ['asset-a', { id: 'asset-a', createdAt: 1, blobDataUrl: 'data:image/png;base64,YQ==' }],
+      ['asset-b', { id: 'asset-b', createdAt: 2, blob: {} }],
+    ])
+    const get = vi.fn((id: string) => requestWithResult(records.get(id)))
+    vi.stubGlobal('indexedDB', {
+      open: () => requestWithResult({ transaction: () => ({ objectStore: () => ({ get }) }) }),
+    })
+
+    const result = await batchGetCompositeAssets(['asset-a', 'asset-b'])
+
+    expect([...result.keys()]).toEqual(['asset-a'])
+  })
 })
 
 describe('generated asset library stores', () => {

@@ -2,6 +2,7 @@ import type { StoredCompositeAsset } from '../../../types'
 import { deleteCompositeAsset, getCompositeAsset, putCompositeAssets } from '../../../lib/db'
 import type { CompositeV2Preset, CompositeV2ProjectLogo } from './compositeV2Types'
 import { ByteLruCache } from '../../../lib/byteLruCache'
+import { dataUrlToBlob } from '../../../lib/blobDataUrl'
 
 type AssetState = {
   projectLogos: CompositeV2ProjectLogo[]
@@ -33,15 +34,7 @@ export async function hashCompositeBlob(blob: Blob): Promise<string> {
 }
 
 export async function dataUrlToCompositeBlob(dataUrl: string): Promise<Blob> {
-  const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/.exec(dataUrl)
-  if (!match) throw new Error('Invalid composite asset data URL')
-  const mime = match[1] || 'application/octet-stream'
-  const isBase64 = dataUrl.slice(0, dataUrl.indexOf(',')).includes(';base64')
-  if (!isBase64) return new Blob([decodeURIComponent(match[2])], { type: mime })
-  const binary = atob(match[2])
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
-  return new Blob([bytes], { type: mime })
+  return dataUrlToBlob(dataUrl)
 }
 
 export async function storeCompositeBlobs(
@@ -61,7 +54,9 @@ export async function getCompositeAssetObjectUrl(assetId: string): Promise<strin
   const cached = objectUrlCache.get(assetId)
   if (cached) return cached
   const asset = await getCompositeAsset(assetId)
-  if (!asset) return null
+  // 记录损坏或不是 Blob 时按「资源缺失」处理：绝不能把非 Blob 交给 createObjectURL，
+  // 否则会抛 "Overload resolution failed" 并中断整张预览。
+  if (!asset || !(asset.blob instanceof Blob)) return null
   const url = URL.createObjectURL(asset.blob)
   objectUrlCache.set(assetId, url, asset.blob.size)
   return url

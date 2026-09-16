@@ -53,6 +53,21 @@ describe('AppDataStore', () => {
     expect(store.count('tasks')).toBe(0)
   })
 
+  it('rejects binary payloads instead of silently dropping their bytes', () => {
+    db = new DatabaseSync(':memory:')
+    store = new AppDataStore(db)
+
+    // Blob 经 JSON.stringify 会变成 {}，字节与 MIME 全丢；宁可写入失败也不能静默损坏。
+    expect(() =>
+      store.put('compositeAssets', {
+        id: 'asset-1',
+        value: { id: 'asset-1', createdAt: 1, blob: new Blob(['a'], { type: 'image/png' }) },
+      }),
+    ).toThrow(/二进制/)
+
+    expect(store.count('compositeAssets')).toBe(0)
+  })
+
   it('updates image paths in one transaction', () => {
     db = new DatabaseSync(':memory:')
     store = new AppDataStore(db)
