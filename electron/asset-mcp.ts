@@ -1,6 +1,5 @@
 import { copyFile, readFile } from 'node:fs/promises'
-import { constants as fsConstants } from 'node:fs'
-import { createInterface } from 'node:readline'
+import { constants as fsConstants, readSync } from 'node:fs'
 import path from 'node:path'
 import type { AssetCatalogQuery } from '../src/types'
 import { AssetCatalog, type CatalogAssetDetails } from './asset-catalog'
@@ -237,6 +236,64 @@ export function createMcpRequestHandler(deps: McpDependencies) {
   }
 }
 
+/**
+ * 从已读入的缓冲区里切出所有完整行（按 \n 分隔），返回剩余未成行的尾巴。
+ * 末尾的 \r 由 trim 去掉，兼容 CRLF 客户端。
+ */
+export function splitMcpStdioLines(pending: Buffer): { lines: string[]; rest: Buffer } {
+  const lines: string[] = []
+  let rest = pending
+  let newline = rest.indexOf(10)
+  while (newline !== -1) {
+    const line = rest.subarray(0, newline).toString('utf8').trim()
+    rest = rest.subarray(newline + 1)
+    newline = rest.indexOf(10)
+    if (line) lines.push(line)
+  }
+  return { lines, rest }
+}
+
+/** 读一次 stdin 原始 fd；返回字节数，0 表示 EOF，null 表示句柄已关闭（客户端强杀）。 */
+function readStdinChunk(buffer: Buffer): number | null {
+  try {
+    return readSync(0, buffer, 0, buffer.length, null)
+  } catch (error) {
+    process.stderr.write(`[asset-mcp] stdin 已关闭: ${error instanceof Error ? error.message : String(error)}\n`)
+    return null
+  }
+}
+
+/**
+ * 逐行读取 stdin、处理请求并写回 stdout，直到 stdin 结束（MCP 客户端关闭连接）。
+ *
+ * 刻意**不用 readline**：Windows 下 Electron 主进程的 stdin *流* 会立刻报 EOF ——
+ * readline 直接触发 'close'，父进程写进来的行一行都读不到，服务因此全程静默。
+ * 但同一个 fd 0 用 fs.readSync 却能正常读到数据（实测读到完整字节），说明坏的是 Node 的
+ * 流层而不是句柄。所以这里直接读原始 fd。
+ *
+ * readSync 是阻塞的，但这对 stdio 服务没有副作用：它本来就只有「读一行 → 处理 → 写回」这一件
+ * 事，且每次 await handle() 期间事件循环依然畅通（runCommand 的 fetch 就是靠这个）。
+ */
+async function pumpMcpStdio(handle: (request: JsonRpcRequest) => Promise<JsonRpcResponse>) {
+  let pending: Buffer = Buffer.alloc(0)
+  const chunk = Buffer.alloc(64 * 1024)
+  for (;;) {
+    const read = readStdinChunk(chunk)
+    if (read === null || read === 0) return
+    const { lines, rest } = splitMcpStdioLines(Buffer.concat([pending, chunk.subarray(0, read)]))
+    pending = rest
+    for (const line of lines) {
+      try {
+        const request = JSON.parse(line) as JsonRpcRequest
+        if (request.id === undefined && request.method === 'notifications/initialized') continue
+        process.stdout.write(`${JSON.stringify(await handle(request))}\n`)
+      } catch (error) {
+        process.stderr.write(`[asset-mcp] ${String(error)}\n`)
+      }
+    }
+  }
+}
+
 export async function runAssetMcpServer(databasePath: string, apiConfigPath: string) {
   const catalog = new AssetCatalog(databasePath)
   const runCommand = async (command: ExternalAssetCommand) => {
@@ -262,15 +319,9 @@ export async function runAssetMcpServer(databasePath: string, apiConfigPath: str
     return { success: true, path: resolved }
   }
   const handle = createMcpRequestHandler({ catalog, runCommand, exportAsset })
-  const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })
-  lines.on('line', (line) => {
-    void Promise.resolve()
-      .then(async () => {
-        const request = JSON.parse(line) as JsonRpcRequest
-        if (request.id === undefined && request.method === 'notifications/initialized') return
-        process.stdout.write(`${JSON.stringify(await handle(request))}\n`)
-      })
-      .catch((error) => process.stderr.write(`[asset-mcp] ${String(error)}\n`))
-  })
-  lines.once('close', () => catalog.close())
+  try {
+    await pumpMcpStdio(handle)
+  } finally {
+    catalog.close()
+  }
 }

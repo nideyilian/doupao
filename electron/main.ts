@@ -75,11 +75,17 @@ function createTray(): void {
   tray.on('click', () => showMainWindow())
 }
 
+// `--asset-mcp` 是常驻 stdio MCP 服务进程，必须能与已打开的 DOUPAO 共存 —— run_asset_command
+// 恰恰是要在活窗口里执行命令。它一旦参与单实例锁，只要应用开着就会立刻 app.quit()，整个外部
+// 控制面形同虚设（实测：默认 userData 下 1 秒内退出且零输出）。
+const isAssetMcpProcess = process.argv.includes('--asset-mcp')
+
 // 单实例锁：双开时两个进程会并发写同一 sqlite（WAL）与设置文件，存在竞态/损坏风险。
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
+// 例外仅限 MCP 服务进程：它只读 asset-api.json、不碰任何设置文件，且必须与应用并存才有意义。
+const gotSingleInstanceLock = isAssetMcpProcess || app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
-} else {
+} else if (!isAssetMcpProcess) {
   app.on('second-instance', (_event, argv) => {
     const deepLink = findDeepLinkArgv(argv)
     if (deepLink) {
@@ -454,7 +460,11 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.error('[legacy-data-migration] 启动迁移失败（已跳过，不影响启动）:', error)
   }
-  if (process.argv.includes('--asset-mcp')) {
+  if (isAssetMcpProcess) {
+    // 这里必须保留 migrateCatalogIntoLibrary()：它负责「旧位置 → 库根 db/」的搬迁，一旦去掉，
+    // 全新安装下先跑 MCP 会在库根建出**空库**，应用随后看到 candidate 已存在便走
+    // already-at-library 跳过迁移，旧库永远不被导入（数据"消失"）。应用开着时它按
+    // candidate 已存在早退，是 no-op，所以并存无副作用。
     migrateCatalogIntoLibrary()
     await runAssetMcpServer(resolveCatalogDbPath(), path.join(app.getPath('userData'), 'asset-api.json'))
     return

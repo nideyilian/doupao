@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createMcpRequestHandler } from './asset-mcp'
+import { createMcpRequestHandler, splitMcpStdioLines } from './asset-mcp'
 
 describe('asset MCP server', () => {
   const catalog = {
@@ -33,5 +33,37 @@ describe('asset MCP server', () => {
     })
     expect(response.result.contents[0].uri).toBe('doupao://assets/a')
     expect(response.result.contents[0].text).toContain('"id":"a"')
+  })
+})
+
+describe('MCP stdio 行切分', () => {
+  it('一次读到多行时全部切出，不留残行', () => {
+    const { lines, rest } = splitMcpStdioLines(Buffer.from('{"a":1}\n{"b":2}\n', 'utf8'))
+    expect(lines).toEqual(['{"a":1}', '{"b":2}'])
+    expect(rest.length).toBe(0)
+  })
+
+  it('半行留到下一次读取，拼上后才成行', () => {
+    const first = splitMcpStdioLines(Buffer.from('{"a":', 'utf8'))
+    expect(first.lines).toEqual([])
+    expect(first.rest.toString('utf8')).toBe('{"a":')
+
+    const second = splitMcpStdioLines(Buffer.concat([first.rest, Buffer.from('1}\n', 'utf8')]))
+    expect(second.lines).toEqual(['{"a":1}'])
+    expect(second.rest.length).toBe(0)
+  })
+
+  it('兼容 CRLF 与空行', () => {
+    const { lines } = splitMcpStdioLines(Buffer.from('{"a":1}\r\n\r\n{"b":2}\r\n', 'utf8'))
+    expect(lines).toEqual(['{"a":1}', '{"b":2}'])
+  })
+
+  it('多字节字符被 chunk 边界切断时不会乱码', () => {
+    const payload = Buffer.from('{"name":"豆泡"}\n', 'utf8')
+    const cut = payload.indexOf(Buffer.from('豆', 'utf8')) + 1
+    const first = splitMcpStdioLines(payload.subarray(0, cut))
+    expect(first.lines).toEqual([])
+    const second = splitMcpStdioLines(Buffer.concat([first.rest, payload.subarray(cut)]))
+    expect(second.lines).toEqual(['{"name":"豆泡"}'])
   })
 })
