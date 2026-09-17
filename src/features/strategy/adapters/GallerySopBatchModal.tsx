@@ -57,6 +57,7 @@ import {
   normalizeSopPromptCandidates,
   selectSopPromptSources,
   SOP_HIGH_VOLUME_WARNING_THRESHOLD,
+  SOP_PROGRESSIVE_PROMPT_BATCH_SIZE,
 } from '../sopPromptBatch'
 import { normalizeSeriesConfig } from '../sopGeneration'
 import type { SopSeriesConfig } from '../types'
@@ -1861,6 +1862,76 @@ export default function GallerySopBatchModal({
     let generationCancelled = false
     /** 渐进派发下的系列锚定：groupIndex → 该组首图 id（组内按生成顺序提交，首图出图后锚定后续成员）。 */
     const progressiveSeriesAnchors = new Map<number, string>()
+    /**
+     * 渐进派发的锚定异步化：组内首图提交后不再阻塞等待出图，主循环立刻生成下一组提示词；
+     * 「等锚定 → 提交组内其余成员」挂到这里的后台任务，主批次结束后统一收口。
+     * 语义与手动批量提交（submitPromptList 的 submissionUnits）一致：组内串行、组间并行。
+     */
+    const pendingAnchorDispatches: Array<Promise<void>> = []
+    /** groupIndex → 本组首图的锚定等待 promise；组内成员的延迟提交挂接在它后面。 */
+    const progressiveAnchorWaiters = new Map<number, Promise<string | null>>()
+    /** 分阶段耗时埋点（ms），收尾时 console.info 汇总：提示词请求 / 首图锚定等待 / 单条任务提交。 */
+    const promptBatchTimings: number[] = []
+    const anchorWaitTimings: number[] = []
+    const submitTimings: number[] = []
+    let lastOnBatchEnd = 0
+
+    /** 渐进派发下提交一条生图任务；返回 taskId，失败返回 null（计数已在内部完成）。 */
+    const dispatchProgressivePrompt = async (
+      item: PromptDraft,
+      promptIndex: number,
+      seriesAnchorImage: InputImage | null,
+      fallbackInputImages: InputImage[],
+    ): Promise<string | null> => {
+      const submitStartedAt = Date.now()
+      try {
+        const taskId = await submitTaskWithData(
+          {
+            prompt: seriesAnchorImage ? buildSopSeriesAnchoredPrompt(item.promptText) : item.promptText.trim(),
+            inputImages: seriesAnchorImage ? [seriesAnchorImage] : fallbackInputImages,
+            inputImageFolder: null,
+            params: { ...params, n: targetImagesPerPrompt, reference_mode: 'cycle' },
+            maskDraft: null,
+            targetTabId: targetWorkspaceTabId,
+            scheduledOutputPath: customOutputPath.trim() || undefined,
+            scheduledOutputSubFolder: activeTab?.name,
+            defaultCollectionId: batchDefaultCollectionIdRef.current,
+            sopBatch: {
+              batchId: progressiveBatchId,
+              snapshotId: progressiveSnapshotId,
+              sopId: selectedSop.id,
+              sopName: selectedSop.name,
+              promptId: item.id,
+              promptIndex,
+              promptCount: targetCount,
+              imagesPerPrompt: targetImagesPerPrompt,
+              series: item.series
+                ? {
+                    seriesId: `${progressiveSnapshotId}-${item.series.groupIndex}`,
+                    groupIndex: item.series.groupIndex + 1,
+                    groupCount: Math.ceil(targetCount / item.series.seriesCount),
+                    seriesIndex: item.series.seriesIndex + 1,
+                    seriesCount: item.series.seriesCount,
+                  }
+                : undefined,
+            },
+          },
+          { silentSuccess: true },
+        )
+        submitTimings.push(Date.now() - submitStartedAt)
+        if (typeof taskId === 'string' && taskId) {
+          progressiveTaskIds.push(taskId)
+          progressiveSuccessCount += 1
+          return taskId
+        }
+        progressiveFailureCount += 1
+        return null
+      } catch {
+        submitTimings.push(Date.now() - submitStartedAt)
+        progressiveFailureCount += 1
+        return null
+      }
+    }
 
     const saveProgressiveSnapshot = async (runStatus: NonNullable<SopBatchSnapshot['status']>) => {
       if (!progressiveDispatch) return
@@ -1911,13 +1982,14 @@ export default function GallerySopBatchModal({
           referenceImages: sourceImage ? [{ name: sourceRun.source.label, dataUrl: sourceImage.dataUrl }] : undefined,
           exact: false,
           existingPrompts: [...existingPrompts, ...nextPrompts.map((item) => item.promptText.trim()).filter(Boolean)],
-          // 变量提示词模式是本地展开，一次生成全部再逐条提交；AI 逐条模式才用 maxBatchSize=1 渐进生成
-          maxBatchSize: !isVariablePromptSop && progressiveDispatch ? 1 : undefined,
+          // 变量提示词模式是本地展开，一次生成全部再逐条提交；AI 渐进模式用小批量（原为 1，每组建模都要付一次完整模型往返）
+          maxBatchSize: !isVariablePromptSop && progressiveDispatch ? SOP_PROGRESSIVE_PROMPT_BATCH_SIZE : undefined,
           // 系列模式下 generationCount 是「组数」，变量展开要按每组张数换算成条数
           outputUnitSize: activeSeriesMode ? seriesCount : 1,
           beforeBatch: waitWhileGenerationPaused,
           signal: generationController.signal,
           onBatch: async (batchPrompts) => {
+            if (lastOnBatchEnd > 0) promptBatchTimings.push(Date.now() - lastOnBatchEnd)
             for (const prompt of batchPrompts) {
               if (!componentActiveRef.current || generationController.signal.aborted) {
                 throw generationController.signal.reason instanceof Error
@@ -1953,68 +2025,75 @@ export default function GallerySopBatchModal({
                   `已生成系列成员 ${promptIndex}/${effectivePromptTarget}，正在发送第 ${promptIndex} 条生图任务`,
                 )
                 await saveProgressiveSnapshot('generating')
-                const seriesAnchorImageId =
+                const existingAnchorId =
                   activeSeriesMode && seriesAnchorRef.current && item.series
                     ? (progressiveSeriesAnchors.get(item.series.groupIndex) ?? findSeriesAnchorImageId(item))
                     : null
-                const seriesAnchorImage = seriesAnchorImageId ? await loadAnchorInputImage(seriesAnchorImageId) : null
+                // 本组首图（无现成锚定可用）：立即提交，锚定等待挂后台，不阻塞下一组提示词请求。
+                // 有现成锚定时直接按成员处理，不再为重复锁视觉白等一张新首图。
+                const firstImageGroupIndex =
+                  activeSeriesMode &&
+                  seriesAnchorRef.current &&
+                  item.series &&
+                  item.series.seriesIndex === 0 &&
+                  !existingAnchorId
+                    ? item.series.groupIndex
+                    : null
+                const groupWaiter =
+                  activeSeriesMode && seriesAnchorRef.current && item.series
+                    ? progressiveAnchorWaiters.get(item.series.groupIndex)
+                    : undefined
                 let dispatched = false
-                try {
-                  const taskId = await submitTaskWithData(
-                    {
-                      prompt: seriesAnchorImage
-                        ? buildSopSeriesAnchoredPrompt(item.promptText)
-                        : item.promptText.trim(),
-                      inputImages: seriesAnchorImage ? [seriesAnchorImage] : generationInputImages,
-                      inputImageFolder: null,
-                      params: { ...params, n: targetImagesPerPrompt, reference_mode: 'cycle' },
-                      maskDraft: null,
-                      targetTabId: targetWorkspaceTabId,
-                      scheduledOutputPath: customOutputPath.trim() || undefined,
-                      scheduledOutputSubFolder: activeTab?.name,
-                      defaultCollectionId: batchDefaultCollectionIdRef.current,
-                      sopBatch: {
-                        batchId: progressiveBatchId,
-                        snapshotId: progressiveSnapshotId,
-                        sopId: selectedSop.id,
-                        sopName: selectedSop.name,
-                        promptId: item.id,
-                        promptIndex,
-                        promptCount: targetCount,
-                        imagesPerPrompt: targetImagesPerPrompt,
-                        series: item.series
-                          ? {
-                              seriesId: `${progressiveSnapshotId}-${item.series.groupIndex}`,
-                              groupIndex: item.series.groupIndex + 1,
-                              groupCount: Math.ceil(targetCount / item.series.seriesCount),
-                              seriesIndex: item.series.seriesIndex + 1,
-                              seriesCount: item.series.seriesCount,
-                            }
-                          : undefined,
-                      },
-                    },
-                    { silentSuccess: true },
-                  )
-                  if (typeof taskId === 'string' && taskId) {
-                    progressiveTaskIds.push(taskId)
-                    progressiveSuccessCount += 1
-                    dispatched = true
-                    // 组内第 1 张出图后作为同组其余成员的参考图；等不到就降级为无参考图提交
-                    if (activeSeriesMode && seriesAnchorRef.current && item.series && item.series.seriesIndex === 0) {
-                      setStatusMessage(`同组第 1 张生成中，完成后作为其余画面的参考图（${promptIndex} 已发送）`)
-                      const anchorId = await waitForSopSeriesAnchor({
-                        taskId,
-                        getTask: (id) => useStore.getState().tasks.find((task) => task.id === id),
-                        signal: generationController.signal,
-                      })
-                      if (anchorId) progressiveSeriesAnchors.set(item.series.groupIndex, anchorId)
-                      else setStatusMessage('首图未就绪，同组其余画面按无参考图提交')
-                    }
-                  } else {
-                    progressiveFailureCount += 1
+                let deferredDispatch = false
+                if (firstImageGroupIndex !== null) {
+                  const taskId = await dispatchProgressivePrompt(item, promptIndex, null, generationInputImages)
+                  dispatched = Boolean(taskId)
+                  if (taskId) {
+                    const anchorStartedAt = Date.now()
+                    const waiter = waitForSopSeriesAnchor({
+                      taskId,
+                      getTask: (id) => useStore.getState().tasks.find((task) => task.id === id),
+                      signal: generationController.signal,
+                    })
+                    progressiveAnchorWaiters.set(firstImageGroupIndex, waiter)
+                    pendingAnchorDispatches.push(
+                      waiter.then((anchorId) => {
+                        anchorWaitTimings.push(Date.now() - anchorStartedAt)
+                        if (anchorId) {
+                          progressiveSeriesAnchors.set(firstImageGroupIndex, anchorId)
+                        } else if (componentActiveRef.current && !generationController.signal.aborted) {
+                          setStatusMessage(`第 ${promptIndex} 条（本组首图）未出图，同组其余画面按无参考图发送`)
+                        }
+                      }),
+                    )
                   }
-                } catch {
-                  progressiveFailureCount += 1
+                } else if (groupWaiter) {
+                  // 组内其余成员：挂后台等首图锚定就绪后带参考图提交；与手动批量提交的组内串行语义一致
+                  deferredDispatch = true
+                  dispatched = true
+                  pendingAnchorDispatches.push(
+                    groupWaiter
+                      .then(async (anchorId) => {
+                        if (!componentActiveRef.current || generationController.signal.aborted) return
+                        const seriesAnchorImage = anchorId ? await loadAnchorInputImage(anchorId) : null
+                        if (!seriesAnchorImage && componentActiveRef.current && !generationController.signal.aborted) {
+                          setStatusMessage('首图未就绪，同组其余画面按无参考图发送')
+                        }
+                        await dispatchProgressivePrompt(item, promptIndex, seriesAnchorImage, generationInputImages)
+                        if (componentActiveRef.current && !generationController.signal.aborted) {
+                          await saveProgressiveSnapshot('generating')
+                        }
+                      })
+                      .catch(() => {
+                        progressiveFailureCount += 1
+                      }),
+                  )
+                } else {
+                  // 无锚定等待（非系列 / 锚定关闭 / 锚定已就绪 / 首图任务发送失败）：立即提交
+                  const seriesAnchorImage = existingAnchorId ? await loadAnchorInputImage(existingAnchorId) : null
+                  dispatched = Boolean(
+                    await dispatchProgressivePrompt(item, promptIndex, seriesAnchorImage, generationInputImages),
+                  )
                 }
                 if (!componentActiveRef.current || generationController.signal.aborted) {
                   throw generationController.signal.reason instanceof Error
@@ -2022,12 +2101,15 @@ export default function GallerySopBatchModal({
                     : new DOMException('提示词生成已取消', 'AbortError')
                 }
                 await saveProgressiveSnapshot('generating')
+                const dispatchNote = deferredDispatch
+                  ? '已排队，等本组首图出图后发送'
+                  : dispatched
+                    ? '已发送'
+                    : '发送失败'
                 setStatusMessage(
                   generationPausedRef.current
-                    ? `提示词生成已暂停，第 ${promptIndex} 条${dispatched ? '已发送' : '发送失败'}`
-                    : dispatched
-                      ? `第 ${promptIndex} 条已发送，继续生成下一条提示词`
-                      : `第 ${promptIndex} 条发送失败，继续生成下一条提示词`,
+                    ? `提示词生成已暂停，第 ${promptIndex} 条${dispatchNote}`
+                    : `第 ${promptIndex} 条${dispatchNote}，继续生成下一条提示词`,
                 )
               } else {
                 persistPromptRun([...nextPrompts], nextSources, autoGenerate, 'generating')
@@ -2038,6 +2120,7 @@ export default function GallerySopBatchModal({
                 )
               }
             }
+            lastOnBatchEnd = Date.now()
           },
           onProgress: (completed, total) => {
             if (!progressiveDispatch) {
@@ -2126,6 +2209,15 @@ export default function GallerySopBatchModal({
       }
     }
 
+    // 锚定异步化收口：等所有「首图出图 → 提交组内成员」的后台任务结束，再做进度统计与最终快照。
+    // 取消时 waitForSopSeriesAnchor 会立即返回，后台提交也会因 aborted 检查跳过，这里不会久等。
+    if (pendingAnchorDispatches.length) {
+      setStatusMessage(
+        generationCancelled ? '已取消，正在收尾组内排队的生图任务…' : '系列首图生成中，出图后自动发送组内其余画面…',
+      )
+      await Promise.allSettled(pendingAnchorDispatches)
+    }
+
     if (!componentActiveRef.current) return
     if (generationCancelled) {
       for (let index = 0; index < nextSources.length; index += 1) {
@@ -2139,6 +2231,11 @@ export default function GallerySopBatchModal({
     const available = nextPrompts.filter((item) => !item.deleted && item.promptText.trim()).length
     const failed = nextSources.filter((item) => item.status === 'failed').length
     const missing = Math.max(0, effectivePromptTarget - available)
+    const avgTiming = (values: number[]) =>
+      values.length ? `${Math.round(values.reduce((sum, v) => sum + v, 0) / values.length)}ms×${values.length}` : '-'
+    console.info(
+      `[sop-batch] 分阶段耗时（渐进派发）：提示词请求 avg ${avgTiming(promptBatchTimings)}；首图锚定等待 avg ${avgTiming(anchorWaitTimings)}；单条任务提交 avg ${avgTiming(submitTimings)}`,
+    )
     if (generationAbortRef.current === generationController) generationAbortRef.current = null
     generationPausedRef.current = false
     releasePauseWaiters()

@@ -11,6 +11,13 @@ export const MAX_SOP_PROMPTS_PER_MODEL_REQUEST = 10
 export const SOP_PROMPT_BATCH_MAX_ATTEMPTS = 2
 export const MAX_SOP_IMAGES_PER_PROMPT = 20
 export const SOP_HIGH_VOLUME_WARNING_THRESHOLD = 20
+/**
+ * 渐进派发（边生成提示词边出图）时单次模型请求的批次单位数（系列模式下单位是「组」）。
+ * 之前是 1：每生成一组都要付一次完整的模型往返，组数多时提示词阶段被拉成一条直线；
+ * 放大到 3 后往返次数降为 1/3，同时保留「每 3 组反馈一次」的渐进感。
+ * 批次缺额（截断/重复被去重后不足）由 generateSopPromptBatches 的补缺循环兜底。
+ */
+export const SOP_PROGRESSIVE_PROMPT_BATCH_SIZE = 3
 
 export interface SopPromptSourceLike {
   id: string

@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { act, create } from 'react-test-renderer'
 import { DEFAULT_PARAMS, type SopBatchSnapshot, type TaskRecord } from '../../../types'
 import GallerySopBatchModal, { getGallerySopPromptRunStorageKey } from './GallerySopBatchModal'
+import { SOP_PROGRESSIVE_PROMPT_BATCH_SIZE } from '../sopPromptBatch'
 import { SOP_SERIES_ANCHOR_INSTRUCTION } from '../../../lib/sopSeriesAnchor'
 
 const generateMocks = vi.hoisted(() => ({
@@ -665,7 +666,7 @@ describe('GallerySopBatchModal background generation', () => {
       '',
       expect.objectContaining({
         existingPrompts: expect.arrayContaining(['已有提示词']),
-        maxBatchSize: 1,
+        maxBatchSize: SOP_PROGRESSIVE_PROMPT_BATCH_SIZE,
       }),
     )
     expect(storeMocks.submitTaskWithData).toHaveBeenCalledTimes(2)
@@ -1294,7 +1295,10 @@ describe('GallerySopBatchModal background generation', () => {
       expect.objectContaining({ id: 'sop-1' }),
       2,
       '',
-      expect.objectContaining({ maxBatchSize: 1, onBatch: expect.any(Function) }),
+      expect.objectContaining({
+        maxBatchSize: SOP_PROGRESSIVE_PROMPT_BATCH_SIZE,
+        onBatch: expect.any(Function),
+      }),
     )
     expect(events).toEqual(['generate-1', 'dispatch-第一条提示词', 'generate-2', 'dispatch-第二条提示词'])
     expect(storeMocks.submitTaskWithData).toHaveBeenCalledTimes(2)
@@ -1741,5 +1745,95 @@ describe('GallerySopBatchModal folder isolation', () => {
       expect(call.inputImages).toEqual([{ id: 'image-anchor', dataUrl: 'data:image/png;base64,anchor' }])
       expect(call.prompt.startsWith(SOP_SERIES_ANCHOR_INSTRUCTION)).toBe(true)
     }
+  })
+
+  it('defers series member dispatch to the anchor without blocking the prompt batch loop', async () => {
+    const events: string[] = []
+    let releaseAnchor: (() => void) | null = null
+    const anchorReady = new Promise<void>((resolve) => {
+      releaseAnchor = resolve
+    })
+    generateMocks.generatePromptsFromSopStore.mockImplementation(async (_sop, _quantity, _brief, options) => {
+      const group = [
+        '系列统一规范（非画面文字）：蓝色背景\n本张画面：咖啡杯',
+        '系列统一规范（非画面文字）：蓝色背景\n本张画面：茶杯',
+        '系列统一规范（非画面文字）：蓝色背景\n本张画面：水壶',
+      ]
+      await options.onBatch?.([...group, ...group], 2, 2)
+      events.push('generate-resolved')
+      return [...group, ...group]
+    })
+    storeMocks.ensureImageCached.mockResolvedValue('data:image/png;base64,anchor')
+    storeMocks.submitTaskWithData.mockImplementation(async (data: { sopBatch?: TaskRecord['sopBatch'] }) => {
+      if (data.sopBatch?.series?.seriesIndex === 1) {
+        events.push('dispatch-first')
+        // 首图任务先不出图：释放 anchorReady 后才作为锚定参考可用
+        void anchorReady.then(() => {
+          storeState.tasks = [
+            {
+              id: 'task-anchor',
+              prompt: 'anchor',
+              params: { ...DEFAULT_PARAMS },
+              inputImageIds: [],
+              outputImages: ['image-anchor'],
+              status: 'done',
+              error: null,
+              createdAt: 10,
+              finishedAt: 20,
+              elapsed: 10,
+            } as TaskRecord,
+          ]
+        })
+        return 'task-anchor'
+      }
+      events.push('dispatch-member')
+      return 'task-member'
+    })
+
+    let renderer: ReturnType<typeof create>
+    await act(async () => {
+      renderer = create(
+        <GallerySopBatchModal
+          workspaceTabId="tab-a"
+          initialSopId="sop-series"
+          initialPromptCount={2}
+          initialSeriesMode
+          initialAutoGenerate
+          autoStart
+          onAutoStartConsumed={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    mountedRenderers.push(renderer!)
+
+    // 锚定异步化的核心锚点：提示词批次收尾时只提交了两个组首图，组内成员全部挂在后台等锚定
+    expect(events).toEqual(['dispatch-first', 'dispatch-first', 'generate-resolved'])
+    expect(storeMocks.submitTaskWithData).toHaveBeenCalledTimes(2)
+
+    // 首图出图后（waitForSopSeriesAnchor 轮询间隔 800ms），后台成员带锚定参考图提交
+    await act(async () => {
+      releaseAnchor?.()
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+    })
+
+    expect(storeMocks.submitTaskWithData).toHaveBeenCalledTimes(6)
+    const calls = storeMocks.submitTaskWithData.mock.calls.map(([data]) => data)
+    expect(calls.slice(0, 2).map((call) => call.inputImages)).toEqual([[], []])
+    expect(calls.slice(0, 2).every((call) => !call.prompt.startsWith(SOP_SERIES_ANCHOR_INSTRUCTION))).toBe(true)
+    for (const call of calls.slice(2)) {
+      expect(call.inputImages).toEqual([{ id: 'image-anchor', dataUrl: 'data:image/png;base64,anchor' }])
+      expect(call.prompt.startsWith(SOP_SERIES_ANCHOR_INSTRUCTION)).toBe(true)
+    }
+    expect(events).toEqual([
+      'dispatch-first',
+      'dispatch-first',
+      'generate-resolved',
+      'dispatch-member',
+      'dispatch-member',
+      'dispatch-member',
+      'dispatch-member',
+    ])
   })
 })
