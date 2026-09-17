@@ -26,7 +26,7 @@ import {
   writeThumbnailToDisk,
 } from './localSave'
 import type { MigrationJournal } from './migrations/registry'
-import { computeContentHash } from './imageFingerprint'
+import { computeContentHash, computeContentHashFromBytes } from './imageFingerprint'
 import { blobToDataUrl, dataUrlToBlob } from './blobDataUrl'
 import { canvasToWebpDataUrl, createImageThumbnailDataUrl } from './canvasImage'
 
@@ -1163,8 +1163,10 @@ export function getAllLocalImagePaths(): Promise<string[]> {
 export async function storeImage(
   dataUrl: string,
   source: NonNullable<StoredImage['source']> = 'upload',
+  options: StoreImageBytesOptions = {},
 ): Promise<string> {
-  const id = await computeContentHash(dataUrl)
+  // 有字节时直接哈希，省掉一次「解码 dataUrl → 再哈希」
+  const id = options.bytes ? await computeContentHashFromBytes(options.bytes) : await computeContentHash(dataUrl)
   const existing = await getImage(id)
 
   let localPath: string | undefined
@@ -1173,17 +1175,18 @@ export async function storeImage(
       // 已存在且已有本地文件：跳过冗余写入（查重在写文件之前）
       localPath = existing.localPath
     } else {
-      localPath = (await saveRawCacheImageToLocal(id, dataUrl)) || undefined
+      localPath = (await saveRawCacheImageToLocal(id, dataUrl, options)) || undefined
     }
   }
 
   if (!existing) {
-    const thumbnail = await safeCreateImageThumbnail(dataUrl)
+    const thumbnail = await safeCreateImageThumbnail(dataUrl, options)
     // 图片记录与缩略图记录合并为一次跨进程写（两个命名空间，见 putImageRecords）
     await putImageRecords(
       {
         id,
-        dataUrl: localPath ? undefined : dataUrl,
+        // 落盘成功就不再把图像本体写进库；只有存不下时才需要 dataUrl（没带就现编一份）
+        dataUrl: localPath ? undefined : dataUrl || (await bytesToFallbackDataUrl(options)),
         localPath,
         createdAt: Date.now(),
         source,
@@ -1204,7 +1207,7 @@ export async function storeImage(
     (await getStoredImageThumbnail(id))?.thumbnailVersion !== THUMBNAIL_VERSION ||
     (!existing.localPath && localPath)
   ) {
-    const thumbnail = await safeCreateImageThumbnail(dataUrl)
+    const thumbnail = await safeCreateImageThumbnail(dataUrl, options)
     const updates: Partial<StoredImage> = {}
     if (
       thumbnail.width &&
@@ -1503,8 +1506,40 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
   })
 }
 
-async function createImageThumbnail(dataUrl: string): Promise<Omit<StoredImageThumbnail, 'id'>> {
-  const image = await loadImage(dataUrl)
+/** 有原始字节时可跳过 dataUrl 的「编码再解码」往返（文件夹导入等场景本来就只有字节）。 */
+export interface StoreImageBytesOptions {
+  bytes?: Uint8Array
+  mime?: string
+}
+
+/** 用 Blob URL 加载图片：避免为了 `<img src>` 再拼一份 base64。 */
+async function loadImageFromBytes(bytes: Uint8Array, mime = 'image/png'): Promise<HTMLImageElement> {
+  const objectUrl = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: mime }))
+  try {
+    return await loadImage(objectUrl)
+  } finally {
+    // loadImage 已 resolve（图片加载完成），此时释放是安全的
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+/** 无法落盘（非 Electron）时把字节转成 dataUrl 存库；Electron 路径走不到这里。 */
+async function bytesToFallbackDataUrl(options: StoreImageBytesOptions): Promise<string> {
+  if (!options.bytes) return ''
+  return blobToDataUrl(new Blob([options.bytes as unknown as BlobPart], { type: options.mime || 'image/png' }))
+}
+
+/**
+ * 生成入库缩略图。
+ *
+ * 导出仅为让测试能直接断言「编码走的是异步通道」—— 这是 `storeImage` 每张新图都必经的
+ * 唯一编码点，一旦被改回同步 `toDataURL`，生成完成那一刻的主线程会重新被冻住。
+ */
+export async function createImageThumbnail(
+  dataUrl: string,
+  options: StoreImageBytesOptions = {},
+): Promise<Omit<StoredImageThumbnail, 'id'>> {
+  const image = options.bytes ? await loadImageFromBytes(options.bytes, options.mime) : await loadImage(dataUrl)
   const width = image.naturalWidth
   const height = image.naturalHeight
   if (width <= 0 || height <= 0) throw new Error('图片尺寸无效')
@@ -1518,16 +1553,22 @@ async function createImageThumbnail(dataUrl: string): Promise<Omit<StoredImageTh
   ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
 
   return {
-    thumbnailDataUrl: canvas.toDataURL('image/webp', THUMBNAIL_QUALITY),
+    // 必须走异步编码：同步 `toDataURL` 会在主线程把 webp 编码跑完（1024px/q0.82 约 71ms/张），
+    // 而这里是每张图入库的唯一路径（storeImage 19 个调用点），生成完成那一刻的点击与滚动会跟着卡。
+    // `canvasToWebpDataUrl` 走 `toBlob`，环境不支持时自带回退，调用方不用兜底。
+    thumbnailDataUrl: await canvasToWebpDataUrl(canvas, THUMBNAIL_QUALITY),
     width,
     height,
     thumbnailVersion: THUMBNAIL_VERSION,
   }
 }
 
-async function safeCreateImageThumbnail(dataUrl: string): Promise<Partial<Omit<StoredImageThumbnail, 'id'>>> {
+async function safeCreateImageThumbnail(
+  dataUrl: string,
+  options: StoreImageBytesOptions = {},
+): Promise<Partial<Omit<StoredImageThumbnail, 'id'>>> {
   try {
-    return await createImageThumbnail(dataUrl)
+    return await createImageThumbnail(dataUrl, options)
   } catch {
     return {}
   }

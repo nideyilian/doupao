@@ -41,9 +41,20 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'warn',
       // any 先以 warn 收敛（存量 51 处），新代码应避免
       '@typescript-eslint/no-explicit-any': 'warn',
-      // 空接口/未使用变量保持宽松，避免存量告警淹没新问题
+      // 空接口保持宽松；未使用变量以 warn 接入 —— 它是「声称改了但调用点没换」这类
+      // 半成品事故的唯一自动拦截点（v0.8.19 的 db.ts 死 import 就是这么溜过 verify 的）。
+      // 先 warn 观察存量，清干净后再收紧为 error。
       '@typescript-eslint/no-empty-object-type': 'off',
-      '@typescript-eslint/no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          // 函数形参不报（回调与接口实现的噪音远大于信号）
+          args: 'none',
+          ignoreRestSiblings: true,
+          // 不强制消费 catch 变量（空 catch 是有意的隔离语义）
+          caughtErrors: 'none',
+        },
+      ],
       'no-empty': ['error', { allowEmptyCatch: true }],
       // 存量噪音规则：已清零的重新收紧为 error；no-useless-assignment 尚待人工复核，保持 warn
       'no-useless-escape': 'error',

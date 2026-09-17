@@ -95,11 +95,20 @@ export default function App() {
 
   useEffect(() => {
     let lastShownAt = 0
-    const handlePersistError = () => {
+    const handlePersistError = (event: Event) => {
       const now = Date.now()
       if (now - lastShownAt < 5000) return
       lastShownAt = now
-      useStore.getState().showToast('本地状态保存失败，程序正在自动重试', 'error')
+      // 图片/任务写盘没有自动重试，文案不能照搬「程序正在自动重试」（见 docs/optimization-plan.md ℹ-13）
+      const namespace = (event as CustomEvent<{ namespace?: string }>).detail?.namespace
+      useStore
+        .getState()
+        .showToast(
+          namespace === 'localImage'
+            ? '图片保存到本地失败，请检查磁盘空间或目录权限'
+            : '本地状态保存失败，程序正在自动重试',
+          'error',
+        )
     }
     window.addEventListener('doupao:persist-error', handlePersistError)
     return () => window.removeEventListener('doupao:persist-error', handlePersistError)

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useStore } from '../../../store'
 import type { CompositeV2CustomVariable, CompositeV2Preset } from '../lib/compositeV2Types'
+import { escapePromptHtmlAttribute, escapePromptHtmlText } from '../../../lib/promptImageMentions'
 
 type Props = {
   preset: CompositeV2Preset
@@ -44,22 +45,20 @@ export function insertNamingVariable(template: string, name: string, selection: 
   }
 }
 
-function escapeHtml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
-}
-
+// 转义统一走 lib/promptImageMentions 的两个出口（属性 / 文本语义分开，见 O-8）。
+// `name` / `match[0]` / `resolved` 都可能来自用户自定义变量，一旦漏转义就是 XSS。
 export function renderNamingTemplateHtml(template: string, values: Record<string, string>): string {
   let result = ''
   let cursor = 0
   for (const match of template.matchAll(/\{([^{}]+)\}/g)) {
     const index = match.index ?? 0
     const name = match[1] ?? ''
-    result += escapeHtml(template.slice(cursor, index))
+    result += escapePromptHtmlText(template.slice(cursor, index))
     const resolved = values[name] ?? match[0]
-    result += `<span contenteditable="false" draggable="true" class="mention-tag" data-variable-name="${escapeHtml(name)}" title="${escapeHtml(match[0])}">${escapeHtml(resolved)}</span>`
+    result += `<span contenteditable="false" draggable="true" class="mention-tag" data-variable-name="${escapePromptHtmlAttribute(name)}" title="${escapePromptHtmlAttribute(match[0])}">${escapePromptHtmlText(resolved)}</span>`
     cursor = index + match[0].length
   }
-  return result + escapeHtml(template.slice(cursor))
+  return result + escapePromptHtmlText(template.slice(cursor))
 }
 
 export function readNamingTemplate(host: Pick<Node, 'childNodes'>): string {

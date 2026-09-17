@@ -6,6 +6,7 @@ import {
   batchGetImages,
   buildGridThumbnail,
   commitImportedRecords,
+  createImageThumbnail,
   deleteGeneratedAsset,
   getCompositeAsset,
   getGeneratedAsset,
@@ -858,5 +859,71 @@ describe('应用记录批量写通道（跨命名空间 put-batch / 同命名空
     } finally {
       restore()
     }
+  })
+})
+
+// 缩略图编码必须在后台线程完成。2026-09 真机量测：1024px webp q0.82 的同步 `toDataURL`
+// 占主线程约 71ms/张，5 张连续编码冻结 553.8ms；换 `toBlob` 后降到 32ms。
+//
+// 这条用例的存在意义是「改回同步就变红」。v0.8.19 那次事故正是「文档说改了、调用点没换」，
+// 而当时的测试只覆盖了工具函数 `canvasToWebpDataUrl` 本身，没覆盖主路径有没有真的换。
+describe('缩略图编码通道必须异步（同步 toDataURL 回归防线）', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** 打桩图片/画布环境：`Image` 一设 src 即 onload，canvas 同时提供 toBlob 与 toDataURL 两个出口。 */
+  function stubImageAndCanvas() {
+    const toDataURL = vi.fn(() => 'data:image/webp;base64,SYNCHRONOUS')
+    const toBlob = vi.fn((callback: (blob: Blob | null) => void, type?: string) => {
+      callback(new Blob([new Uint8Array([9, 8, 7])], { type }))
+    })
+    const drawImage = vi.fn()
+    vi.stubGlobal(
+      'Image',
+      class {
+        naturalWidth = 1672
+        naturalHeight = 941
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+        set src(_value: string) {
+          this.onload?.()
+        }
+      },
+    )
+    vi.stubGlobal('document', {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => ({ drawImage }),
+        toDataURL,
+        toBlob,
+      }),
+    })
+    return { toDataURL, toBlob, drawImage }
+  }
+
+  it('入库一张图只走 toBlob，全程不触碰同步 toDataURL', async () => {
+    const { toDataURL, toBlob, drawImage } = stubImageAndCanvas()
+
+    const thumbnail = await createImageThumbnail('data:image/png;base64,AAAA')
+
+    expect(toBlob).toHaveBeenCalledTimes(1)
+    expect(toDataURL).not.toHaveBeenCalled()
+    expect(drawImage).toHaveBeenCalledTimes(1)
+    expect(thumbnail.thumbnailDataUrl).toMatch(/^data:image\/webp;base64,/)
+    expect(thumbnail.width).toBe(1672)
+    expect(thumbnail.height).toBe(941)
+    expect(thumbnail.thumbnailVersion).toBe(CURRENT_THUMBNAIL_VERSION)
+  })
+
+  it('toBlob 不可用时回退到 toDataURL（保持改动前的兜底语义）', async () => {
+    const { toDataURL, toBlob } = stubImageAndCanvas()
+    toBlob.mockImplementation(() => {
+      throw new Error('toBlob 不可用')
+    })
+
+    const thumbnail = await createImageThumbnail('data:image/png;base64,AAAA')
+
+    expect(toDataURL).toHaveBeenCalledTimes(1)
+    expect(thumbnail.thumbnailDataUrl).toBe('data:image/webp;base64,SYNCHRONOUS')
   })
 })

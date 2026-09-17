@@ -762,6 +762,12 @@ export const legacyComponentCoverage: LegacyComponentCoverage[] = [
     targets: ['Tooltip'],
   },
   {
+    module: 'src/components/paramDisplay.tsx',
+    responsibility: '任务参数展示组件（DetailParamValue / ActualValueBadge），配合 ViewportTooltip 显示完整值',
+    decision: 'retain',
+    targets: ['Tooltip'],
+  },
+  {
     module: 'src/components/WordLibraryManagerModal.tsx',
     responsibility: '词库管理弹窗',
     decision: 'retain',

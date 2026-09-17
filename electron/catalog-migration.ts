@@ -77,22 +77,91 @@ export function migrateCatalogIntoLibrary(): CatalogMigrationResult {
   return { status: 'migrated', dbPath: candidate }
 }
 
-function moveDirContents(sourceDir: string, targetDir: string): void {
+/** 已被搬离原位的条目，用于失败时精确回滚。 */
+interface MovedEntry {
+  source: string
+  target: string
+  /** true 表示整目录 rename（同卷瞬移）后记账，回滚时整目录搬回。 */
+  directory?: boolean
+}
+
+/** 递归收集目录下的所有文件（库数据目录当前是扁平的，这里兼容将来出现的子目录，避免静默漏搬）。 */
+function collectFilesRecursively(dir: string): string[] {
+  const files: string[] = []
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name)
+    if (statSync(full).isDirectory()) files.push(...collectFilesRecursively(full))
+    else files.push(full)
+  }
+  return files
+}
+
+/**
+ * 目录内容搬迁：逐文件复制/移动，**边搬边把条目记进 `moved`**（失败时按清单精确回滚）。
+ * 目标已存在的同名文件保留目标、不计入清单（沿用原有的合并语义）。
+ *
+ * 注意收集器必须由调用方传入、而不是靠返回值：中途失败时返回值根本拿不到，
+ * 而「已经搬走的那几个文件」恰恰是回滚唯一需要的信息。
+ */
+function moveDirContents(sourceDir: string, targetDir: string, moved: MovedEntry[]): void {
   mkdirSync(targetDir, { recursive: true })
-  for (const name of readdirSync(sourceDir)) {
-    const from = path.join(sourceDir, name)
-    const to = path.join(targetDir, name)
-    if (!statSync(from).isFile()) continue
+  for (const from of collectFilesRecursively(sourceDir)) {
+    const to = path.join(targetDir, path.relative(sourceDir, from))
+    mkdirSync(path.dirname(to), { recursive: true })
     if (existsSync(to)) continue // 目标已有同名文件：保留目标
-    moveFileOrCopy(from, to)
+    try {
+      moveFileOrCopy(from, to) // 内部已做 size 校验，且校验通过才删源
+    } catch (error) {
+      // 校验失败时目标可能留着半截文件；必须先清掉，否则新库根留下孤儿文件。
+      // 源文件因校验未通过而未被删除，数据安全。
+      rmSync(to, { force: true })
+      throw error
+    }
+    moved.push({ source: from, target: to })
+  }
+}
+
+/**
+ * 按清单把已搬走的条目搬回原位。
+ *
+ * 尽力而为：单个条目失败不影响其余条目，也绝不抛出 —— 调用方要看到的是原始错误。
+ * 这取代了「失败后反向再搬一次」的旧回滚：那种做法会把新库根原有的文件一并卷走。
+ */
+function rollbackMovedEntries(moved: MovedEntry[]): void {
+  for (let index = moved.length - 1; index >= 0; index -= 1) {
+    const entry = moved[index]
+    if (!entry) continue
+    const { source, target, directory } = entry
+    try {
+      if (!existsSync(target) || existsSync(source)) continue
+      mkdirSync(path.dirname(source), { recursive: true })
+      if (!directory) {
+        try {
+          renameSync(target, source)
+          continue
+        } catch {
+          // 跨卷：复制回来后校验，通过才删目标
+        }
+      }
+      copyFileSync(target, source)
+      if (statSync(source).size !== statSync(target).size) {
+        rmSync(target, { force: true })
+        throw new Error(`Rollback verification failed: ${target}`)
+      }
+      rmSync(target, { recursive: Boolean(directory), force: true })
+    } catch {
+      // 回滚尽力而为：留痕即可，不打断其余条目
+      console.error('[catalog-migration] 回滚条目失败：', target)
+    }
   }
 }
 
 /**
  * 把库数据目录（db/thumbs/backups）从旧根搬到新根。
  * - db：目标 db 已含 asset-kernel.sqlite → 视为冲突并抛错（先于任何移动检查）；
- * - thumbs/backups：目标目录存在则按文件合并（保留目标同名文件），否则整目录移动。
- * 调用方负责内核关闭/重开与失败回滚（见 ipc-handlers.changeLibraryRoot）。
+ * - thumbs/backups：目标目录存在则按文件合并（保留目标同名文件），否则整目录移动；
+ * - **任一步失败都会按清单精确回滚已搬走的条目**，不会停在「新库根一份残缺副本」的状态。
+ * 调用方负责内核关闭/重开（见 ipc-handlers.changeLibraryRoot）。
  */
 export function moveLibraryData(oldRoot: string, newRoot: string): void {
   const oldPaths = path.join(oldRoot, 'db')
@@ -105,18 +174,27 @@ export function moveLibraryData(oldRoot: string, newRoot: string): void {
     { name: 'thumbs', source: path.join(oldRoot, 'thumbs'), target: path.join(newRoot, 'thumbs') },
     { name: 'backups', source: path.join(oldRoot, 'backups'), target: path.join(newRoot, 'backups') },
   ]
-  for (const pair of pairs) {
-    if (!existsSync(pair.source)) continue
-    if (existsSync(pair.target)) {
-      moveDirContents(pair.source, pair.target)
-    } else {
+
+  const moved: MovedEntry[] = []
+  try {
+    for (const pair of pairs) {
+      if (!existsSync(pair.source)) continue
+      if (existsSync(pair.target)) {
+        moveDirContents(pair.source, pair.target, moved)
+        continue
+      }
       try {
         renameSync(pair.source, pair.target)
+        // 同卷瞬移：整目录记账即可（回滚也是同卷 rename，必然成功）
+        moved.push({ source: pair.source, target: pair.target, directory: true })
       } catch {
-        // 跨卷：复制整个目录（单层文件）后删除源目录
-        moveDirContents(pair.source, pair.target)
+        // 跨卷：先逐文件复制并校验，全部成功后才删除源目录
+        moveDirContents(pair.source, pair.target, moved)
         rmSync(pair.source, { recursive: true, force: true })
       }
     }
+  } catch (error) {
+    rollbackMovedEntries(moved)
+    throw error
   }
 }

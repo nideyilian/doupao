@@ -1,6 +1,7 @@
 import type { AgentConversation, AgentRound, TaskRecord, ThumbnailVariant } from '../types'
 import type { UpdateStatus } from '../hooks/useAutoUpdate'
 import type { ApiSecretBundle } from './apiSecrets'
+import { sanitizeFileNameCore } from './sanitizeFileName'
 import type {
   AssetCatalogCursorPage,
   AssetCatalogQuery,
@@ -392,10 +393,14 @@ async function saveImageViaApi(
   api: NonNullable<ReturnType<typeof getAPI>>,
   filePath: string,
   dataUrl: string,
+  bytes?: Uint8Array,
 ): Promise<boolean> {
   if (api.saveImageBytes) {
+    // 只有真要写字节时才解码 dataUrl：原实现无论走哪条通道都会先解一遍 base64。
+    // 调用方已持有字节时（文件夹导入）直接透传，省掉一次主线程解码。
+    const payload = bytes ?? decodeDataUrlToBytes(dataUrl)
     try {
-      return await api.saveImageBytes(filePath, decodeDataUrlToBytes(dataUrl))
+      return await api.saveImageBytes(filePath, payload)
     } catch {
       // 落到下面的 dataUrl 通道
     }
@@ -521,12 +526,17 @@ const EXT_MAP: Record<string, string> = {
   webp: 'webp',
 }
 
-export function getImageExtensionFromDataUrl(dataUrl: string, fallbackExt: string = 'png'): string {
-  const mime = dataUrl.match(/^data:([^;,]+)/i)?.[1]?.toLowerCase()
-  if (mime === 'image/jpeg' || mime === 'image/jpg') return 'jpg'
-  if (mime === 'image/webp') return 'webp'
-  if (mime === 'image/png') return 'png'
+/** MIME → 文件扩展名（`getImageExtensionFromDataUrl` 的按 mime 版本，供只有字节没有 dataUrl 的调用方使用）。 */
+export function getImageExtensionFromMime(mime: string | undefined, fallbackExt: string = 'png'): string {
+  const normalized = mime?.toLowerCase()
+  if (normalized === 'image/jpeg' || normalized === 'image/jpg') return 'jpg'
+  if (normalized === 'image/webp') return 'webp'
+  if (normalized === 'image/png') return 'png'
   return EXT_MAP[fallbackExt] || fallbackExt || 'png'
+}
+
+export function getImageExtensionFromDataUrl(dataUrl: string, fallbackExt: string = 'png'): string {
+  return getImageExtensionFromMime(dataUrl.match(/^data:([^;,]+)/i)?.[1], fallbackExt)
 }
 
 async function ensureSubDir(basePath: string, subDir: string): Promise<string> {
@@ -538,14 +548,7 @@ async function ensureSubDir(basePath: string, subDir: string): Promise<string> {
 }
 
 export function sanitizeFolderName(name: string): string {
-  return (
-    name
-      .trim()
-      // eslint-disable-next-line no-control-regex -- 文件名控制字符剥离是刻意行为
-      .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-')
-      .replace(/\s+/g, ' ')
-      .slice(0, 100) || '未命名'
-  )
+  return sanitizeFileNameCore(name.trim()).slice(0, 100) || '未命名'
 }
 
 function formatDateVariable(date = new Date()): string {
@@ -602,16 +605,21 @@ export async function getExplicitImageSaveDirectory(outputDirectory: string): Pr
   return ok ? trimmed : null
 }
 
-export async function saveRawCacheImageToLocal(id: string, dataUrl: string): Promise<string | null> {
+export async function saveRawCacheImageToLocal(
+  id: string,
+  dataUrl: string,
+  options: { bytes?: Uint8Array; mime?: string } = {},
+): Promise<string | null> {
   const api = getAPI()
   const basePath = await getLocalSavePath()
   if (!api || !basePath) return null
 
   const cacheDir = await ensureSubDir(basePath, 'cache-images')
-  const ext = getImageExtensionFromDataUrl(dataUrl)
+  // 调用方已持有字节（文件夹导入）时用 mime 定扩展名，避免为了拿扩展名先拼一遍 dataUrl
+  const ext = options.mime ? getImageExtensionFromMime(options.mime) : getImageExtensionFromDataUrl(dataUrl)
   const filePath = await api.pathJoin(cacheDir, `${id}.${ext}`)
 
-  const success = await saveImageViaApi(api, filePath, dataUrl)
+  const success = await saveImageViaApi(api, filePath, dataUrl, options.bytes)
   return success ? filePath : null
 }
 

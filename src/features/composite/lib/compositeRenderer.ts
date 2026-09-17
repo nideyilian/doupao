@@ -8,6 +8,7 @@ import type {
   CompositeTextLayer,
 } from './compositeTypes'
 import { createDefaultCompositeLayerStyle } from './compositeDefaults'
+import { blobToDataUrl, canvasToBlob } from '../../../lib/canvasImage'
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -195,5 +196,7 @@ export async function renderCompositePresetToCanvas(preset: CompositePreset, can
 export async function renderCompositePresetToDataUrl(preset: CompositePreset, quality = 0.92) {
   const canvas = document.createElement('canvas')
   await renderCompositePresetToCanvas(preset, canvas)
-  return canvas.toDataURL('image/jpeg', quality)
+  // 走 toBlob 而非同步 toDataURL：合成成品图常达 10MB+，同步 jpeg 编码会在主线程一次跑完，
+  // 批量导出时每次都是一次可见冻结。编码量不变（两者一致），差别只在主线程是否被占满。
+  return blobToDataUrl(await canvasToBlob(canvas, 'image/jpeg', quality))
 }

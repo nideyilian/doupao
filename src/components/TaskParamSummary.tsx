@@ -1,5 +1,5 @@
 import type { TaskRecord } from '../types'
-import { ActualValueBadge, getParamDisplay } from '../lib/paramDisplay'
+import { ActualValueBadge, getParamDisplay } from './paramDisplay'
 
 function ParamTag({ label, value, mismatch = false }: { label: string; value: string; mismatch?: boolean }) {
   return (

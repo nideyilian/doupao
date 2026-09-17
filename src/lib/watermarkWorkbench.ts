@@ -1,3 +1,5 @@
+import { sanitizeFileNameCore } from './sanitizeFileName'
+
 export interface WatermarkLogoSource {
   id: string
   name: string
@@ -151,11 +153,9 @@ function stripExtension(value: string) {
 }
 
 function sanitizeFileName(value: string) {
+  // 后面的 `-+` → `-` 归一，让「连续非法字符产出多个 -」与内核的 `+` 版本结果一致
   return (
-    value
-      // eslint-disable-next-line no-control-regex -- 文件名控制字符剥离是刻意行为
-      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
-      .replace(/\s+/g, ' ')
+    sanitizeFileNameCore(value)
       .replace(/-+/g, '-')
       .trim()
       .replace(/^\.+|\.+$/g, '') || 'image'

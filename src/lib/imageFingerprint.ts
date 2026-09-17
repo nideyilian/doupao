@@ -80,6 +80,20 @@ function toHex(buffer: ArrayBuffer): string {
  * 若 base64 解码失败（如测试用的占位 data URL），回退为对原始字符串取哈希，
  * 仍能保证相同输入得到相同指纹（仅影响"像素级"去重精度，不影响去重主流程）。
  */
+/**
+ * 原始字节的内容哈希。
+ *
+ * 与 `computeContentHash` 同一算法（SHA-256 / 同样的回退），供**已持有字节**的调用方使用：
+ * 文件夹导入等场景本来就有字节，再编码成 dataURL 让人解回来纯属往返浪费。
+ */
+export async function computeContentHashFromBytes(bytes: Uint8Array): Promise<string> {
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes as BufferSource)
+    return toHex(digest)
+  }
+  return contentHashFallback(bytes)
+}
+
 export async function computeContentHash(dataUrl: string): Promise<string> {
   let bytes: Uint8Array
   try {
@@ -87,11 +101,7 @@ export async function computeContentHash(dataUrl: string): Promise<string> {
   } catch {
     bytes = new TextEncoder().encode(dataUrl)
   }
-  if (globalThis.crypto?.subtle) {
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes as BufferSource)
-    return toHex(digest)
-  }
-  return contentHashFallback(bytes)
+  return computeContentHashFromBytes(bytes)
 }
 
 /** 非加密环境的回退哈希（FNV-1a 变体，仅用于去重，不与主路径一致）。 */

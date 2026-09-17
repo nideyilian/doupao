@@ -3,6 +3,7 @@ import { zipSync } from 'fflate'
 import type { TaskRecord, WorkspaceTab } from '../types'
 import { buildGeneratedImageFileNameBase, type GeneratedImageFilenameSettings } from './generatedImageFilename'
 import { getImage } from './db'
+import { sanitizeFileNameCore } from './sanitizeFileName'
 import {
   exportImagesToFolder,
   exportZipToPath,
@@ -370,14 +371,7 @@ function getBlobExtension(blob: Blob): string {
 }
 
 function sanitizeFileNamePart(value: string): string {
-  return (
-    value
-      .trim()
-      // eslint-disable-next-line no-control-regex -- 文件名控制字符剥离是刻意行为
-      .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-')
-      .replace(/\s+/g, ' ')
-      .slice(0, 220)
-  )
+  return sanitizeFileNameCore(value.trim()).slice(0, 220)
 }
 
 function delay(ms: number) {

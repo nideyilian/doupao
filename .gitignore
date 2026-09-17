@@ -27,6 +27,7 @@ latest.yml
 .trae/
 .impeccable/
 .workbuddy-ai/
+.workbuddy/
 
 # app runtime backups / temp dirs
 tmp-*.json

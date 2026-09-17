@@ -30,10 +30,16 @@ export async function blobToDataUrl(blob: Blob): Promise<string> {
   return `data:${blob.type || 'application/octet-stream'};base64,${bytesToBase64(bytes)}`
 }
 
-export function dataUrlToBlob(dataUrl: string): Blob {
+/**
+ * data URL → Blob。
+ *
+ * `fallbackType` 仅在 data URL 没带 mime 时生效（与原来那份基于 `fetch` 的实现对齐；
+ * 同步解析不依赖 `connect-src`，打包版也不会因为 CSP 少一条 `data:` 就 Failed to fetch）。
+ */
+export function dataUrlToBlob(dataUrl: string, fallbackType = 'application/octet-stream'): Blob {
   const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(dataUrl)
   if (!match) throw new Error('无法解析 data URL')
-  const type = match[1] || 'application/octet-stream'
+  const type = match[1] || fallbackType
   const payload = match[3] ?? ''
   if (!match[2]) return new Blob([decodeURIComponent(payload)], { type })
   return new Blob([base64ToBytes(payload)], { type })

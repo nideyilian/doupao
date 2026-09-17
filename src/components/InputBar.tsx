@@ -65,8 +65,8 @@ import {
   getGeneratedImageDownloadEntries,
 } from '../lib/downloadImages'
 import { selectLocalSaveDirectory, readDirectory, readFileBuffer, joinPath, checkPathExists } from '../lib/localSave'
-import { storeImage } from '../lib/db'
-import { computeContentHash } from '../lib/imageFingerprint'
+import { getImage, storeImage } from '../lib/db'
+import { blobToDataUrl } from '../lib/blobDataUrl'
 import { assetCommands } from '../lib/assetCommands'
 import Select from './Select'
 import SizePickerModal from './SizePickerModal'
@@ -120,6 +120,42 @@ const AgentBatchPlannerModal = lazy(() => import('./AgentBatchPlannerModal'))
 const GallerySopBatchModal = lazy(() => import('../features/strategy/adapters/GallerySopBatchModal'))
 const GallerySopManagementCenter = lazy(() => import('../features/strategy/adapters/GallerySopManagementCenter'))
 const AssetPickerModal = lazy(() => import('../features/assetLibrary/AssetPickerModal'))
+
+/** 文件夹导入的并发窗口：导入是 IO 等待型（读盘 + IPC），串行等于把 N 张的往返时间叠起来。 */
+const FOLDER_IMPORT_CONCURRENCY = 4
+
+/** 从文件名推断 MIME（原先要先拼出 dataUrl 再从里面解析）。 */
+function getImageMimeFromFileName(fileName: string): string {
+  const ext = fileName.split('.').pop()?.toLowerCase() || 'png'
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'gif') return 'image/gif'
+  return 'image/png'
+}
+
+/**
+ * 限并发 map，返回顺序与入参一致。
+ * 只在本文件的文件夹导入里用一次，不值得抽成公共工具。
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  const runnerCount = Math.max(1, Math.min(limit, items.length))
+  await Promise.all(
+    Array.from({ length: runnerCount }, async () => {
+      while (cursor < items.length) {
+        const index = cursor
+        cursor += 1
+        results[index] = await worker(items[index]!, index)
+      }
+    }),
+  )
+  return results
+}
 
 function getMentionTagTextLength(el: Element) {
   return el.textContent?.length ?? 0
@@ -359,12 +395,15 @@ function getContentEditablePlainText(el: HTMLElement): string {
   return text.replace(/\r\n?/g, '\n')
 }
 
-function escapeHtml(text: string) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
+/**
+ * 提及标签的 HTML 拼装。
+ *
+ * 属性与文本分别用对应语义的转义函数（`escapePromptHtmlAttribute` / `escapePromptHtmlText`）——
+ * 本地那份只转义 `& < > "` 的 `escapeHtml` 曾与另外三份实现并存，属于「刚好没出事」，
+ * 已统一到 `lib/promptImageMentions.ts` 这一处出口。
+ */
 function getMentionTagHtml(text: string) {
-  return `<span contenteditable="false" class="mention-tag" data-mention-text="${escapeHtml(getSelectedTextMentionLabel(text))}">${escapeHtml(text)}</span>`
+  return `<span contenteditable="false" class="mention-tag" data-mention-text="${escapePromptHtmlAttribute(getSelectedTextMentionLabel(text))}">${escapePromptHtmlText(text)}</span>`
 }
 
 function syncMentionTagSelection(el: HTMLElement) {
@@ -2453,36 +2492,26 @@ export default function InputBar() {
       }
 
       const toRead = imageFiles.slice(0, MAX_FOLDER_IMAGES)
-      const imageIds: string[] = []
-
-      for (const fileName of toRead) {
+      const readResults = await mapWithConcurrency(toRead, FOLDER_IMPORT_CONCURRENCY, async (fileName) => {
         const filePath = await joinPath(folderPath, fileName)
         const result = await readFileBuffer(filePath)
-        if (!result) continue
+        if (!result) return null
 
         const bytes = new Uint8Array(result.data)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i += 0x8000) {
-          const chunk = bytes.subarray(i, i + 0x8000)
-          binary += String.fromCharCode(...chunk)
+        const mime = getImageMimeFromFileName(fileName)
+        // 字节直通入库：原先要把字节逐 chunk 拼成 base64 字符串、入库时再解回字节，
+        // 一进一出两次主线程转换纯属往返浪费（见 docs/optimization-plan.md O-3）。
+        const id = await storeImage('', 'upload', { bytes, mime })
+        // Electron 下图片已落盘、后续走磁盘/协议加载，不需要 dataUrl 常驻内存；
+        // 只有没落盘时（web 模式）才补一次内存缓存，避免后续 ensureImageCached 再读 IndexedDB。
+        const stored = await getImage(id)
+        if (stored && !stored.localPath) {
+          const { cacheImage } = await import('../store')
+          cacheImage(id, await blobToDataUrl(new Blob([bytes as unknown as BlobPart], { type: mime })))
         }
-        const ext = fileName.split('.').pop()?.toLowerCase() || 'png'
-        const mime =
-          ext === 'jpg' || ext === 'jpeg'
-            ? 'image/jpeg'
-            : ext === 'webp'
-              ? 'image/webp'
-              : ext === 'gif'
-                ? 'image/gif'
-                : 'image/png'
-        const dataUrl = `data:${mime};base64,${btoa(binary)}`
-        const id = await computeContentHash(dataUrl)
-        await storeImage(dataUrl)
-        imageIds.push(id)
-        // 缓存到内存，避免后续 ensureImageCached 时从 IndexedDB 读取
-        const { cacheImage } = await import('../store')
-        cacheImage(id, dataUrl)
-      }
+        return id
+      })
+      const imageIds = readResults.filter((value): value is string => value !== null)
 
       if (imageIds.length === 0) {
         showToast('无法读取文件夹中的图片', 'error')

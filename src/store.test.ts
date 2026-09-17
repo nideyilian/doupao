@@ -354,6 +354,7 @@ import {
   updateTaskInStore,
   updateTasksFavoriteCollections,
   ensureImageThumbnailCached,
+  enqueueLocalImageSave,
   getCachedThumbnail,
   subscribeImageThumbnail,
   GRID_THUMBNAIL_VARIANT,
@@ -5212,5 +5213,82 @@ describe('缩略图 grid 通道（网格小图）', () => {
     } finally {
       unsubscribe()
     }
+  })
+})
+
+// 本地写盘队列：既要「前项失败不毒化后续项」，又要「失败必须留痕 + 上报」。
+// 原实现只有前者 —— 磁盘满 / 只读目录时上层静默 resolve，用户在图已经不存在之后才发现（O-6）。
+// 本文件跑在 node 环境（无 window），因此用 stubGlobal 装一个只收事件的水槽。
+describe('本地写盘队列的失败语义', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  function stubPersistErrorSink() {
+    const received: Array<{ namespace?: string } | undefined> = []
+    vi.stubGlobal('window', {
+      dispatchEvent: (event: Event) => {
+        received.push((event as CustomEvent<{ namespace?: string }>).detail)
+        return true
+      },
+    })
+    return received
+  }
+
+  it('单项失败会上报 doupao:persist-error，且后续项照常执行', async () => {
+    const received = stubPersistErrorSink()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const failing = vi.fn(async () => {
+      throw new Error('磁盘已满')
+    })
+    const following = vi.fn(async () => {})
+
+    await enqueueLocalImageSave(failing)
+    await enqueueLocalImageSave(following)
+
+    expect(failing).toHaveBeenCalledTimes(1)
+    // 队首失败不得让后续保存被跳过
+    expect(following).toHaveBeenCalledTimes(1)
+    expect(received).toEqual([{ namespace: 'localImage' }])
+    expect(consoleError).toHaveBeenCalled()
+  })
+
+  it('失败不向调用方抛错（调用点全是 void，抛了就是未捕获 rejection）', async () => {
+    stubPersistErrorSink()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(
+      enqueueLocalImageSave(async () => {
+        throw new Error('只读目录')
+      }),
+    ).resolves.toBeUndefined()
+  })
+})
+
+// O-14：migrate 第二参 version 之前被丢弃，v4 迁移对任何版本都无条件执行。
+// 现在按版本分派 —— v3 存档才做 colorScheme -> skinId；v4+ 跳过（字段本就该是 skinId）。
+describe('migratePersistedState 的版本分派', () => {
+  it('v3 存档执行 colorScheme -> skinId 迁移', () => {
+    const migrated = migratePersistedState({ settings: { colorScheme: 'dark' } }, 3) as {
+      settings: Record<string, unknown>
+    }
+    expect(migrated.settings.skinId).toBe('dark')
+  })
+
+  it('v4+ 存档跳过 v4 迁移，字段原样保留（兜底交给 normalizeSettings）', () => {
+    const migrated = migratePersistedState({ settings: { colorScheme: 'dark' } }, 4) as {
+      settings: Record<string, unknown>
+    }
+    expect(migrated.settings.skinId).toBeUndefined()
+    expect(migrated.settings.colorScheme).toBe('dark')
+  })
+
+  it('缺省 version 保持旧行为：全量执行（直接调用方与测试的兼容面）', () => {
+    const migrated = migratePersistedState({ settings: { colorScheme: 'dark' } }) as {
+      settings: Record<string, unknown>
+    }
+    expect(migrated.settings.skinId).toBe('dark')
   })
 })

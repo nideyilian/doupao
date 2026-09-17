@@ -412,8 +412,29 @@ export function cacheImage(id: string, dataUrl: string) {
   imageCache.set(id, dataUrl, dataUrl.length * 2)
 }
 
-function enqueueLocalImageSave(operation: () => Promise<void>): Promise<void> {
-  const queued = localImageSaveQueue.catch(() => {}).then(operation)
+/**
+ * 本地写盘失败上报。
+ *
+ * 复用 `App.tsx` 已在监听的 `doupao:persist-error` 通道（带 5 秒节流，不会 Toast 洪水）。
+ * 只上报、不上抛 —— `enqueueLocalImageSave` 的调用方全是 `void ...`（后台尽力保存语义），
+ * 上抛只会变成未捕获 rejection，用户可感知性由这条通道负责。
+ */
+function notifyLocalImagePersistError() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('doupao:persist-error', { detail: { namespace: 'localImage' } }))
+}
+
+/** 导出仅供测试断言「失败会上报且不毒化队列」—— 调用点在文件内部，均为 `void` 尽力保存语义。 */
+export function enqueueLocalImageSave(operation: () => Promise<void>): Promise<void> {
+  // 队列隔离（前一项失败不毒化后续项）保持原语义不变；新增的是「失败必须留痕并上报」。
+  // 磁盘满 / 只读目录 / U 盘拔出时，静默 resolve 会让用户在图已经不存在之后才发现。
+  const queued = localImageSaveQueue
+    .catch(() => {})
+    .then(operation)
+    .catch((error) => {
+      console.error('[store] 本地图片保存失败：', error)
+      notifyLocalImagePersistError()
+    })
   localImageSaveQueue = queued
   return queued
 }
@@ -947,7 +968,10 @@ function startThumbnailLoad(
       fromDisk = false
       // 守卫：只有当前版本才写盘——旧版本缩略图不能以"当前版本"标签落盘（会顶替版本升级后的重建）
       if (rec?.thumbnailDataUrl && rec.thumbnailVersion === CURRENT_THUMBNAIL_VERSION && isElectronEnv()) {
-        void writeThumbnailToDisk(id, CURRENT_THUMBNAIL_VERSION, rec.thumbnailDataUrl).catch(() => {})
+        void writeThumbnailToDisk(id, CURRENT_THUMBNAIL_VERSION, rec.thumbnailDataUrl).catch((error) => {
+          // 同上：可接受降级，只留痕不上报
+          console.warn('[store] 缩略图落盘失败：', error)
+        })
       }
     }
 
@@ -1562,14 +1586,16 @@ function stripPersistedAgentConversations(value: unknown): unknown {
   })
 }
 
-export function migratePersistedState(persistedState: unknown): unknown {
+export function migratePersistedState(persistedState: unknown, version?: number): unknown {
   if (!isRecord(persistedState)) return persistedState
   const migrated: Record<string, unknown> = {
     ...persistedState,
     agentConversations: stripPersistedAgentConversations(persistedState.agentConversations),
   }
   // v4：外观设置 colorScheme -> skinId（非法值由 normalizeSettings 回退默认皮肤）
-  if (isRecord(persistedState.settings)) {
+  // 仅对 v4 之前的存档执行；v4 起写入的就是 skinId，不再有 colorScheme 字段。
+  // version 缺省（直接调用 / 测试）时保持旧行为：全量执行。
+  if ((version === undefined || version < 4) && isRecord(persistedState.settings)) {
     const settings = persistedState.settings as Record<string, unknown>
     if (settings.skinId === undefined && settings.colorScheme !== undefined) {
       migrated.settings = { ...settings, skinId: settings.colorScheme }
@@ -4527,7 +4553,7 @@ export const useStore = create<AppState>()(
     {
       name: 'gpt-image-playground',
       version: 4,
-      migrate: (persistedState) => migratePersistedState(persistedState),
+      migrate: (persistedState, version) => migratePersistedState(persistedState, version),
       partialize: getPersistedState,
       merge: mergePersistedState,
       storage: createDesktopJsonStorage('zustand', {

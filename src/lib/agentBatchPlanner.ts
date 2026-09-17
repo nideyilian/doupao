@@ -1,3 +1,5 @@
+import { sanitizeFileNameCore } from './sanitizeFileName'
+
 export type BatchExecutionMode = 'balanced' | 'task-first'
 export type CopyMode = 'with-copy' | 'without-copy'
 export type BatchCopyChoice = 'without-copy' | 'with-copy' | 'derived-copy' | 'mixed'
@@ -74,9 +76,6 @@ export interface AgentBatchPlan {
   days: PlannedBatchDay[]
 }
 
-// eslint-disable-next-line no-control-regex -- 文件名控制字符剥离是刻意行为
-const INVALID_PATH_CHARS = /[<>:"/\\|?*\x00-\x1f]+/g
-
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value))
 }
@@ -86,7 +85,7 @@ function positiveInteger(value: number, fallback = 1) {
 }
 
 function sanitizePathPart(value: string, fallback: string) {
-  return value.trim().replace(INVALID_PATH_CHARS, '-').replace(/\s+/g, ' ').slice(0, 100) || fallback
+  return sanitizeFileNameCore(value.trim()).slice(0, 100) || fallback
 }
 
 function joinPath(parts: string[]) {

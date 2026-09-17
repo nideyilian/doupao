@@ -53,7 +53,8 @@ export function setLibraryKernelHooks(hooks: LibraryKernelHooks | null): void {
 
 /**
  * 修改库根：关闭内核 → 移动 db/thumbs/backups → 写设置 → 按新库根重开内核。
- * 任一步失败均回退文件与设置并重开旧库；冲突（目标已含数据库）不移动任何文件。
+ * 迁移失败由 `moveLibraryData` 内部精确回滚（按已搬条目逐个搬回），这里只负责回退设置并重开旧库；
+ * 冲突（目标已含数据库）不移动任何文件。仅当「文件已搬完但内核打不开」时才反向搬回。
  */
 export async function changeLibraryRoot(next: string): Promise<void> {
   const settings = readLocalSettings()
@@ -76,11 +77,9 @@ export async function changeLibraryRoot(next: string): Promise<void> {
     settings.localSavePath = normalizedNext
     writeLocalSettings(settings)
   } catch (error) {
-    try {
-      if (previous) moveLibraryData(normalizedNext, previous)
-    } catch {
-      // 回滚尽力而为；旧库文件未动的情况下无需处理
-    }
+    // moveLibraryData 内部已在失败时按清单精确回滚（见 rollbackMovedEntries）。
+    // 这里**不能**再反向搬一次：反向的 moveLibraryData 会把新库根原本就有的文件也一并卷走，
+    // 反而制造新的不一致。
     if (previous) {
       settings.localSavePath = previous
       try {
@@ -1434,7 +1433,7 @@ export function registerIpcHandlers(): void {
       }: { filePath: string; content: string; skipBackup?: boolean; backupInterval?: number },
     ) => {
       try {
-        const safeFilePath = assertAllowedPath(filePath)
+        const safeFilePath = assertAllowedRealPath(filePath)
         const dir = path.dirname(safeFilePath)
         await fsPromises.mkdir(dir, { recursive: true })
         // 写入前自动备份旧文件

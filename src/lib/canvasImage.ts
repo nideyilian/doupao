@@ -72,11 +72,10 @@ export async function createImageThumbnailDataUrl(dataUrl: string, maxSize = 512
   }
 }
 
-export async function dataUrlToBlob(dataUrl: string, fallbackType = 'image/png'): Promise<Blob> {
-  const response = await fetch(dataUrl)
-  const blob = await response.blob()
-  return blob.type ? blob : new Blob([await blob.arrayBuffer()], { type: fallbackType })
-}
+// dataUrlToBlob 的唯一实现在 blobDataUrl.ts（同步解析，不依赖 fetch / CSP）。
+// 这里保留同名导出，原有 `from './canvasImage'` 的引用方无需改动。
+import { dataUrlToBlob } from './blobDataUrl'
+export { dataUrlToBlob }
 
 export async function imageDataUrlToPngBlob(dataUrl: string): Promise<Blob> {
   const image = await loadImage(dataUrl)

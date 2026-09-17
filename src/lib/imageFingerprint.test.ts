@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   areNearDuplicates,
   computeContentHash,
+  computeContentHashFromBytes,
   computePerceptualHash,
   decodeDataUrlToBytes,
   hammingDistance,
@@ -166,5 +167,22 @@ describe('areNearDuplicates', () => {
     expect(areNearDuplicates(a, b, 6)).toBe(true)
     expect(areNearDuplicates(a, b, 0)).toBe(false)
     expect(areNearDuplicates(a, undefined, 6)).toBe(false)
+  })
+})
+
+// 图片 id 由内容哈希决定（见 db.storeImage）。字节入口与 dataUrl 入口必须给出同一个 id，
+// 否则同一张图经「文件夹导入」与经「拖拽 / 生成」入库会变成两条记录（去重失效）。
+describe('字节入口与 dataUrl 入口的内容哈希一致', () => {
+  it('同一份字节走两条入口得到相同哈希', async () => {
+    const bytes = new Uint8Array([0, 1, 2, 3, 250, 251, 252, 253, 254, 255])
+    const dataUrl = 'data:image/png;base64,' + Buffer.from(bytes).toString('base64')
+
+    await expect(computeContentHashFromBytes(bytes)).resolves.toBe(await computeContentHash(dataUrl))
+  })
+
+  it('空字节与空 dataUrl 两侧都稳定（不抛异常）', async () => {
+    const empty = await computeContentHashFromBytes(new Uint8Array([]))
+    await expect(computeContentHash('data:,')).resolves.toBe(empty)
+    expect(empty).toMatch(/^([0-9a-f]{64}|fb-[0-9a-f]{16})$/)
   })
 })

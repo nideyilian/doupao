@@ -1,3 +1,5 @@
+import { INVALID_FILE_NAME_CHARS } from './sanitizeFileName'
+
 export interface GeneratedImageFilenameSettings {
   imageFilenameDatePrefix: boolean
   imageFilenameUsePrompt: boolean
@@ -11,11 +13,11 @@ export interface GeneratedImageFilenameContext {
 }
 
 export function sanitizeGeneratedImageFilenamePart(value: string, maxLength?: number): string {
-  const sanitized = value
-    .trim()
-    .replace(/\s+/g, ' ')
-    // eslint-disable-next-line no-control-regex -- 文件名控制字符剥离是刻意行为
-    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-')
+  // 注意顺序与 `sanitizeFileNameCore` **相反**：这里先压缩空白、再剥非法字符。
+  // 控制字符类里含 `\n` / `\t`，先替换会把 prompt 里的换行变成 `-`；先压缩空白则归成空格，
+  // 这才是文件名期望的结果（见 generatedImageFilename.test.ts 的既有断言）。
+  // 字符集仍共享同一份常量，避免两处漂移。
+  const sanitized = value.trim().replace(/\s+/g, ' ').replace(INVALID_FILE_NAME_CHARS, '-')
   return typeof maxLength === 'number' ? sanitized.slice(0, maxLength) : sanitized
 }
 
